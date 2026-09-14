@@ -19,7 +19,7 @@ No token, secret or credential value is recorded here.
 | --- | --- | --- |
 | unit + integration | `npm test` | 82 passed / 0 failed |
 | syntax | `npm run check` | 37 files, 0 failed |
-| free backend + real tool calls + no fallback | `npm run verify:workbuddy` | 10/10 |
+| free backend + real tool calls + no fallback | `npm run verify:workbuddy` | 14/14 |
 | real agent end-to-end | `npm run smoke:local` | 22/22 |
 | real control plane, fake Discord transport | `npm run smoke:discord` | 16/16 |
 | installed global hook | `npm run verify:hook` | 9/9 |
