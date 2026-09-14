@@ -1,0 +1,16 @@
+{
+  "name": "discord-agent-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Discord remote control plane for a local Claude Code agent, with phone approval gates.",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check src/index.mjs && node --check src/claude-runner.mjs && node --check src/policy.mjs && node --check src/approval-manager.mjs && node --check scripts/approval-hook.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.2.2"
+  }
+}
