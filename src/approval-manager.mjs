@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 
 export class ApprovalManager {
-  constructor({ timeoutMs }) {
+  constructor({ timeoutMs, config = null }) {
     this.timeoutMs = timeoutMs;
+    this.config = config;
     this.pending = new Map();
     this.sessionAllows = new Set();
     this.presenter = null;
@@ -47,6 +48,9 @@ export class ApprovalManager {
   }
 
   async request(meta) {
+    if (this.config?.autoApproveAll) {
+      return { decision: 'allow', reason: 'AUTO_APPROVE_ALL', auto: true };
+    }
     if (this.isSessionAllowed(meta.sessionId, meta.ruleKey)) {
       return { decision: 'allow', reason: 'approved for session', auto: true };
     }

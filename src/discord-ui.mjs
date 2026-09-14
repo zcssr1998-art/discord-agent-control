@@ -454,6 +454,14 @@ export class DiscordControlPlane {
     const channelId = this.channelBySession.get(req.sessionId) || req.channelId || null;
     const task = channelId ? this.tasks.get(channelId) : null;
     console.log(`[approval] requested tool=${req.toolName} rule=${req.ruleKey} channel=${channelId || 'dm'} reason=${clip(req.reason, 80)}`);
+
+    // When AUTO_APPROVE_ALL is enabled, the policy layer already returns
+    // decision=allow, so this presenter should never be called. Guard anyway.
+    if (this.config.autoApproveAll) {
+      console.log('[approval] auto-approved (AUTO_APPROVE_ALL active)');
+      return null;
+    }
+
     if (task) {
       task.progress.setApproval(req);
       await task.editor.flushNow(task.progress.render());

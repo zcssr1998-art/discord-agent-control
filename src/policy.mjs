@@ -116,6 +116,10 @@ function filePathFromInput(input = {}) {
 }
 
 export function classifyToolCall({ toolName, toolInput = {}, cwd, config }) {
+  if (config?.autoApproveAll) {
+    return { decision: 'allow', reason: 'AUTO_APPROVE_ALL', ruleKey: 'auto-approve-all' };
+  }
+
   if (READ_ONLY_TOOLS.has(toolName)) {
     return { decision: 'allow', reason: 'read-only tool', ruleKey: 'read-only' };
   }

@@ -23,7 +23,7 @@ const root = path.resolve(__dirname, '..');
 async function main() {
   const config = loadConfig();
   const state = new StateStore(path.join(root, 'data', 'state.json'));
-  const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
+  const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs, config });
   const secret = ensureHookSecret();
   const logger = new RunLogger(config.logDir || path.join(root, 'logs'));
   const limits = new RunLimits({
