@@ -61,15 +61,21 @@ function makePlane({ sendImpl, approvals, throttleMs = 10_000, config = {} } = {
     busy: false,
     stopped: false,
     sent: [],
+    idleMs: 0,
     async send(prompt) {
       this.busy = true;
       this.sent.push(prompt);
       this.onEvent({ type: 'session', sessionId: this.sessionId });
       this.onEvent({ type: 'init', model: this.model, apiKeySource: 'www.workbuddy.ai', tools: ['Read'] });
-      if (sendImpl) return await sendImpl({ prompt, plane, runner: this, approvals: manager, fake });
-      this.onEvent({ type: 'tool', tool: { name: 'Read', input: { file_path: 'src/a.js' } } });
-      this.busy = false;
-      return { text: 'all done', sessionId: this.sessionId, durationMs: 1200, tools: [], isError: false, costUsd: 0.0123 };
+      try {
+        if (sendImpl) return await sendImpl({ prompt, plane, runner: this, approvals: manager, fake });
+        this.onEvent({ type: 'tool', tool: { name: 'Read', input: { file_path: 'src/a.js' } } });
+        return { text: 'all done', sessionId: this.sessionId, durationMs: 1200, tools: [], isError: false, costUsd: 0.0123 };
+      } finally {
+        // Mirrors the real runner, whose `busy` is derived from the in-flight
+        // request: a finished (or failed) run must not leave the channel busy.
+        this.busy = false;
+      }
     },
     async stop() { this.stopped = true; this.busy = false; },
     onEvent: () => {},
@@ -338,3 +344,119 @@ test('a pre-existing session is resumed and the model is persisted', async () =>
   await fake.sendAsUser({ content: 'continue where we left off' });
   assert.equal(seen[0], 'old-session', 'the persisted session must be resumed after a restart');
 });
+
+// ---------------------------------------------------------------------------
+// Regression: the 2026-09-14 outage.
+//
+// The acceptance criterion for the whole product is one sentence: no matter how
+// badly the agent / PowerShell / shell wedges, the Discord control plane must
+// stay reachable. `!status` and `!stop` have to work while a task is stuck.
+// ---------------------------------------------------------------------------
+
+test('a wedged agent cannot take the control plane down: !status and !stop still answer', async () => {
+  let release;
+  let call = 0;
+  const { fake, plane, runner } = makePlane({
+    sendImpl: async () => {
+      call += 1;
+      if (call === 1) return await new Promise((resolve) => { release = resolve; });
+      return { text: 'after stop ok', sessionId: 'sess-1', durationMs: 5, tools: [], isError: false, costUsd: 0 };
+    },
+  });
+  await plane.start();
+
+  const task = fake.sendAsUser({ content: 'wedge the agent' });
+  await tick(60);
+
+  // The agent is now silent: no tool events, no result, no exit. Before the fix
+  // the status message sat on a stale RUNNING and the channel never recovered.
+  const started = Date.now();
+  await fake.sendAsUser({ content: '!status' });
+  assert.ok(Date.now() - started < 2000, '!status must answer while a task is wedged');
+  assert.ok(fake.texts().some((t) => /state: busy/.test(t)), '!status must report the wedged task');
+
+  await fake.sendAsUser({ content: '!stop' });
+  assert.ok(runner.stopped, '!stop must actually kill the agent');
+  assert.ok(
+    fake.texts().some((t) => /Stopped the agent process tree|released/.test(t)),
+    '!stop must confirm the stop',
+  );
+  assert.equal(plane.tasks.size, 0, 'the busy state must be released by !stop');
+  assert.equal(plane.runners.size, 0, 'the runner must be dropped so a new task can start');
+
+  // A late result must not be presented as a success after the stop.
+  release({ text: 'late result', sessionId: 'sess-1', durationMs: 1, tools: [], isError: false, costUsd: 0 });
+  await task;
+  assert.ok(
+    fake.messages.some((m) => /⛔ CANCELLED/.test(m.content)),
+    'the status must land on CANCELLED, never on RUNNING or DONE',
+  );
+
+  // The channel must be usable again straight away.
+  await fake.sendAsUser({ content: 'after stop' });
+  assert.ok(fake.texts().some((t) => /after stop ok/.test(t)), 'the next task must run normally');
+});
+
+test('a silent agent gets a "still waiting" notice without spending a model call', async () => {
+  let release;
+  const { fake, plane, runner } = makePlane({
+    throttleMs: 10,
+    config: { stallNoticeMs: 200 },
+    sendImpl: async ({ runner: r }) => {
+      // Reproduce the field state: four PowerShell calls done, then silence.
+      r.onEvent({ type: 'tool', tool: { name: 'PowerShell', input: { command: 'Set-ItemProperty ... Wallpaper' } } });
+      r.onEvent({ type: 'tool', tool: { name: 'PowerShell', input: { command: 'Set-ItemProperty ... WallpaperStyle' } } });
+      // Pretend the agent has produced nothing for a minute.
+      r.idleMs = 60_000;
+      return await new Promise((resolve) => { release = resolve; });
+    },
+  });
+  await plane.start();
+
+  fake.sendAsUser({ content: 'silent task' });
+  await tick(1400);
+
+  const status = fake.messages[0];
+  assert.match(status.content, /仍在等待 PowerShell/, 'the phone must be told what the agent is stuck on');
+  assert.match(status.content, /Last action: PowerShell/, 'and what it is waiting on');
+  assert.equal(runner.sent.length, 1, 'the watchdog must never send another prompt to the model');
+
+  release({ text: 'finally done', sessionId: 'sess-1', durationMs: 1, tools: [], isError: false, costUsd: 0 });
+  await tick(60);
+});
+
+test('an agent that dies without a result ends FAILED and the channel stays usable', async () => {
+  let call = 0;
+  const { fake, plane } = makePlane({
+    sendImpl: async () => {
+      call += 1;
+      if (call === 1) {
+        throw Object.assign(new Error('agent process exited without producing a result'), { code: 'AGENT_EXIT_NO_RESULT' });
+      }
+      return { text: 'recovered', sessionId: 'sess-1', durationMs: 1, tools: [], isError: false, costUsd: 0 };
+    },
+  });
+  await plane.start();
+
+  await fake.sendAsUser({ content: 'wedge' });
+  assert.match(fake.messages[0].content, /❌ FAILED/, 'a dead agent must produce FAILED, not a permanent RUNNING');
+  assert.equal(plane.tasks.size, 0, 'the task must be released');
+
+  await fake.sendAsUser({ content: 'try again' });
+  assert.ok(fake.texts().some((t) => /recovered/.test(t)), 'the channel must accept the next task');
+});
+
+test('shutdown reaps every live agent tree so no orphan PowerShell survives', async () => {
+  const { plane, runner } = makePlane({
+    sendImpl: async () => await new Promise(() => {}),
+  });
+  await plane.start();
+  runner.busy = true;
+
+  const stopped = await plane.stopAll({ reason: 'bridge shutdown' });
+  assert.equal(stopped, 1, 'every runner must be stopped');
+  assert.ok(runner.stopped, 'the agent tree must be killed');
+  assert.equal(plane.runners.size, 0);
+  assert.equal(plane.tasks.size, 0, 'no task may be left behind on shutdown');
+});
+

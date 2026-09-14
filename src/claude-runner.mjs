@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import path from 'node:path';
+import { killTree, registerChild, unregisterChild } from './kill-tree.mjs';
 
 function userMessage(prompt) {
   return JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n';
@@ -96,10 +97,19 @@ export class ClaudeRunner {
     this.current = null;
     this.model = null;
     this.lastError = null;
+    // Liveness clock for the control-plane watchdog: any byte the agent sends
+    // (stdout event or stderr line) refreshes it. A task that stops producing
+    // events must be visible on the phone instead of looking frozen.
+    this.lastEventAt = Date.now();
   }
 
   get busy() {
     return Boolean(this.current);
+  }
+
+  /** Milliseconds since the agent last produced any output. */
+  get idleMs() {
+    return Date.now() - this.lastEventAt;
   }
 
   buildArgs() {
@@ -134,29 +144,80 @@ export class ClaudeRunner {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    registerChild(this.child.pid);
+    this.lastEventAt = Date.now();
+
+    // A child that dies while we are still writing to it makes the pipe emit
+    // `error`. An EventEmitter 'error' with no listener *throws*, and an
+    // uncaught throw takes the whole bridge down — Discord control plane
+    // included. That is exactly the "bot went silent and !status stopped
+    // answering" failure, so every stdio stream gets a listener that converts
+    // the failure into an ordinary request rejection instead.
+    this.#guardPipe(this.child.stdin, 'stdin', true);
+    this.#guardPipe(this.child.stdout, 'stdout', true);
+    this.#guardPipe(this.child.stderr, 'stderr', false);
 
     const rl = readline.createInterface({ input: this.child.stdout });
-    rl.on('line', (line) => this.#handleLine(line));
+    // Defence in depth: this callback runs straight off the event loop, so an
+    // exception here would be uncaught and would kill the bridge process.
+    rl.on('line', (line) => {
+      try { this.#handleLine(line); }
+      catch (error) { this.#guardFailure('stdout', error, false); }
+    });
+    // readline forwards stream errors too; without this they would be unhandled.
+    rl.on('error', (error) => this.#guardFailure('stdout', error));
     this.child.stderr.on('data', (chunk) => {
       const text = chunk.toString();
+      this.lastEventAt = Date.now();
       this.#log({ stream: 'stderr', text });
       this.onEvent({ type: 'stderr', text });
     });
     this.child.on('error', (error) => {
       this.lastError = error;
+      unregisterChild(this.child?.pid);
+      this.child = null;
       this.#failCurrent(error);
     });
     this.child.on('exit', (code, signal) => {
-      const err = code === 0 ? null : new Error(`Claude exited code=${code} signal=${signal || ''}`);
-      if (err) this.lastError = err;
-      if (err) this.#failCurrent(err);
+      const child = this.child;
+      unregisterChild(child?.pid);
+      // Always settle an in-flight request. Previously only a non-zero exit did,
+      // so a child that exited 0 without emitting a `result` event left send()
+      // pending forever: the task stayed RUNNING, the channel stayed "busy", and
+      // the only way out was a manual !stop.
+      const reason = code === 0 && !signal
+        ? Object.assign(new Error('agent process exited without producing a result'), { code: 'AGENT_EXIT_NO_RESULT' })
+        : Object.assign(new Error(`Claude exited code=${code} signal=${signal || ''}`), { code: 'AGENT_EXIT' });
+      if (code !== 0 || signal) this.lastError = reason;
       this.child = null;
+      this.#failCurrent(reason);
       this.onExit({ code, signal });
     });
   }
 
+  /**
+   * Turn a stdio stream failure into a request rejection.
+   *
+   * `failCurrent` is true for the streams we write to or read results from: if
+   * either is broken the in-flight request can never complete, so it must be
+   * rejected rather than left hanging.
+   */
+  #guardPipe(stream, label, failCurrent) {
+    if (!stream || typeof stream.on !== 'function') return;
+    stream.on('error', (error) => this.#guardFailure(label, error, failCurrent));
+  }
+
+  #guardFailure(label, error, failCurrent = false) {
+    this.lastError = error;
+    this.#log({ stream: 'bridge', text: `${label} stream error: ${error?.message || error}` });
+    if (failCurrent) this.#failCurrent(error);
+  }
+
   async send(prompt) {
     this.start();
+    if (!this.child?.stdin) {
+      throw new Error('agent process is not running; cannot send a task');
+    }
     if (this.current) {
       return await new Promise((resolve, reject) => this.pending.push({ prompt, resolve, reject }));
     }
@@ -166,7 +227,17 @@ export class ClaudeRunner {
   #sendNow(prompt) {
     return new Promise((resolve, reject) => {
       this.current = { resolve, reject, textParts: [], tools: [], started: Date.now() };
-      this.child.stdin.write(userMessage(prompt));
+      this.lastEventAt = Date.now();
+      try {
+        this.child.stdin.write(userMessage(prompt));
+      } catch (error) {
+        // A synchronous write failure (destroyed stream) must reject this
+        // request and move on, never leave it pending forever.
+        const current = this.current;
+        this.current = null;
+        current.reject(error);
+        this.#drain();
+      }
     });
   }
 
@@ -176,6 +247,7 @@ export class ClaudeRunner {
   }
 
   #handleLine(line) {
+    this.lastEventAt = Date.now();
     this.#log({ stream: 'stdout', text: line });
     let event;
     try { event = JSON.parse(line); }
@@ -262,21 +334,33 @@ export class ClaudeRunner {
   #drain() {
     if (this.current || !this.pending.length) return;
     const next = this.pending.shift();
+    if (!this.child?.stdin) {
+      // The agent died while requests were queued: fail them instead of
+      // leaving the queue (and the busy flag) stuck.
+      next.reject(Object.assign(new Error('agent process is not running'), { code: 'AGENT_EXIT' }));
+      this.#drain();
+      return;
+    }
     this.#sendNow(next.prompt).then(next.resolve, next.reject);
   }
 
-  async stop() {
+  /**
+   * Kill the whole agent tree and release everything waiting on it.
+   *
+   * Releasing is the important half: `!stop` used to kill the process but leave
+   * the in-flight request (and therefore the "busy" task) hanging until the task
+   * wall-clock timeout fired. Every caller of `send()` is now settled with a
+   * `TASK_CANCELLED` error, so the task's `finally` block always runs and the
+   * channel is immediately usable again.
+   */
+  async stop({ reason = 'stopped by owner' } = {}) {
     const child = this.child;
-    if (!child) return;
     this.child = null;
-    if (process.platform === 'win32' && child.pid) {
-      await new Promise((resolve) => {
-        const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-        killer.on('exit', resolve);
-        killer.on('error', resolve);
-      });
-    } else {
-      child.kill('SIGTERM');
-    }
+    const cancelled = Object.assign(new Error(reason), { code: 'TASK_CANCELLED' });
+    this.#failCurrent(cancelled);
+    if (!child || !child.pid) return { killed: false, pid: null };
+    unregisterChild(child.pid);
+    const killed = await killTree(child.pid);
+    return { killed, pid: child.pid };
   }
 }

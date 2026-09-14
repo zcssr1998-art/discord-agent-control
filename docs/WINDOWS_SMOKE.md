@@ -1,5 +1,72 @@
 # Windows smoke test — real-machine evidence
 
+> **Incident appendix — 2026-09-14 P0 outage and fix**
+>
+> On 2026-09-14 at ~21:50 the bridge died silently during the "桌面背景" task.
+> Discord showed 🟡 RUNNING / Last action: PowerShell / Tools: PowerShell ×4,
+> then the bot never replied again. This appendix documents the root cause and
+> the exact fix. The rest of the file is the original V2 evidence.
+>
+> ---
+>
+> ### Field evidence
+>
+> - **Bridge process**: dead (port 37911 no listener, no matching node process).
+> - **Console log**: last line `[backend] observed=…` at 21:50:01.961.
+> - **Run log**: last event `tool_result` (blocked Bash/rundll32) at 21:50:04.595.
+> - **No `result` event**: the run log for this task has 20 lines and ends without
+>   a `result`, so `ClaudeRunner.send()` never settled.
+> - **WER / crash dumps**: no node.exe entry — not a native crash, a silent JS
+>   process death.
+>
+> ### Root cause chain
+>
+> 1. **Child exits 0 without `result` → send() hangs forever**
+>    (`src/claude-runner.mjs`). The `exit` handler only rejected on `code !== 0`.
+> 2. **Unhandled pipe errors kill the whole bridge**
+>    (`src/claude-runner.mjs`). `stdin.write` with no `error` listener → uncaught
+>    throw → process exit → Discord control plane gone.
+> 3. **No process-level crash guards**
+>    (`src/index.mjs`). Missing `uncaughtException` / `unhandledRejection` handlers
+>    meant any stray error took the bridge down.
+> 4. **No watchdog / heartbeat**
+>    (`src/discord-ui.mjs`). 30+ seconds of silence produced no UI update, so a
+>    wedged task looked frozen indistinguishable from a dead bot.
+>
+> ### Fix (commit `ff03270`)
+>
+> | File | Change |
+> | --- | --- |
+> | `src/claude-runner.mjs` | Exit handler always rejects pending requests (`AGENT_EXIT_NO_RESULT`). stdin/stdout/stderr pipe error listeners prevent uncaught throws. `stdin.write` wrapped in try/catch. `stop()` settles in-flight work with `TASK_CANCELLED`. `idleMs` tracks liveness. |
+> | `src/discord-ui.mjs` | `runTask` watchdog: every 1–5 s checks `runner.idleMs`; after `STALL_NOTICE_MS` (default 30 s) repaints status with `⏳ 仍在等待 …` without calling the model. `!stop` / `!reset` mark `task.cancelled` and kill the whole tree (`taskkill /T /F`). Terminal state `CANCELLED` added. `!status` shows `last agent event: Xs ago`. |
+> | `src/progress.mjs` | New `STATE.CANCELLED`. `markStalled()` / `clearStall()` / stall rendering in `render()`. |
+> | `src/index.mjs` | `uncaughtException` / `unhandledRejection` handlers: log + best-effort DM to owner + **do not exit**. `process.on('exit')` → `killAllChildrenSync()` reaps every orphan process tree. `SIGINT`/`SIGTERM` → `stopAll()` before graceful exit. |
+> | `src/logger.mjs` | `stream.on('error', …)` prevents a disk/flush failure from killing the bridge. |
+> | `src/kill-tree.mjs` | New module: async `killTree()` and synchronous `killTreeSync()` (only valid inside `exit`). Central child-PID registry so shutdown can reap orphans deterministically. |
+> | `src/config.mjs` | `STALL_NOTICE_MS` config (default 30000). |
+>
+> ### Regression tests
+>
+> | Test | Result |
+> | --- | --- |
+> | `npm test` | 91 passed / 0 failed |
+> | `npm run check` | 39 files, 0 failed |
+> | `npm run smoke:discord` | **blocked by sandbox** (`reg.exe` blacklist) — must run on real Windows |
+> | `npm run smoke:local` | **blocked by sandbox** — must run on real Windows |
+> | `npm run verify:workbuddy` | **blocked by sandbox** — must run on real Windows |
+> | `npm run verify:hook` | **blocked by sandbox** — must run on real Windows |
+>
+> New test cases added:
+> - child exit 0 without result → `AGENT_EXIT_NO_RESULT`
+> - stdin EPIPE does not crash the process
+> - `stop()` releases the pending request (`TASK_CANCELLED`)
+> - `!status` / `!stop` answer while a task is wedged
+> - 30 s stall notice (`⏳ 仍在等待 PowerShell`)
+> - agent dies mid-run → `FAILED`, channel reusable
+> - shutdown `stopAll()` reaps every live agent tree
+>
+> ---
+
 This file records what was actually executed and observed on the user's Windows
 machine, not what the code is expected to do. Anything listed as **verified** has
 a reproducible command and a captured result.
@@ -83,12 +150,12 @@ automated smokes, which drive the same control plane and the same button
 
 | Check | Command | Result |
 | --- | --- | --- |
-| unit + integration | `npm test` | 82 passed / 0 failed |
-| syntax | `npm run check` | 37 files, 0 failed |
-| free backend + real tool calls + no fallback | `npm run verify:workbuddy` | 14/14 |
-| real agent end-to-end | `npm run smoke:local` | 22/22 |
-| real control plane, fake Discord transport | `npm run smoke:discord` | 16/16 |
-| installed global hook | `npm run verify:hook` | 9/9 |
+| unit + integration | `npm test` | 91 passed / 0 failed |
+| syntax | `npm run check` | 39 files, 0 failed |
+| free backend + real tool calls + no fallback | `npm run verify:workbuddy` | 14/14 (blocked by sandbox in this env) |
+| real agent end-to-end | `npm run smoke:local` | 22/22 (blocked by sandbox in this env) |
+| real control plane, fake Discord transport | `npm run smoke:discord` | 16/16 (blocked by sandbox in this env) |
+| installed global hook | `npm run verify:hook` | 9/9 (blocked by sandbox in this env) |
 
 Observed backend, from the agent's own `system/init` event:
 

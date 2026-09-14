@@ -15,6 +15,7 @@ import { configureDiscordProxy } from './discord-proxy.mjs';
 import { explainDiscordLoginError } from './discord-errors.mjs';
 import { stripPaidCredentials, probeBackend, classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
 import { DiscordControlPlane } from './discord-ui.mjs';
+import { killAllChildrenSync } from './kill-tree.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -28,6 +29,44 @@ async function main() {
   const limits = new RunLimits({
     maxConsecutiveFailures: config.maxConsecutiveFailures,
     maxProcessRestarts: config.maxProcessRestarts,
+  });
+
+  // ---- crash containment ---------------------------------------------------
+  // The Discord control plane and the agent task live in the same process. That
+  // is only acceptable if a single stray error cannot take the process down:
+  // losing the bridge means the phone can no longer send `!status` or `!stop`
+  // to the very task that is misbehaving. So every unexpected error is logged
+  // and survived rather than fatal.
+  //
+  // This is the fix for the real outage: the run wedged on a blocked tool call,
+  // the process died silently (no `[fatal]`, no `[task] done`, no shutdown
+  // line), and the control plane went with it.
+  let discord = null;
+
+  const reportCrash = (label, error) => {
+    const detail = error?.stack || String(error?.message || error);
+    console.error(`[${label}] ${detail}`);
+    if (!discord) return;
+    // Best effort only — the notification must never be able to throw.
+    try {
+      Promise.resolve(discord.client?.users?.fetch?.(config.ownerId))
+        .then((owner) => owner?.send?.(
+          `⚠️ **Bridge survived an internal error** (\`${label}\`)\n\`\`\`\n${String(detail).slice(0, 900)}\n\`\`\`\n`
+          + 'The control plane is still online. `!status` / `!stop` still work.',
+        ))
+        .catch(() => {});
+    } catch { /* never let the reporter itself fail */ }
+  };
+
+  process.on('uncaughtException', (error) => reportCrash('uncaughtException', error));
+  process.on('unhandledRejection', (reason) => reportCrash('unhandledRejection', reason));
+
+  // Last-resort orphan reap. `exit` can only run synchronous code, so this is
+  // the one place a blocking taskkill is correct — see src/kill-tree.mjs for why
+  // the usual "never use spawnSync" rule does not apply here.
+  process.on('exit', () => {
+    const pids = killAllChildrenSync();
+    if (pids.length) console.error(`[bridge] reaped ${pids.length} orphan child tree(s): ${pids.join(', ')}`);
   });
 
   // ---- agent backend -------------------------------------------------------
@@ -92,7 +131,7 @@ async function main() {
     executor: config.claudeCommand,
   };
 
-  const discord = new DiscordControlPlane({
+  discord = new DiscordControlPlane({
     config,
     state,
     approvalManager: approvals,
@@ -117,14 +156,17 @@ async function main() {
   console.log(`[bridge] Paid fallback: ${config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`);
   console.log(`[discord] control plane ready | log dir=${config.logDir || path.join(root, 'logs')} default cwd=${config.defaultCwd}`);
 
-  const shutdown = () => {
-    console.log('\n[bridge] shutting down');
-    hookServer.close();
-    discord.client.destroy().catch(() => {});
+  const shutdown = async (signal) => {
+    console.log(`\n[bridge] shutting down (${signal})`);
+    // Kill every agent tree before we go, so a Ctrl+C can never leave orphan
+    // PowerShell / cmd / node processes behind.
+    try { await discord.stopAll({ reason: `bridge shutdown (${signal})` }); } catch { /* best effort */ }
+    try { hookServer.close(); } catch { /* best effort */ }
+    try { await discord.client.destroy(); } catch { /* best effort */ }
     process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });
+  process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(0)); });
 }
 
 main().catch((error) => {

@@ -26,6 +26,11 @@ export class RunLogger {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const file = path.join(this.dir, `${stamp}-${RunLogger.safeId(channelId)}.jsonl`);
     const stream = fs.createWriteStream(file, { flags: 'a' });
+    // An async write failure (EPIPE / ENOSPC / EBADF) is emitted as an 'error'
+    // event, which throws when nothing is listening — and an uncaught throw
+    // would take the whole bridge, Discord control plane included, down with it.
+    // Logging must never be able to do that.
+    stream.on('error', () => { /* the transcript is best-effort */ });
     stream.write(JSON.stringify({ type: 'prompt', at: new Date().toISOString(), prompt }) + '\n');
     return {
       path: file,

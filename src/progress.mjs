@@ -8,6 +8,7 @@ export const STATE = {
   WAITING_APPROVAL: 'WAITING_APPROVAL',
   DONE: 'DONE',
   FAILED: 'FAILED',
+  CANCELLED: 'CANCELLED',
 };
 
 const STATE_LABEL = {
@@ -18,6 +19,7 @@ const STATE_LABEL = {
   [STATE.WAITING_APPROVAL]: '🔐 WAITING_APPROVAL',
   [STATE.DONE]: '✅ DONE',
   [STATE.FAILED]: '❌ FAILED',
+  [STATE.CANCELLED]: '⛔ CANCELLED',
 };
 
 function clip(text, n) {
@@ -76,6 +78,27 @@ export class TaskProgress {
     this.approval = null;
     this.note = null;
     this.retry = null;
+    // Set by the control-plane watchdog when the agent stops producing events.
+    // Rendered so a wedged tool call is visible on the phone instead of the
+    // status message sitting on a stale "Last action" forever.
+    this.stall = null;
+    this.lastTool = null;
+  }
+
+  /**
+   * Mark the run as producing no output for `idleMs`.
+   *
+   * Deliberately does NOT touch the model or the agent process — the watchdog
+   * must never spend tokens, it only repaints the existing status message.
+   */
+  markStalled(idleMs) {
+    this.stall = { idleMs, tool: this.lastTool };
+    return this;
+  }
+
+  clearStall() {
+    this.stall = null;
+    return this;
   }
 
   /**
@@ -86,6 +109,7 @@ export class TaskProgress {
   recordRetry({ attempt, maxRetries, errorStatus, error } = {}) {
     this.retry = { attempt, maxRetries, errorStatus, error };
     this.state = STATE.RUNNING;
+    this.stall = null;
     return this;
   }
 
@@ -113,9 +137,11 @@ export class TaskProgress {
     this.toolCounts.set(name, (this.toolCounts.get(name) || 0) + 1);
     const action = describeToolCall(tool);
     this.lastAction = action;
+    this.lastTool = name;
     this.recent.push(action);
     if (this.recent.length > this.maxRecent) this.recent.splice(0, this.recent.length - this.maxRecent);
     this.retry = null;
+    this.stall = null;
 
     if (this.state === STATE.CREATED || this.state === STATE.PLANNING) this.state = STATE.RUNNING;
 
@@ -139,6 +165,7 @@ export class TaskProgress {
     if (fail && Number(fail[1]) > 0) this.tests = `failed (${fail[1]})`;
     else if (pass) this.tests = `passed (${pass[1]})`;
     if (fail || pass) this.state = STATE.RUNNING;
+    this.stall = null;
     return this;
   }
 
@@ -153,6 +180,10 @@ export class TaskProgress {
       lines.push(`⚠️ Model request retry ${this.retry.attempt ?? '?'}/${this.retry.maxRetries ?? '?'} (${this.retry.errorStatus ?? 'error'}${this.retry.error ? ` ${this.retry.error}` : ''})`);
     } else if (this.lastAction) {
       lines.push(`Last action: ${this.lastAction}`);
+    }
+    if (this.stall && !this.approval) {
+      const who = this.stall.tool || 'Agent';
+      lines.push(`⏳ 仍在等待 ${who} …（已 ${formatDuration(this.stall.idleMs)} 无新事件）`);
     }
     if (this.tests) lines.push(`Tests: ${this.tests}`);
     if (this.toolCounts.size) {

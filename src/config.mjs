@@ -69,6 +69,10 @@ export function loadConfig() {
     // --- runaway protection ----------------------------------------------
     // Hard wall-clock cap on one task. Hitting it kills the agent process.
     taskTimeoutMs: int('TASK_TIMEOUT_MS', 900000),
+    // If the agent produces no event at all for this long, the control plane
+    // repaints the status message with "仍在等待 …". It never calls the model, so
+    // a silent agent is visible without spending tokens.
+    stallNoticeMs: int('STALL_NOTICE_MS', 30000),
     maxConsecutiveFailures: int('MAX_CONSECUTIVE_FAILURES', 3),
     maxProcessRestarts: int('MAX_PROCESS_RESTARTS', 5),
   };

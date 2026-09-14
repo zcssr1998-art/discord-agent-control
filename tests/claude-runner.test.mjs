@@ -6,6 +6,19 @@ import { ClaudeRunner } from '../src/claude-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const WEDGE = path.join(__dirname, 'fake-claude-wedge.mjs');
+const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
+
+/** A runner against the "agent went silent" fixture. */
+function wedgeRunner(mode, extra = {}) {
+  return new ClaudeRunner({
+    command: WEDGE,
+    cwd: path.resolve(__dirname, '..'),
+    extraEnv: { DAC_FAKE_WEDGE: mode },
+    ...extra,
+  });
+}
+
 test('runner keeps process, streams events, and returns result', async (t) => {
   const events = [];
   const logged = [];
@@ -78,3 +91,79 @@ test('blocked credential variables are removed from the child environment', asyn
   assert.equal(env.DAC_KEEP_ME, 'kept', 'unrelated variables must survive');
   assert.equal(env.DISCORD_BRIDGE_ACTIVE, '1', 'the hook still needs to know it is a bridge session');
 });
+
+// ---------------------------------------------------------------------------
+// Regression: the real outage of 2026-09-14.
+//
+// The agent exited (or went silent) without emitting a `result`, and the bridge
+// had no guard for it: send() stayed pending forever, the task stayed RUNNING,
+// and the process was one unhandled pipe error away from taking the whole
+// Discord control plane down with it.
+// ---------------------------------------------------------------------------
+
+test('a child that exits 0 without a result settles the request instead of hanging forever', async (t) => {
+  const runner = wedgeRunner('exit0');
+  t.after(() => runner.stop());
+
+  await assert.rejects(
+    () => runner.send('wedge'),
+    (error) => error.code === 'AGENT_EXIT_NO_RESULT',
+  );
+  assert.equal(runner.busy, false, 'the task must not stay busy after the agent dies');
+});
+
+test('a hard child exit also settles the in-flight request', async (t) => {
+  const runner = wedgeRunner('exit1');
+  t.after(() => runner.stop());
+
+  await assert.rejects(() => runner.send('wedge'), (error) => error.code === 'AGENT_EXIT');
+  assert.equal(runner.busy, false);
+});
+
+test('a broken stdin pipe rejects the request instead of throwing an unhandled error', async (t) => {
+  const runner = wedgeRunner('hang');
+  t.after(() => runner.stop());
+
+  let rejection = null;
+  // Attach the handler synchronously: a promise that rejects before anyone
+  // listens is exactly the class of bug under test.
+  const pending = runner.send('wedge').catch((error) => { rejection = error; });
+  await tick(120);
+
+  // Exactly what a dying child does to the pipe. With no 'error' listener this
+  // is an unhandled EventEmitter error: it throws, and an uncaught throw kills
+  // the process — which is how the Discord control plane went offline.
+  runner.child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+
+  await pending;
+  assert.match(String(rejection?.message), /EPIPE/);
+  assert.equal(runner.busy, false, 'the failed request must not leave the channel busy');
+});
+
+test('stop() releases a pending request so !stop frees the channel immediately', async (t) => {
+  const runner = wedgeRunner('hang');
+  t.after(() => runner.stop());
+
+  let rejection = null;
+  const pending = runner.send('wedge').catch((error) => { rejection = error; });
+  await tick(120);
+  assert.equal(runner.busy, true);
+
+  await runner.stop();
+  await pending;
+
+  assert.equal(rejection?.code, 'TASK_CANCELLED');
+  assert.equal(runner.busy, false, 'killing the agent must release the task, not leave it RUNNING');
+});
+
+test('idleMs tracks how long the agent has been silent, for the control-plane watchdog', async (t) => {
+  const runner = wedgeRunner('hang');
+  t.after(() => runner.stop());
+
+  const pending = runner.send('wedge').catch(() => {});
+  await tick(120);
+  assert.ok(runner.idleMs >= 100, `expected a non-trivial idle time, got ${runner.idleMs}`);
+  await runner.stop();
+  await pending;
+});
+

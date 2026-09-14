@@ -80,6 +80,23 @@ export class DiscordControlPlane {
   }
 
   /**
+   * Kill every live agent tree and release every task.
+   *
+   * Used by the shutdown path so a bridge exit can never leave orphan
+   * PowerShell / cmd / node processes running against the user's machine.
+   */
+  async stopAll({ reason = 'bridge shutdown' } = {}) {
+    const runners = [...this.runners.values()];
+    this.runners.clear();
+    for (const task of this.tasks.values()) task.cancelled = true;
+    await Promise.all(runners.map((runner) => runner.stop({ reason }).catch(() => {})));
+    for (const task of [...this.tasks.values()]) {
+      await task.finish().catch(() => {});
+    }
+    return runners.length;
+  }
+
+  /**
    * Tell the owner the bridge is actually online.
    *
    * Worth the one message: Discord does not replay messages sent while the bot
@@ -196,6 +213,9 @@ export class DiscordControlPlane {
       `cwd: \`${s.cwd}\``,
       `session: \`${s.sessionId || 'new'}\``,
       `state: ${runner?.busy ? 'busy' : 'idle'}`,
+      // Liveness proof: the control plane can always say how long the agent has
+      // been silent, even while a tool call is wedged.
+      runner?.busy ? `last agent event: ${Math.round((runner.idleMs ?? 0) / 1000)}s ago` : null,
       `pending approvals: ${this.approvalManager.pending.size}`,
       blocked?.blocked ? `⚠️ blocked: ${blocked.reason}` : null,
     ].filter(Boolean).join('\n');
@@ -224,24 +244,39 @@ export class DiscordControlPlane {
       return;
     }
     if (text === '!stop') {
+      // Order matters. Mark the task cancelled and release the agent *before*
+      // replying, so the channel is immediately usable again: a stuck task must
+      // never leave `busy` set, and `!stop` must kill the whole child tree, not
+      // just the direct child.
       const runner = this.runners.get(message.channelId);
+      const task = this.tasks.get(message.channelId);
       const sessionId = this.state.getChannel(message.channelId, this.config.defaultCwd).sessionId;
       const cancelled = this.approvalManager.cancelForSession(sessionId, 'stopped from Discord');
-      if (runner) await runner.stop();
-      this.runners.delete(message.channelId);
-      const task = this.tasks.get(message.channelId);
       if (task) {
-        task.progress.setState(STATE.FAILED, 'stopped by owner');
-        await task.finish();
+        task.cancelled = true;
+        task.progress.setState(STATE.CANCELLED, 'stopped by owner');
+        task.schedule();
       }
-      await message.reply(`Stopped the local agent process. Cancelled ${cancelled} pending approval(s).`);
+      const killed = (runner && await runner.stop({ reason: 'stopped by owner (!stop)' })) || { killed: false, pid: null };
+      this.runners.delete(message.channelId);
+      if (task) await task.finish();
+      await message.reply([
+        killed.pid
+          ? `⛔ Stopped the agent process tree (pid ${killed.pid}).`
+          : '⛔ No agent process was running; the task is released.',
+        `Cancelled ${cancelled} pending approval(s).`,
+        'Send `!status` to confirm, or a new task to continue.',
+      ].join('\n'));
       return;
     }
     if (text === '!reset') {
       const runner = this.runners.get(message.channelId);
+      const task = this.tasks.get(message.channelId);
       const sessionId = this.state.getChannel(message.channelId, this.config.defaultCwd).sessionId;
-      if (runner) await runner.stop();
+      if (task) task.cancelled = true;
+      if (runner) await runner.stop({ reason: 'session reset (!reset)' });
       this.runners.delete(message.channelId);
+      if (task) await task.finish();
       this.approvalManager.cancelForSession(sessionId, 'session reset');
       this.approvalManager.clearSessionAllows(sessionId);
       if (sessionId) this.channelBySession.delete(sessionId);
@@ -317,8 +352,15 @@ export class DiscordControlPlane {
       editor,
       statusMessage,
       runLog,
+      cancelled: false,
+      finished: false,
+      watchdog: null,
       schedule: () => editor.submit(progress.render()),
       finish: async () => {
+        // Idempotent: `!stop` and the run's own `finally` can both land here.
+        if (task.finished) return;
+        task.finished = true;
+        if (task.watchdog) { clearInterval(task.watchdog); task.watchdog = null; }
         editor.dispose();
         runLog.close();
         this.tasks.delete(channelId);
@@ -332,11 +374,31 @@ export class DiscordControlPlane {
     await editor.flushNow(progress.render());
     console.log(`[task] start channel=${channelId} cwd=${chState.cwd} prompt=${clip(prompt, 140).replace(/\n/g, ' ⏎ ')}`);
 
+    // Watchdog. It only repaints the existing status message: it never calls the
+    // model and never touches the agent process, so a wedged PowerShell/Agent
+    // call stays visible on the phone instead of the run looking frozen. This is
+    // what makes "the task is stuck" distinguishable from "the bot is dead".
+    const stallNoticeMs = this.config.stallNoticeMs ?? 30000;
+    const watchEveryMs = Math.max(1000, Math.min(5000, Math.floor(stallNoticeMs / 6)));
+    task.watchdog = setInterval(() => {
+      if (task.finished) return;
+      const idleMs = Number.isFinite(runner.idleMs) ? runner.idleMs : 0;
+      if (idleMs < stallNoticeMs) return;
+      progress.markStalled(idleMs);
+      task.schedule();
+    }, watchEveryMs);
+    if (typeof task.watchdog.unref === 'function') task.watchdog.unref();
+
     try {
       const result = await withTimeout(runner.send(prompt), this.config.taskTimeoutMs, {
         label: 'task',
-        onTimeout: () => { console.error(`[task] timeout after ${this.config.taskTimeoutMs}ms; killing the agent process`); runner.stop().catch(() => {}); },
+        onTimeout: () => { console.error(`[task] timeout after ${this.config.taskTimeoutMs}ms; killing the agent process`); runner.stop({ reason: 'task wall-clock timeout' }).catch(() => {}); },
       });
+
+      // A result that arrives after `!stop` must not be presented as a success.
+      if (task.cancelled) {
+        throw Object.assign(new Error('stopped by owner'), { code: 'TASK_CANCELLED' });
+      }
 
       // Fail closed: never present a paid-backend result as a successful run.
       // The verdict comes from the init event this run actually produced.
@@ -344,6 +406,7 @@ export class DiscordControlPlane {
       if (verdict && !verdict.ok) throw new Error(`Backend rejected: ${verdict.reason}`);
 
       progress.recordText(result.text);
+      progress.clearStall();
       progress.setState(result.isError ? STATE.FAILED : STATE.DONE);
       if (result.isError) this.limits?.noteFailure(channelId, result.text);
       else this.limits?.noteSuccess(channelId);
@@ -366,10 +429,21 @@ export class DiscordControlPlane {
       ].filter((line) => line !== null).join('\n');
       await editor.flushNow(body);
     } catch (error) {
-      progress.setState(STATE.FAILED, 'agent run failed');
       const detail = String(error?.message || error);
-      const failures = this.limits?.noteFailure(channelId, error);
-      console.log(`[task] failed channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
+      // A run that ends because the owner stopped it, the wall-clock cap fired,
+      // or the agent died mid-flight must land on a terminal state. Leaving it
+      // on RUNNING was the original bug: the channel stayed "busy" forever.
+      const cancelled = task.cancelled || error?.code === 'TASK_CANCELLED';
+      if (cancelled) {
+        progress.clearStall();
+        progress.setState(STATE.CANCELLED, 'stopped by owner');
+        console.log(`[task] cancelled channel=${channelId} reason=${detail}`);
+      } else {
+        progress.clearStall();
+        progress.setState(STATE.FAILED, 'agent run failed');
+        const failures = this.limits?.noteFailure(channelId, error);
+        console.log(`[task] failed channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
+      }
       await editor.flushNow(`${progress.render()}\n\n\`\`\`\n${clip(detail, 900)}\n\`\`\``);
     } finally {
       await task.finish();
