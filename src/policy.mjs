@@ -6,21 +6,22 @@ const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 const NETWORK_TOOLS = new Set(['WebFetch', 'WebSearch']);
 
 const SENSITIVE_PATH_PATTERNS = [
-  /(^|[\\/])\.env($|\.)/i,
-  /(^|[\\/])\.ssh([\\/]|$)/i,
-  /(^|[\\/])\.aws([\\/]|$)/i,
-  /(^|[\\/])\.config[\\/]gh([\\/]|$)/i,
+  /[\\/]\.env($|\.)/i,
+  /[\\/]\.ssh([\\/]|$)/i,
+  /[\\/]\.aws([\\/]|$)/i,
+  /[\\/]\.config[\\/]gh([\\/]|$)/i,
   /credentials?/i,
   /secrets?/i,
   /id_(rsa|ed25519)/i,
 ];
 
+/** 真正不可逆/危险操作 — 所有模式（除 FULL）都审批。 */
 const DESTRUCTIVE_BASH = [
   /(^|[;&|]\s*)rm\s+-/i,
   /\bdel\s+\/([fq]|s)/i,
   /\brmdir\s+\/s/i,
   /\bremove-item\b.*-(recurse|force)/i,
-  /\bgit\s+(reset\s+--hard|clean\s+-|push\b|rebase\b)/i,
+  /\bgit\s+(reset\s+--hard|clean\s+-|rebase\b)/i,
   /\bformat\b/i,
   /\bdiskpart\b/i,
   /\breg\s+delete\b/i,
@@ -37,13 +38,11 @@ const NETWORK_BASH = [
 
 const SAFE_BASH = [
   /^\s*(pwd|cd\s+[^;&|]+|dir|ls(?:\s|$)|where\s+|which\s+)/i,
-  // Local, reversible git work. `git push`, `reset --hard`, `clean` and `rebase`
-  // are matched by DESTRUCTIVE_BASH first, so they stay gated.
-  /^\s*git\s+(status|diff|log|show|branch|add|commit|rev-parse|ls-files|describe|blame|shortlog)\b/i,
-  /^\s*git\s+(checkout\s+-b|switch\s+-c)\s+\S+/i,
-  /^\s*git\s+(remote\s+-v|tag(?:\s+-l)?|stash\s+list)\s*$/i,
-  /^\s*(rg|grep|findstr|type|cat|Get-Content)\b/i,
-  /^\s*(node|npm|pnpm|yarn)\s+(--version|-v)\s*$/i,
+  /(^|[;&|]\s*)git\s+(status|diff|log|show|branch|add|commit|rev-parse|ls-files|describe|blame|shortlog)\b/i,
+  /(^|[;&|]\s*)git\s+(checkout\s+-b|switch\s+-c)\s+\S+/i,
+  /(^|[;&|]\s*)git\s+(remote\s+-v|tag(?:\s+-l)?|stash\s+list)\s*$/i,
+  /(^|[;&|]\s*)(rg|grep|findstr|type|cat|Get-Content)\b/i,
+  /(^|[;&|]\s*)(node|npm|pnpm|yarn)\s+(--version|-v)\s*$/i,
 ];
 
 const TEST_BASH = [
@@ -53,17 +52,6 @@ const TEST_BASH = [
 
 const canonicalCache = new Map();
 
-/**
- * Resolve to a canonical absolute path.
- *
- * Windows can spell the same directory two ways: the long form and the 8.3 short
- * form (`C:\Users\ADMINI~1.DES\...`, which is what `os.tmpdir()` returns on some
- * machines). If `cwd` and the tool's target path use different spellings, a plain
- * prefix check classifies every in-workspace edit as "write outside workspace" and
- * the user gets an approval prompt for every single edit. `realpathSync.native`
- * expands short names; for paths that do not exist yet we canonicalise the nearest
- * existing ancestor and re-append the remainder.
- */
 function canonical(p) {
   const abs = path.resolve(p);
   const cached = canonicalCache.get(abs);
@@ -95,12 +83,10 @@ function normalize(p) {
   return canonical(p).toLowerCase();
 }
 
-/** True for commands the policy treats as "run the project's own checks". */
 export function isTestCommand(command) {
   return TEST_BASH.some((re) => re.test(String(command || '')));
 }
 
-/** True when the tool name is one of the project's own test runners. */
 export function isTestToolName(toolName) {
   return /^(pytest|jest|vitest)$/i.test(String(toolName || ''));
 }
@@ -115,13 +101,23 @@ function filePathFromInput(input = {}) {
   return input.file_path || input.path || input.notebook_path || null;
 }
 
-export function classifyToolCall({ toolName, toolInput = {}, cwd, config }) {
-  if (config?.autoApproveAll) {
-    return { decision: 'allow', reason: 'AUTO_APPROVE_ALL', ruleKey: 'auto-approve-all' };
+/**
+ * 根据工具名、输入和权限档位决定是否需要审批。
+ *
+ * @param {string} permissionLevel - 'strict' | 'standard' | 'relaxed' | 'full'
+ */
+export function classifyToolCall({ toolName, toolInput = {}, cwd, config, permissionLevel = 'standard' }) {
+  // FULL: 所有工具自动通过（安全边界由 bridge 层维护）
+  if (permissionLevel === 'full') {
+    return { decision: 'allow', reason: 'FULL mode', ruleKey: 'full' };
   }
 
   if (READ_ONLY_TOOLS.has(toolName)) {
     return { decision: 'allow', reason: 'read-only tool', ruleKey: 'read-only' };
+  }
+
+  if (toolName === 'Agent' || toolName === 'Task') {
+    return { decision: 'allow', reason: 'subagent orchestration', ruleKey: 'subagent' };
   }
 
   if (WRITE_TOOLS.has(toolName)) {
@@ -129,41 +125,74 @@ export function classifyToolCall({ toolName, toolInput = {}, cwd, config }) {
     if (!p) return { decision: 'ask', reason: 'write target unknown', ruleKey: 'write-unknown' };
     const absolute = path.isAbsolute(p) ? p : path.resolve(cwd, p);
     if (SENSITIVE_PATH_PATTERNS.some((re) => re.test(absolute))) {
-      return { decision: 'ask', reason: `sensitive file: ${absolute}`, ruleKey: 'write-sensitive' };
+      return { decision: 'ask', reason: `sensitive file`, ruleKey: 'write-sensitive' };
     }
     if (!inside(cwd, absolute)) {
-      return { decision: 'ask', reason: `write outside workspace: ${absolute}`, ruleKey: 'write-outside' };
+      return { decision: 'ask', reason: `write outside workspace`, ruleKey: 'write-outside' };
+    }
+    // STRICT: 工作区写入也需审批
+    if (permissionLevel === 'strict') {
+      return { decision: 'ask', reason: 'workspace write (STRICT)', ruleKey: 'write-workspace' };
     }
     if (config.autoAllowWorkspaceWrites) {
       return { decision: 'allow', reason: 'workspace write', ruleKey: 'write-workspace' };
     }
-    return { decision: 'ask', reason: `workspace write: ${absolute}`, ruleKey: 'write-workspace' };
+    return { decision: 'ask', reason: `workspace write`, ruleKey: 'write-workspace' };
   }
 
   if (toolName === 'Bash') {
     const command = String(toolInput.command || '');
     if (!command) return { decision: 'ask', reason: 'shell command missing', ruleKey: 'bash-unknown' };
+
+    // 真正不可逆操作：所有非 FULL 模式都审批
     if (DESTRUCTIVE_BASH.some((re) => re.test(command))) {
       return { decision: 'ask', reason: 'destructive or irreversible shell command', ruleKey: 'bash-destructive' };
     }
+
+    // git push：RELAXED 自动通过
+    if (/\bgit\s+push\b/i.test(command)) {
+      if (permissionLevel === 'relaxed') {
+        return { decision: 'allow', reason: 'git push', ruleKey: 'bash-push' };
+      }
+      return { decision: 'ask', reason: 'git push', ruleKey: 'bash-push' };
+    }
+
+    // 网络/安装命令
     if (NETWORK_BASH.some((re) => re.test(command))) {
+      if (permissionLevel === 'relaxed') {
+        return { decision: 'allow', reason: 'network/install shell command', ruleKey: 'bash-network' };
+      }
       return { decision: 'ask', reason: 'network/install/publish shell command', ruleKey: 'bash-network' };
     }
+
+    // 安全命令：所有模式自动通过
     if (SAFE_BASH.some((re) => re.test(command))) {
       return { decision: 'allow', reason: 'read-only shell command', ruleKey: 'bash-read' };
     }
-    if (config.autoAllowTestCommands && TEST_BASH.some((re) => re.test(command))) {
-      return { decision: 'allow', reason: 'test/build command', ruleKey: 'bash-test' };
+
+    // 测试命令
+    if (TEST_BASH.some((re) => re.test(command))) {
+      if (permissionLevel === 'strict') {
+        return { decision: 'ask', reason: 'test command (STRICT)', ruleKey: 'bash-test' };
+      }
+      if (config.autoAllowTestCommands) {
+        return { decision: 'allow', reason: 'test/build command', ruleKey: 'bash-test' };
+      }
+      return { decision: 'ask', reason: 'test/build command', ruleKey: 'bash-test' };
+    }
+
+    // 未分类命令
+    if (permissionLevel === 'strict') {
+      return { decision: 'ask', reason: 'unclassified shell command (STRICT)', ruleKey: 'bash-other' };
     }
     return { decision: 'ask', reason: 'unclassified shell command', ruleKey: 'bash-other' };
   }
 
   if (NETWORK_TOOLS.has(toolName)) {
+    if (permissionLevel === 'relaxed') {
+      return { decision: 'allow', reason: 'network access', ruleKey: 'network' };
+    }
     return { decision: 'ask', reason: 'network access', ruleKey: 'network' };
-  }
-
-  if (toolName === 'Agent' || toolName === 'Task') {
-    return { decision: 'allow', reason: 'subagent orchestration', ruleKey: 'subagent' };
   }
 
   if (toolName?.startsWith('mcp__')) {

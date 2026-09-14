@@ -18,6 +18,8 @@ import { describeRouting } from './win-env.mjs';
 import { discordRestAgent } from './discord-proxy.mjs';
 import { classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
 import { withTimeout } from './limits.mjs';
+import { PermissionManager, LEVEL, LEVEL_LABEL } from './permission-manager.mjs';
+import { helpText, readyText, formatStatus, APPROVAL_BUTTONS, PERM_LABEL, PERM_SHORT, shorten } from './i18n.mjs';
 
 const DISCORD_LIMIT = 1900;
 
@@ -31,20 +33,20 @@ export class DiscordControlPlane {
     config,
     state,
     approvalManager,
+    permissionManager = null,
     routing = { env: {}, source: 'process-env', added: [] },
     logger = null,
     limits = null,
     backendState = null,
     extraEnv = {},
     envUnset = [],
-    // Injectable so the whole control plane can be driven without a live
-    // Discord connection (tests + the pre-token end-to-end smoke).
     client = null,
     autoLogin = true,
   }) {
     this.config = config;
     this.state = state;
     this.approvalManager = approvalManager;
+    this.permissionManager = permissionManager || new PermissionManager();
     this.routing = routing;
     this.logger = logger;
     this.limits = limits;
@@ -106,16 +108,15 @@ export class DiscordControlPlane {
     const owner = await this.client.users.fetch(this.config.ownerId).catch(() => null);
     if (!owner) return;
     const backend = this.backendState?.backend ?? null;
-    const text = [
-      '✅ **Bridge ready**',
-      `Executor: Claude Code compatible shell`,
-      `Backend: ${backend?.label ?? 'unknown'}`,
-      `Model: ${backend?.model ?? 'unknown'}`,
-      `Billing route: ${backend ? billingRoute(backend) : 'unknown'}`,
-      `Paid fallback: ${this.config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`,
-      `default cwd: \`${this.config.defaultCwd}\``,
-      'Send a task here, or `!help` for the command list.',
-    ].join('\n');
+    const permLabel = PERM_SHORT[this.permissionManager.getLevel(null)] || PERM_SHORT.standard;
+    const text = readyText({
+      backend: backend?.label ?? 'unknown',
+      model: backend?.model ?? 'unknown',
+      billingRoute: backend ? billingRoute(backend) : 'unknown',
+      paidFallback: this.config.allowPaidFallback,
+      defaultCwd: this.config.defaultCwd,
+      permissionLabel: permLabel,
+    });
     try { await owner.send(text); } catch (error) { console.warn(`[discord] could not send the ready DM: ${error?.message}`); }
   }
 
@@ -152,6 +153,7 @@ export class DiscordControlPlane {
     if (event.type === 'session') {
       this.state.patchChannel(channelId, { sessionId: event.sessionId }, this.config.defaultCwd);
       this.channelBySession.set(event.sessionId, channelId);
+      this.permissionManager.syncSession(event.sessionId, channelId);
     }
     if (event.type === 'model') {
       const chState = this.state.getChannel(channelId, this.config.defaultCwd);
@@ -202,23 +204,22 @@ export class DiscordControlPlane {
     const runner = this.runners.get(channelId);
     const backend = this.backendState?.backend ?? null;
     const blocked = this.limits?.blocked(channelId);
-    return [
-      `Executor: ${this.config.claudeCommand}`,
-      'Executor type: Claude Code compatible shell',
-      `Backend: ${backend?.label ?? 'unknown'}`,
-      `Model: ${runner?.model || s.model || backend?.model || 'unknown'}`,
-      `Billing route: ${backend ? billingRoute(backend) : 'unknown'}`,
-      `Paid fallback: ${this.config.allowPaidFallback ? 'ENABLED' : 'disabled'}`,
-      `apiKeySource: ${backend?.apiKeySource ?? 'unknown'}`,
-      `cwd: \`${s.cwd}\``,
-      `session: \`${s.sessionId || 'new'}\``,
-      `state: ${runner?.busy ? 'busy' : 'idle'}`,
-      // Liveness proof: the control plane can always say how long the agent has
-      // been silent, even while a tool call is wedged.
-      runner?.busy ? `last agent event: ${Math.round((runner.idleMs ?? 0) / 1000)}s ago` : null,
-      `pending approvals: ${this.approvalManager.pending.size}`,
-      blocked?.blocked ? `⚠️ blocked: ${blocked.reason}` : null,
-    ].filter(Boolean).join('\n');
+    const permLabel = PERM_SHORT[this.permissionManager.getLevel(channelId)] || PERM_SHORT.standard;
+    return formatStatus({
+      executor: this.config.claudeCommand,
+      backend: backend?.label ?? 'unknown',
+      model: runner?.model || s.model || backend?.model || 'unknown',
+      billingRoute: backend ? billingRoute(backend) : 'unknown',
+      paidFallback: this.config.allowPaidFallback,
+      apiKeySource: backend?.apiKeySource ?? 'unknown',
+      cwd: s.cwd,
+      sessionId: s.sessionId,
+      state: runner?.busy ? '忙碌' : '空闲',
+      idleSec: runner?.busy ? Math.round((runner.idleMs ?? 0) / 1000) : null,
+      pendingApprovals: this.approvalManager.pending.size,
+      permissionLabel: permLabel,
+      blocked: blocked?.blocked ? blocked.reason : null,
+    });
   }
 
   async onMessage(message) {
@@ -227,16 +228,7 @@ export class DiscordControlPlane {
     if (!text) return;
 
     if (text === '!help') {
-      await message.reply([
-        '**Commands**',
-        '`!status` — cwd / session / executor / routing',
-        '`!cwd <absolute path>` — bind this channel to a project',
-        '`!stop` — kill the running agent process',
-        '`!reset` — stop + clear Claude session and session approvals',
-        '`!handoff` — print a compact handoff package',
-        '',
-        'Anything else is sent to the local agent as a task.',
-      ].join('\n'));
+      await message.reply(helpText());
       return;
     }
     if (text === '!status') {
@@ -454,13 +446,6 @@ export class DiscordControlPlane {
     const channelId = this.channelBySession.get(req.sessionId) || req.channelId || null;
     const task = channelId ? this.tasks.get(channelId) : null;
     console.log(`[approval] requested tool=${req.toolName} rule=${req.ruleKey} channel=${channelId || 'dm'} reason=${clip(req.reason, 80)}`);
-
-    // When AUTO_APPROVE_ALL is enabled, the policy layer already returns
-    // decision=allow, so this presenter should never be called. Guard anyway.
-    if (this.config.autoApproveAll) {
-      console.log('[approval] auto-approved (AUTO_APPROVE_ALL active)');
-      return null;
-    }
 
     if (task) {
       task.progress.setApproval(req);

@@ -66,9 +66,6 @@ export function loadConfig() {
     agentBackend: process.env.AGENT_BACKEND || 'workbuddy-free-dsf',
     allowPaidFallback: bool('ALLOW_PAID_FALLBACK', false),
 
-    // --- temporary auto-approve (full permission bypass) -----------------
-    autoApproveAll: bool('AUTO_APPROVE_ALL', false),
-
     // --- runaway protection ----------------------------------------------
     // Hard wall-clock cap on one task. Hitting it kills the agent process.
     taskTimeoutMs: int('TASK_TIMEOUT_MS', 900000),

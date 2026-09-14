@@ -1,4 +1,10 @@
-import { isTestCommand } from './policy.mjs';
+/**
+ * EventPresenter — 可观测执行过程。
+ *
+ * 将 stream-json 事件和工具调用转换为本地的中文执行状态，
+ * 不额外调用 LLM，Prompt Token = 0，Output Token = 0。
+ */
+
 import { describeTool, STATE_LABEL, shorten, redact } from './i18n.mjs';
 
 export const STATE = {
@@ -19,30 +25,6 @@ function formatDuration(ms) {
   return `${m}分${String(s % 60).padStart(2, '0')}秒`;
 }
 
-/** 保留旧 API：英文工具描述。 */
-export function describeToolCall(tool) {
-  const input = tool?.input || {};
-  switch (tool?.name) {
-    case 'Read':
-    case 'NotebookRead':
-      return `Read ${shorten(input.file_path || input.notebook_path || '', 70)}`;
-    case 'Edit':
-    case 'Write':
-    case 'NotebookEdit':
-      return `${tool.name} ${shorten(input.file_path || input.notebook_path || '', 70)}`;
-    case 'Bash':
-      return `Bash: ${shorten(input.command || '', 70)}`;
-    case 'Glob':
-    case 'Grep':
-      return `${tool.name} ${shorten(input.pattern || '', 50)}`;
-    case 'WebFetch':
-    case 'WebSearch':
-      return `${tool.name} ${shorten(input.url || input.query || '', 50)}`;
-    default:
-      return `${tool?.name || 'Tool'}`;
-  }
-}
-
 /** 渲染最近操作列表为树形结构。 */
 function renderRecent(actions, max = 6) {
   if (!actions.length) return '';
@@ -54,6 +36,11 @@ function renderRecent(actions, max = 6) {
   return ['⚡ 最近操作', ...lines].join('\n');
 }
 
+/**
+ * 单个任务的可观测状态。
+ *
+ * 所有展示信息从本地事件流生成，不调用模型。
+ */
 export class TaskProgress {
   constructor({ cwd, startedAt = Date.now(), maxRecent = 6 } = {}) {
     this.cwd = cwd;
@@ -132,7 +119,7 @@ export class TaskProgress {
       this.state = STATE.RUNNING;
     }
 
-    const isTest = name === 'Bash' && isTestCommand(tool?.input?.command);
+    const isTest = name === 'Bash' && /^(npm|pnpm|yarn)\s+(test|run\s+(test|lint|check|build))\b/i.test(String(tool?.input?.command || ''));
     if (isTest) {
       this.state = STATE.TESTING;
       this.tests = '运行中';
@@ -206,6 +193,7 @@ export class TaskProgress {
   }
 }
 
+/** 节流编辑器：最多每 intervalMs 刷新一次 Discord 消息。 */
 export class ThrottledEditor {
   constructor({ intervalMs = 1500, write, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     this.intervalMs = intervalMs;

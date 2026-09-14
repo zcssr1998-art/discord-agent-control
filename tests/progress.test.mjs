@@ -12,13 +12,13 @@ test('progress walks CREATED -> RUNNING -> TESTING and renders low-noise status'
   p.recordTool({ name: 'Edit', input: { file_path: 'src/a.js' } });
   p.recordTool({ name: 'Bash', input: { command: 'npm test' } });
   assert.equal(p.state, STATE.TESTING);
-  assert.equal(p.tests, 'running');
+  assert.equal(p.tests, '运行中');
 
   const rendered = p.render();
-  assert.match(rendered, /TESTING/);
-  assert.match(rendered, /Project: `C:\\proj`/);
-  assert.match(rendered, /Read ×1 · Edit ×1 · Bash ×1/);
-  assert.ok(rendered.split('\n').length <= 7, 'status must stay short');
+  assert.match(rendered, /🧪 正在测试/);
+  assert.match(rendered, /📁 当前项目：`C:\\proj`/);
+  assert.match(rendered, /Read×1 · Edit×1 · Bash×1/);
+  assert.ok(rendered.split('\n').length <= 12, 'status must stay reasonably short');
 });
 
 test('a non-test shell command moves the status out of TESTING', () => {
@@ -32,16 +32,16 @@ test('a non-test shell command moves the status out of TESTING', () => {
 test('progress surfaces test totals parsed from agent text', () => {
   const p = new TaskProgress({ cwd: '/p' });
   p.recordText('# tests 10\n# pass 10\n# fail 0');
-  assert.equal(p.tests, 'passed (10)');
+  assert.equal(p.tests, '通过 10');
   p.recordText('# fail 2');
-  assert.equal(p.tests, 'failed (2)');
+  assert.equal(p.tests, '失败 2');
 });
 
 test('waiting-for-approval state shows the pending tool and clears on decision', () => {
   const p = new TaskProgress({ cwd: '/p' });
   p.setApproval({ toolName: 'Bash', reason: 'destructive or irreversible shell command' });
   assert.equal(p.state, STATE.WAITING_APPROVAL);
-  assert.match(p.render(), /Waiting for: \*\*Bash\*\*/);
+  assert.match(p.render(), /🔐 等待授权：Bash/);
 
   p.clearApproval('allow');
   assert.equal(p.state, STATE.RUNNING);

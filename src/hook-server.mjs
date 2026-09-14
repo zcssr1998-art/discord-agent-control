@@ -37,7 +37,7 @@ function hookBody(decision, reason) {
   };
 }
 
-export function createHookServer({ config, approvalManager, secret }) {
+export function createHookServer({ config, approvalManager, secret, permissionManager = null }) {
   return http.createServer(async (req, res) => {
     if (req.method !== 'POST' || req.url !== '/pre-tool-use') {
       json(res, 404, { error: 'not found' });
@@ -65,7 +65,8 @@ export function createHookServer({ config, approvalManager, secret }) {
     const toolInput = event.tool_input || event.toolInput || {};
     const cwd = event.cwd || config.defaultCwd;
     const sessionId = event.session_id || event.sessionId || 'unknown';
-    const classified = classifyToolCall({ toolName, toolInput, cwd, config });
+    const permissionLevel = permissionManager?.getLevelBySession(sessionId) || 'standard';
+    const classified = classifyToolCall({ toolName, toolInput, cwd, config, permissionLevel });
 
     if (classified.decision === 'allow') {
       json(res, 200, hookBody('allow', classified.reason));
