@@ -3,7 +3,15 @@ import readline from 'node:readline';
 const args = process.argv.slice(2);
 const resumeIndex = args.indexOf('--resume');
 const sessionId = resumeIndex >= 0 ? args[resumeIndex + 1] : 'fake-session-1';
-console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }));
+console.log(JSON.stringify({
+  type: 'system',
+  subtype: 'init',
+  session_id: sessionId,
+  model: 'fake-model-1',
+  apiKeySource: 'www.workbuddy.ai',
+  cwd: process.cwd(),
+  tools: ['Read', 'Write', 'Bash'],
+}));
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   const input = JSON.parse(line);

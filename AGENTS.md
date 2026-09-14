@@ -12,52 +12,49 @@ Principles:
 - Keep chat reports short; persist detailed debugging/results in this repository.
 - Never commit secrets.
 
-## Current state (V1)
+## Current state (V2 — WorkBuddy free backend)
 
-Implemented and verified on the user's Windows machine:
+The bridge now runs on the **WorkBuddy free DeepSeek Flash** backend with paid
+fallback disabled. Read `docs/WORKBUDDY_BACKEND.md` before changing anything about
+the backend: it records what was measured, why the agent shell is the WorkBuddy
+agent CLI, and why wrapping that CLI behind a model-shaped adapter would be worse.
 
-- `src/claude-runner.mjs` — persistent Claude Code `stream-json` process. Windows
-  spawn rules are encoded in the exported `buildSpawnPlan()` and covered by
-  `tests/spawn-plan.test.mjs`; do not "simplify" it back to a bare
-  `spawn(command, args, { shell: true })`, that breaks any command path
-  containing a space.
-- `src/win-env.mjs` — recovers `ANTHROPIC_*` routing from the Windows *User*
-  environment when the bridge process inherited a stale environment. This is the
-  guard against silently running on the official Anthropic endpoint.
-- `src/policy.mjs` — risk classification. `git add/commit/status/diff/log` are
-  safe; `git push`, `reset --hard`, `clean`, rebase, recursive deletes,
-  install/publish and network calls are gated.
-- `src/hook-server.mjs` + `scripts/approval-hook.mjs` — the approval gate. The
-  hook is inert without `DISCORD_BRIDGE_ACTIVE=1`.
-- `src/approval-manager.mjs` — Allow once / Allow session / Deny, scoped to
-  `sessionId:ruleKey`, fail-closed, cancellable by `!stop` / `!reset`.
-- `src/progress.mjs` — the single throttled status message. Raw Claude stdout
-  must never be rendered into Discord; it goes to `logs/`.
-- `scripts/local-e2e.mjs` (`npm run smoke:local`) — real end-to-end smoke test
-  without Discord. Treat a red run here as a release blocker.
-- `scripts/discord-e2e.mjs` (`npm run smoke:discord`) — the same loop plus the
-  real `DiscordControlPlane`, with only the Discord transport faked. Run this
-  before blaming Discord when the live bridge misbehaves.
-- `scripts/verify-global-hook.mjs` (`npm run verify:hook`) — verifies the *global*
-  `~/.claude/settings.json` hook, which is the configuration the bridge actually
-  relies on. The other smokes use a project-scoped hook, so this is the one that
-  proves the real deployment path.
-- `tests/startup.test.mjs` — boots `src/index.mjs` as a child process and checks
-  the approval service really comes up and that bad credentials fail with an
-  actionable message rather than a stack trace.
-- `tests/helpers/fake-discord.mjs` — the fake transport used above. It is test
-  infrastructure, not a replacement for the live Discord smoke.
+- `src/backend.mjs` — backend identity and the paid-fallback guard.
+  `system/init.apiKeySource` reported by the agent is the source of truth;
+  `stripPaidCredentials()` removes metered variables from the child environment;
+  `assertBackendAllowed()` fails closed. `resolveWorkbuddyCli()` locates the
+  bundled CLI and `resolveExecutorCommand()` expands the `workbuddy` keyword.
+- `src/limits.mjs` — runaway protection: task wall-clock cap, consecutive-failure
+  cap, restart cap.
+- `src/discord-proxy.mjs` — Discord needs **two** proxies: `undici`'s global
+  dispatcher for REST and a wrapped `ws` constructor for the gateway. This must be
+  imported before `discord.js` is evaluated. Do not "simplify" it to one.
+- `src/discord-errors.mjs` — turns Discord's opaque failures (blocked network,
+  disabled privileged intent) into actionable messages.
+- `src/win-env.mjs` — recovers `ANTHROPIC_*` routing from the Windows user
+  environment. Only used when `ALLOW_PAID_FALLBACK=true`.
+- `src/claude-runner.mjs` — persistent `stream-json` agent process. Windows spawn
+  rules live in the exported `buildSpawnPlan()`; the `.js` entry of the WorkBuddy
+  CLI is launched through `process.execPath` because the extensionless launcher
+  cannot be executed by `cmd.exe`.
+- `src/policy.mjs`, `src/hook-server.mjs`, `src/approval-manager.mjs`,
+  `src/progress.mjs` — unchanged in spirit; the approval gate is still the
+  `PreToolUse` hook, which the WorkBuddy CLI implements with the same schema.
+- `scripts/verify-workbuddy.mjs` (`npm run verify:workbuddy`) — proves the free
+  backend, real tool calls, blocked credentials and no fallback.
 
 Verification commands:
 
 ```text
 npm test              # unit + integration tests
 npm run check         # syntax check of every module
-npm run smoke:local   # real Claude Code end-to-end on a throwaway repo
+npm run verify:workbuddy  # free backend + real tool calls + no paid fallback
+npm run smoke:local   # real agent end-to-end on a throwaway repo
 npm run smoke:discord # real control plane, fake Discord transport
 npm run verify:hook   # the installed global hook fires, and stays inert otherwise
 npm run doctor:discord
 ```
+
 
 ## Traps that already cost time once
 

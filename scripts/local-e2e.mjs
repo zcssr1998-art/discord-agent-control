@@ -25,6 +25,7 @@ import { ApprovalManager } from '../src/approval-manager.mjs';
 import { createHookServer, ensureHookSecret } from '../src/hook-server.mjs';
 import { TaskProgress } from '../src/progress.mjs';
 import { resolveRoutingEnv, describeRouting, redactForLog } from '../src/win-env.mjs';
+import { resolveExecutorCommand, stripPaidCredentials } from '../src/backend.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOOK_SCRIPT = path.join(ROOT, 'scripts', 'approval-hook.mjs');
@@ -59,14 +60,19 @@ function setupDisposableRepo() {
   git(['commit', '-qm', 'chore: initial disposable repo'], dir);
 
   // Project-scoped hook, so the smoke test never touches the global user settings.
-  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({
+  // Written for both shells: the Claude Code CLI reads .claude, the WorkBuddy
+  // agent CLI reads .codebuddy.
+  const settingsJson = JSON.stringify({
     hooks: {
       PreToolUse: [
         { hooks: [{ type: 'command', command: `node "${HOOK_SCRIPT}"`, timeout: 600 }] },
       ],
     },
-  }, null, 2) + '\n');
+  }, null, 2) + '\n';
+  for (const agentDir of ['.claude', '.codebuddy']) {
+    fs.mkdirSync(path.join(dir, agentDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, agentDir, 'settings.json'), settingsJson);
+  }
 
   return dir;
 }
@@ -96,14 +102,15 @@ async function listen(server) {
   return await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 }
 
-async function runPhase({ label, cwd, prompt, port, extraEnv, timeoutMs = 300000 }) {
+async function runPhase({ label, cwd, prompt, port, extraEnv, envUnset = [], timeoutMs = 300000 }) {
   console.log(`\n--- ${label} ---`);
   console.log(`      prompt: ${prompt.split('\n')[0]} …`);
   const progress = new TaskProgress({ cwd });
   const runner = new ClaudeRunner({
-    command: process.env.CLAUDE_COMMAND || 'claude',
+    command: resolveExecutorCommand(),
     cwd,
     extraEnv,
+    envUnset,
     onEvent: (e) => {
       if (e.type === 'tool') {
         progress.recordTool(e.tool);
@@ -165,9 +172,10 @@ async function main() {
   console.log('=== environment ===');
   console.log(`routing source : ${routing.source}`);
   console.log(`routing vars   : ${JSON.stringify(redactForLog(effectiveEnv))}`);
-  console.log(`executor       : ${process.env.CLAUDE_COMMAND || 'claude'}`);
-  check('env: DeepSeek routing resolved (not silently on the official endpoint)',
-    Boolean(routingInfo.base && routingInfo.hasToken), routingInfo.base);
+  console.log(`executor       : ${resolveExecutorCommand()}`);
+  check('env: the agent process cannot see any metered credential',
+    !effectiveEnv.ANTHROPIC_AUTH_TOKEN && !effectiveEnv.ANTHROPIC_API_KEY && !effectiveEnv.DEEPSEEK_API_KEY,
+    envUnset.length ? `blocked: ${envUnset.join(', ')}` : 'none were present');
 
   const secret = ensureHookSecret();
   const approvals = new ApprovalManager({ timeoutMs: 120000 });
@@ -183,7 +191,10 @@ async function main() {
 
   const repo = setupDisposableRepo();
   console.log(`disposable repo: ${repo}`);
-  const extraEnv = routing.env;
+  // Paid credentials are blocked: this smoke must run on the free backend only.
+  const extraEnv = effectiveEnv;
+  const envUnset = stripPaidCredentials(extraEnv);
+  console.log(`paid credential vars blocked: ${envUnset.length ? envUnset.join(', ') : '(none present)'}`);
 
   // ---------------------------------------------------------------- Phase A
   const phaseA = await runPhase({
@@ -348,7 +359,7 @@ async function main() {
   console.log('\n--- Phase E — plain Claude Code must be unaffected by the installed hook ---');
   const asksBefore = phone.asked.length;
   const plainPrompt = 'Read the file src/health.mjs and reply with only the value of the status field.';
-  const plan = buildSpawnPlan(process.env.CLAUDE_COMMAND || 'claude', ['-p', plainPrompt, '--output-format', 'json', '--dangerously-skip-permissions']);
+  const plan = buildSpawnPlan(resolveExecutorCommand(), ['-p', plainPrompt, '--output-format', 'json', '--dangerously-skip-permissions']);
   const plainEnv = { ...process.env, ...extraEnv };
   delete plainEnv.DISCORD_BRIDGE_ACTIVE; // exactly what a normal local / WebUI session looks like
   // Async on purpose: the approval server lives in this process, so a blocking

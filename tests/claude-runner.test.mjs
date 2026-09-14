@@ -45,7 +45,7 @@ test('thinking-token noise is logged but never dispatched', async (t) => {
   assert.ok(logged.some((e) => String(e.text).includes('thinking_tokens')), 'but the raw transcript keeps it');
 });
 
-test('the model reported at init is captured for provider verification', async (t) => {
+test('the model and credential source reported at init are captured for backend verification', async (t) => {
   const events = [];
   const runner = new ClaudeRunner({
     command: path.join(__dirname, 'fake-claude.mjs'),
@@ -54,6 +54,27 @@ test('the model reported at init is captured for provider verification', async (
   });
   t.after(() => runner.stop());
   await runner.send('probe');
-  // fake-claude does not emit a model, so this asserts the "absent" branch is safe.
-  assert.equal(runner.model, null);
+
+  assert.equal(runner.model, 'fake-model-1');
+  assert.equal(runner.apiKeySource, 'www.workbuddy.ai', 'the backend identity must be captured, not guessed');
+  const init = events.find((e) => e.type === 'init');
+  assert.ok(init, 'an init event must be emitted for the control plane to verify the backend');
+  assert.deepEqual(init.tools, ['Read', 'Write', 'Bash']);
+});
+
+test('blocked credential variables are removed from the child environment', async (t) => {
+  const probe = path.join(__dirname, 'fake-env-probe.mjs');
+  const runner = new ClaudeRunner({
+    command: probe,
+    cwd: path.resolve(__dirname, '..'),
+    extraEnv: { ANTHROPIC_AUTH_TOKEN: 'paid-token', DAC_KEEP_ME: 'kept' },
+    envUnset: ['ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY'],
+  });
+  t.after(() => runner.stop());
+  const result = await runner.send('probe');
+  const env = JSON.parse(result.text);
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined, 'a metered credential must not reach the agent process');
+  assert.equal(env.OPENAI_API_KEY, undefined);
+  assert.equal(env.DAC_KEEP_ME, 'kept', 'unrelated variables must survive');
+  assert.equal(env.DISCORD_BRIDGE_ACTIVE, '1', 'the hook still needs to know it is a bridge session');
 });

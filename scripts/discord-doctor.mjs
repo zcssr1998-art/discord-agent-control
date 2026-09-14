@@ -8,8 +8,15 @@
  *   node scripts/discord-doctor.mjs
  *   node scripts/discord-doctor.mjs --send-test-dm
  */
+// First import on purpose: it wraps the `ws` WebSocket constructor before
+// discord.js is evaluated (see src/discord-proxy.mjs).
+import '../src/discord-proxy.mjs';
+
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
+import { resolveDiscordProxy } from '../src/win-env.mjs';
+import { configureDiscordProxy } from '../src/discord-proxy.mjs';
+import { explainDiscordLoginError, isIntentError } from '../src/discord-errors.mjs';
 
 const sendTestDm = process.argv.includes('--send-test-dm');
 const token = process.env.DISCORD_TOKEN;
@@ -18,6 +25,16 @@ const ownerId = process.env.DISCORD_OWNER_ID;
 const problems = [];
 function line(ok, label, detail = '') {
   console.log(`${ok ? 'OK  ' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+}
+
+// Discord is frequently only reachable through a proxy and Node ignores the
+// Windows system proxy, so resolve it before blaming the token.
+const proxy = await resolveDiscordProxy(process.env.DISCORD_PROXY);
+if (proxy.proxyUrl) {
+  configureDiscordProxy(proxy.proxyUrl);
+  line(true, 'proxy resolved', `${proxy.proxyUrl} (source=${proxy.source})`);
+} else {
+  line(proxy.source === 'disabled', 'proxy', `none (source=${proxy.source})`);
 }
 
 if (!token) problems.push('DISCORD_TOKEN is not set');
@@ -88,7 +105,27 @@ try {
   process.exit(problems.length ? 1 : 0);
 } catch (error) {
   line(false, 'login failed', error?.message || String(error));
-  console.log('\nCommon causes: wrong/rotated token, or the token was reset in the Developer Portal.');
+
+  // "Used disallowed intents" is the single most common first-run failure, and it
+  // is ambiguous: it could be a bad token or a disabled privileged intent. Retry
+  // without the privileged intent to tell the two apart.
+  if (isIntentError(error?.message)) {
+    const probe = new Client({
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
+      partials: [Partials.Channel],
+    });
+    try {
+      await probe.login(token);
+      line(true, 'token is valid', `authenticated as ${probe.user.tag} (${probe.user.id})`);
+      console.log('\nDIAGNOSIS: the token works; only the privileged "Message Content Intent" is disabled for this app.');
+    } catch (probeError) {
+      line(false, 'token also rejected without privileged intents', probeError?.message || String(probeError));
+    } finally {
+      await probe.destroy().catch(() => {});
+    }
+  }
+
+  console.log(`\n${explainDiscordLoginError(error?.message)}`);
   process.exit(1);
 } finally {
   await client.destroy().catch(() => {});

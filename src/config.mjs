@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import path from 'node:path';
+import { resolveWorkbuddyCli, WORKBUDDY_COMMAND_KEYWORD } from './backend.mjs';
 
 function bool(name, fallback) {
   const raw = process.env[name];
@@ -12,6 +13,25 @@ function int(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * `CLAUDE_COMMAND=workbuddy` selects the bundled WorkBuddy agent CLI without
+ * hardcoding a machine-specific path in the repository.
+ */
+function resolveExecutor(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value || value === WORKBUDDY_COMMAND_KEYWORD) {
+    const cli = resolveWorkbuddyCli();
+    if (cli) return cli;
+    if (value === WORKBUDDY_COMMAND_KEYWORD) {
+      throw new Error(
+        'CLAUDE_COMMAND=workbuddy but the WorkBuddy CLI could not be found. '
+        + 'Set WORKBUDDY_CLI to the full path of cli/dist/codebuddy.js, or set CLAUDE_COMMAND explicitly.',
+      );
+    }
+  }
+  return value || 'claude';
+}
+
 export function loadConfig() {
   const required = ['DISCORD_TOKEN', 'DISCORD_OWNER_ID'];
   const missing = required.filter((k) => !process.env[k]);
@@ -22,8 +42,11 @@ export function loadConfig() {
     ownerId: process.env.DISCORD_OWNER_ID,
     guildId: process.env.DISCORD_GUILD_ID || null,
     channelId: process.env.DISCORD_CHANNEL_ID || null,
-    claudeCommand: process.env.CLAUDE_COMMAND || 'claude',
+    claudeCommand: resolveExecutor(process.env.CLAUDE_COMMAND),
     defaultCwd: path.resolve(process.env.DEFAULT_CWD || process.cwd()),
+    // Explicit proxy for Discord, or null to fall back to the Windows system
+    // proxy (see win-env.resolveDiscordProxy). 'off' disables both.
+    discordProxy: process.env.DISCORD_PROXY ?? null,
     approvalHost: process.env.APPROVAL_HOST || '127.0.0.1',
     approvalPort: int('APPROVAL_PORT', 37911),
     approvalTimeoutMs: int('APPROVAL_TIMEOUT_MS', 540000),
@@ -33,6 +56,20 @@ export function loadConfig() {
     includePartialMessages: bool('CLAUDE_PARTIAL_MESSAGES', false),
     // Minimum gap between edits of the single live Discord status message.
     progressThrottleMs: int('PROGRESS_THROTTLE_MS', 1500),
+    // DM the owner once when the bridge comes online.
+    notifyOnStart: bool('NOTIFY_ON_START', true),
     logDir: process.env.LOG_DIR || null,
+
+    // --- agent backend ---------------------------------------------------
+    // The expected backend id (see src/backend.mjs). The bridge refuses to run
+    // on anything else unless paid fallback is explicitly enabled.
+    agentBackend: process.env.AGENT_BACKEND || 'workbuddy-free-dsf',
+    allowPaidFallback: bool('ALLOW_PAID_FALLBACK', false),
+
+    // --- runaway protection ----------------------------------------------
+    // Hard wall-clock cap on one task. Hitting it kills the agent process.
+    taskTimeoutMs: int('TASK_TIMEOUT_MS', 900000),
+    maxConsecutiveFailures: int('MAX_CONSECUTIVE_FAILURES', 3),
+    maxProcessRestarts: int('MAX_PROCESS_RESTARTS', 5),
   };
 }

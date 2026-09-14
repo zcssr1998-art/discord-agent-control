@@ -31,12 +31,24 @@ function makePlane({ sendImpl, approvals, throttleMs = 10_000, config = {} } = {
       autoAllowTestCommands: true,
       includePartialMessages: false,
       progressThrottleMs: throttleMs,
+      notifyOnStart: false,
       logDir: null,
+      agentBackend: 'workbuddy-free-dsf',
+      allowPaidFallback: false,
+      taskTimeoutMs: 60_000,
+      maxConsecutiveFailures: 3,
+      maxProcessRestarts: 5,
       ...config,
     },
     state,
     approvalManager: manager,
-    routing: { env: { ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', ANTHROPIC_MODEL: 'deepseek-flash[1m]' }, source: 'windows-user-env', added: [] },
+    routing: { env: {}, source: 'process-env', added: [] },
+    backendState: {
+      backend: { id: 'workbuddy-free-dsf', label: 'WorkBuddy Free DSF', apiKeySource: 'www.workbuddy.ai', model: 'fast-model', free: true },
+      allowPaidFallback: false,
+      billingRoute: 'WorkBuddy Free',
+      executor: 'codebuddy',
+    },
     client: fake.client,
     autoLogin: false,
   });
@@ -53,6 +65,7 @@ function makePlane({ sendImpl, approvals, throttleMs = 10_000, config = {} } = {
       this.busy = true;
       this.sent.push(prompt);
       this.onEvent({ type: 'session', sessionId: this.sessionId });
+      this.onEvent({ type: 'init', model: this.model, apiKeySource: 'www.workbuddy.ai', tools: ['Read'] });
       if (sendImpl) return await sendImpl({ prompt, plane, runner: this, approvals: manager, fake });
       this.onEvent({ type: 'tool', tool: { name: 'Read', input: { file_path: 'src/a.js' } } });
       this.busy = false;
@@ -78,9 +91,12 @@ test('only the configured owner can drive the agent', async () => {
 
   await fake.sendAsUser({ content: '!status' });
   assert.equal(fake.messages.length, 1, 'owner messages are handled');
-  assert.match(fake.messages[0].content, /backend: `https:\/\/api\.deepseek\.com\/anthropic`/);
-  assert.match(fake.messages[0].content, /model: `deepseek-flash\[1m\]`/);
-  assert.match(fake.messages[0].content, /routing source: `windows-user-env`/);
+  const status = fake.messages[0].content;
+  assert.match(status, /Backend: WorkBuddy Free DSF/);
+  assert.match(status, /Billing route: WorkBuddy Free/);
+  assert.match(status, /Paid fallback: disabled/);
+  assert.match(status, /Model: deepseek-flash\[1m\]/);
+  assert.ok(!/^DeepSeek$/m.test(status), 'the backend must not be reported as a bare "DeepSeek"');
 });
 
 test('a task produces one low-noise status message, not a log flood', async () => {
@@ -272,6 +288,18 @@ test('!handoff produces a compact escalation package', async () => {
   assert.match(text, /需要判断:/);
 });
 
+test('the owner is told the bridge is online, because Discord does not replay offline messages', async () => {
+  const { fake, plane } = makePlane({ config: { notifyOnStart: true } });
+  await plane.start();
+  const dm = fake.messages.find((m) => m.kind === 'dm');
+  assert.ok(dm, 'a ready DM must be sent to the owner');
+  assert.match(dm.content, /Bridge ready/);
+  assert.match(dm.content, /Backend: WorkBuddy Free DSF/);
+  assert.match(dm.content, /Billing route: WorkBuddy Free/);
+  assert.match(dm.content, /Paid fallback: DISABLED/);
+  assert.equal(fake.ownerDmCount, 1, 'exactly one ready DM, not a stream of them');
+});
+
 test('a failing agent surfaces FAILED instead of a silent success', async () => {
   const { fake, plane } = makePlane({
     sendImpl: async () => { throw new Error('Claude exited code=1 signal='); },
@@ -294,7 +322,7 @@ test('a pre-existing session is resumed and the model is persisted', async () =>
       discordToken: 'x', ownerId: fake.ownerId, guildId: null, channelId: null,
       claudeCommand: 'claude', defaultCwd: os.tmpdir(), approvalHost: '127.0.0.1', approvalPort: 1,
       approvalTimeoutMs: 5000, autoAllowWorkspaceWrites: true, autoAllowTestCommands: true,
-      includePartialMessages: false, progressThrottleMs: 1000, logDir: null,
+      includePartialMessages: false, progressThrottleMs: 1000, notifyOnStart: false, logDir: null,
     },
     state,
     approvalManager: new ApprovalManager({ timeoutMs: 1000 }),

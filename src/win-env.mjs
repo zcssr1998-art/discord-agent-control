@@ -115,3 +115,81 @@ export function redactForLog(env, keys = ROUTING_VARS) {
   }
   return out;
 }
+
+/**
+ * Normalise whatever Windows stores in `ProxyServer` into a URL Node can use.
+ *
+ * The registry value is either a bare `host:port` or a per-scheme list such as
+ * `http=127.0.0.1:7890;https=127.0.0.1:7890`. Returns null when there is nothing
+ * usable.
+ */
+export function normalizeProxyUrl(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value) return null;
+
+  let candidate = value;
+  if (value.includes('=')) {
+    const entries = new Map(
+      value.split(';')
+        .map((part) => part.split('='))
+        .filter((pair) => pair.length === 2)
+        .map(([k, v]) => [k.trim().toLowerCase(), v.trim()]),
+    );
+    candidate = entries.get('https') || entries.get('http') || entries.get('socks') || '';
+    if (!candidate) return null;
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return candidate;
+  return `http://${candidate}`;
+}
+
+/**
+ * Read the Windows system proxy (the same value the rest of the OS uses).
+ *
+ * Node ignores this completely, which is why a machine whose Clash/V2Ray runs in
+ * system-proxy mode can reach Discord from every app except this one.
+ */
+export function readWindowsSystemProxy({ timeoutMs = 15000, spawnImpl = spawn } = {}) {
+  if (process.platform !== 'win32') return Promise.resolve(null);
+  const script =
+    '$k = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"; ' +
+    '$p = Get-ItemProperty -Path $k -ErrorAction SilentlyContinue; ' +
+    'if ($p -and $p.ProxyEnable -eq 1 -and $p.ProxyServer) { Write-Output $p.ProxyServer }';
+
+  return new Promise((resolve) => {
+    let out = '';
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let child;
+    try {
+      child = spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      return done(null);
+    }
+    const timer = setTimeout(() => { try { child.kill(); } catch {} done(null); }, timeoutMs);
+    child.stdout.on('data', (d) => (out += d));
+    child.on('error', () => { clearTimeout(timer); done(null); });
+    child.on('exit', () => { clearTimeout(timer); done(normalizeProxyUrl(out.trim())); });
+  });
+}
+
+/**
+ * Decide which proxy Discord should use.
+ *
+ *   DISCORD_PROXY unset        -> the Windows system proxy, if any
+ *   DISCORD_PROXY=<url>        -> that proxy
+ *   DISCORD_PROXY=off          -> no proxy (connect directly)
+ */
+export async function resolveDiscordProxy(explicit = process.env.DISCORD_PROXY, opts = {}) {
+  const raw = String(explicit ?? '').trim();
+  if (/^(off|none|direct|false|0)$/i.test(raw)) return { proxyUrl: null, source: 'disabled' };
+  if (raw) return { proxyUrl: normalizeProxyUrl(raw), source: 'env' };
+
+  const readSystem = opts.readSystemProxy || (() => readWindowsSystemProxy(opts));
+  const system = await readSystem();
+  if (system) return { proxyUrl: system, source: 'windows-system' };
+  return { proxyUrl: null, source: 'none' };
+}

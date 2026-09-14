@@ -1,28 +1,39 @@
 # Discord Agent Control
 
-Windows-first Discord control plane for a local Claude Code agent.
+Windows-first Discord control plane for a local Claude Code style agent, running
+on the **WorkBuddy free DeepSeek Flash backend** with paid fallback disabled.
 
-Primary target:
+```text
+iPhone Discord
+  -> Windows bridge (discord-agent-control)
+  -> Claude Code compatible agent shell
+  -> WorkBuddy Free DSF   (apiKeySource = www.workbuddy.ai, cost 0)
+  -> real files / commands / git
+  -> phone approval for risky actions
+  -> result back to Discord
+```
 
-`iPhone Discord → Windows bridge → existing DeepSeek-backed Claude Code → real project execution → phone approval for risky actions → result back to Discord`
-
-DeepSeek Claude Code is the default executor. Codex is an optional later escalation path, not part of the required V1 loop.
+The agent shell is the WorkBuddy agent CLI (`@genie/agent-cli`), which is a
+Claude Code fork: same `stream-json` protocol, same tools, same `PreToolUse` hook
+schema. Only the model backend is different. See
+`docs/WORKBUDDY_BACKEND.md` for the investigation behind that choice, including
+why an Anthropic-compatible adapter in front of it would be worse.
 
 ## Start here
 
-- **Windows smoke-test evidence:** `docs/WINDOWS_SMOKE.md`
-- **Handover task / acceptance checklist:** `docs/GEMINI_3_8_TASK.md`
+- **Backend investigation and decision:** `docs/WORKBUDDY_BACKEND.md`
+- **Real-machine evidence:** `docs/WINDOWS_SMOKE.md`
+- Handover task / acceptance checklist: `docs/GEMINI_3_8_TASK.md`
 - Windows setup: `docs/WINDOWS_SETUP.md`
-- Original Chinese design brief: `docs/开发任务书.md`
-- Architecture/task notes: `docs/TASKBOOK.md`
 
 ## Quick start (Windows)
 
 ```powershell
 npm install
-.\scripts\install-global-hook.ps1     # once; inert unless the bridge launches Claude
+.\scripts\install-global-hook.ps1     # once; installs into ~/.claude AND ~/.codebuddy
 Copy-Item .env.example .env           # then fill DISCORD_TOKEN + DISCORD_OWNER_ID
-npm run doctor:discord                # verifies token, owner, invite URL, DM channel
+npm run verify:workbuddy              # proves the free backend + real tool calls
+npm run doctor:discord                # verifies token, owner, proxy, invite URL
 .\scripts\start-windows.ps1
 ```
 
@@ -33,17 +44,47 @@ Then, from Discord on your phone, either DM the bot or post in a channel it can 
 把这个项目启动失败的问题修掉，修完自己跑测试
 ```
 
+## Backend guarantees
+
+The bridge reports, and gates on, the backend that actually served each request:
+
+- `system/init.apiKeySource` from the agent itself is the source of truth — the
+  bridge never guesses;
+- when `ALLOW_PAID_FALLBACK=false` (the default) every metered credential
+  variable is removed from the agent process environment;
+- a run that reports any other backend is **refused**, not silently billed;
+- `!status` prints the backend, model, billing route and paid-fallback state.
+
+```text
+Executor: workbuddy agent CLI
+Backend: WorkBuddy Free DSF
+Model: fast-model
+Billing route: WorkBuddy Free
+Paid fallback: disabled
+```
+
 ## Commands
 
 | Command | Meaning |
 | --- | --- |
 | _any text_ | run it as a task in the bound project |
-| `!status` | cwd / session / executor / resolved backend + model / busy-idle |
+| `!status` | executor / backend / model / billing route / cwd / session / busy-idle |
 | `!cwd <absolute path>` | bind this Discord channel to a project (clears the session) |
 | `!stop` | kill the running agent process and cancel pending approvals |
-| `!reset` | stop + clear the Claude session and any session-scoped approvals |
-| `!handoff` | print a compact handoff package for ChatGPT/manual escalation |
+| `!reset` | stop + clear the session, approvals and failure counters |
+| `!handoff` | print a compact handoff package for manual escalation |
 | `!help` | command list |
+
+## Runaway protection
+
+A remote agent that keeps failing or restarting burns tokens where nobody is
+watching, so every path is capped:
+
+- `TASK_TIMEOUT_MS` — hard wall-clock cap per task; hitting it kills the process;
+- `MAX_CONSECUTIVE_FAILURES` — refuse new work after N consecutive failures;
+- `MAX_PROCESS_RESTARTS` — cap on agent process restarts;
+- `!stop` kills the whole process tree and cancels pending approvals;
+- `!reset` clears the failure and restart counters.
 
 ## How approvals work
 

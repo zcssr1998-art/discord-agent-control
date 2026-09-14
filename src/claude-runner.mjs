@@ -75,6 +75,7 @@ export class ClaudeRunner {
     sessionId = null,
     includePartialMessages = false,
     extraEnv = {},
+    envUnset = [],
     onEvent = () => {},
     onExit = () => {},
     onLog = null,
@@ -84,6 +85,9 @@ export class ClaudeRunner {
     this.sessionId = sessionId;
     this.includePartialMessages = includePartialMessages;
     this.extraEnv = extraEnv;
+    this.envUnset = envUnset;
+    this.apiKeySource = null;
+    this.restarts = 0;
     this.onEvent = onEvent;
     this.onExit = onExit;
     this.onLog = onLog;
@@ -117,9 +121,15 @@ export class ClaudeRunner {
     if (this.child && !this.child.killed && this.child.exitCode === null) return;
     const plan = buildSpawnPlan(this.command, this.buildArgs());
 
+    // Build the child environment explicitly: merge the caller's additions, then
+    // remove everything the caller asked to block. Blocking matters — with paid
+    // fallback disabled the child must not even be able to see a metered API key.
+    const env = { ...process.env, ...this.extraEnv, DISCORD_BRIDGE_ACTIVE: '1' };
+    for (const name of this.envUnset) delete env[name];
+
     this.child = spawn(plan.file, plan.args, {
       cwd: this.cwd,
-      env: { ...process.env, ...this.extraEnv, DISCORD_BRIDGE_ACTIVE: '1' },
+      env,
       shell: plan.shell,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -177,6 +187,20 @@ export class ClaudeRunner {
     // act on, so it is recorded in the run log but never dispatched.
     if (event.type === 'system' && event.subtype === 'thinking_tokens') return;
 
+    // Claude Code retries API failures up to 10 times with exponential backoff,
+    // which is several minutes of apparent silence. Surface it or the phone just
+    // shows an unchanging status and the run looks hung.
+    if (event.type === 'system' && event.subtype === 'api_retry') {
+      this.onEvent({
+        type: 'retry',
+        attempt: event.attempt,
+        maxRetries: event.max_retries,
+        errorStatus: event.error_status,
+        error: event.error,
+      });
+      return;
+    }
+
     if (event.type === 'system' && event.subtype === 'init') {
       if (event.session_id) {
         this.sessionId = event.session_id;
@@ -186,6 +210,11 @@ export class ClaudeRunner {
         this.model = event.model;
         this.onEvent({ type: 'model', model: event.model });
       }
+      // Which credential actually served the request. The WorkBuddy CLI reports
+      // its own gateway here, which is how the bridge proves it is on the free
+      // backend rather than a paid API.
+      this.apiKeySource = event.apiKeySource ?? null;
+      this.onEvent({ type: 'init', model: this.model, apiKeySource: this.apiKeySource, tools: event.tools ?? [], cwd: event.cwd ?? this.cwd });
     }
 
     if (event.type === 'assistant' && event.message?.content) {

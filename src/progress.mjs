@@ -75,6 +75,18 @@ export class TaskProgress {
     this.tests = null;
     this.approval = null;
     this.note = null;
+    this.retry = null;
+  }
+
+  /**
+   * The agent is retrying a failed model request (up to 10 times with
+   * exponential backoff = minutes of silence). Without this the phone shows a
+   * frozen status and the run looks hung.
+   */
+  recordRetry({ attempt, maxRetries, errorStatus, error } = {}) {
+    this.retry = { attempt, maxRetries, errorStatus, error };
+    this.state = STATE.RUNNING;
+    return this;
   }
 
   setState(state, note = null) {
@@ -103,6 +115,7 @@ export class TaskProgress {
     this.lastAction = action;
     this.recent.push(action);
     if (this.recent.length > this.maxRecent) this.recent.splice(0, this.recent.length - this.maxRecent);
+    this.retry = null;
 
     if (this.state === STATE.CREATED || this.state === STATE.PLANNING) this.state = STATE.RUNNING;
 
@@ -136,6 +149,8 @@ export class TaskProgress {
     if (this.approval) {
       lines.push(`Waiting for: **${this.approval.toolName}**`);
       lines.push(`Reason: ${clip(this.approval.reason, 120)}`);
+    } else if (this.retry) {
+      lines.push(`⚠️ Model request retry ${this.retry.attempt ?? '?'}/${this.retry.maxRetries ?? '?'} (${this.retry.errorStatus ?? 'error'}${this.retry.error ? ` ${this.retry.error}` : ''})`);
     } else if (this.lastAction) {
       lines.push(`Last action: ${this.lastAction}`);
     }

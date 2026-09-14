@@ -11,10 +11,14 @@
     "smoke:local": "node scripts/local-e2e.mjs",
     "smoke:discord": "node scripts/discord-e2e.mjs",
     "verify:hook": "node scripts/verify-global-hook.mjs",
-    "doctor:discord": "node scripts/discord-doctor.mjs"
+    "doctor:discord": "node scripts/discord-doctor.mjs",
+    "verify:workbuddy": "node scripts/verify-workbuddy.mjs"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
-    "dotenv": "^17.2.2"
+    "dotenv": "^17.2.2",
+    "https-proxy-agent": "^9.1.0",
+    "undici": "^6.28.1",
+    "ws": "^8.21.3"
   }
 }

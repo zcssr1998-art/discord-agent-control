@@ -27,6 +27,7 @@ import { createHookServer, ensureHookSecret } from '../src/hook-server.mjs';
 import { StateStore } from '../src/state.mjs';
 import { RunLogger } from '../src/logger.mjs';
 import { resolveRoutingEnv, describeRouting, redactForLog } from '../src/win-env.mjs';
+import { resolveExecutorCommand, stripPaidCredentials } from '../src/backend.mjs';
 import { FakeDiscord } from '../tests/helpers/fake-discord.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,10 +60,15 @@ function setupDisposableRepo() {
   git(['add', '-A'], dir);
   git(['commit', '-qm', 'chore: initial disposable repo'], dir);
 
-  fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), JSON.stringify({
+  // Written for both shells: the Claude Code CLI reads .claude, the WorkBuddy
+  // agent CLI reads .codebuddy.
+  const settingsJson = JSON.stringify({
     hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: `node "${HOOK_SCRIPT}"`, timeout: 600 }] }] },
-  }, null, 2) + '\n');
+  }, null, 2) + '\n';
+  for (const agentDir of ['.claude', '.codebuddy']) {
+    fs.mkdirSync(path.join(dir, agentDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, agentDir, 'settings.json'), settingsJson);
+  }
   return dir;
 }
 
@@ -131,10 +137,16 @@ async function main() {
   const routing = await resolveRoutingEnv();
   const effective = { ...process.env, ...routing.env };
   const info = describeRouting(effective);
+  const extraEnv = { ...process.env };
+  const envUnset = stripPaidCredentials(extraEnv);
   console.log('=== environment ===');
   console.log(`routing source : ${routing.source}`);
   console.log(`routing vars   : ${JSON.stringify(redactForLog(effective))}`);
-  check('env: DeepSeek routing resolved', Boolean(info.base && info.hasToken), info.base);
+  console.log(`paid credential vars blocked: ${envUnset.length ? envUnset.join(', ') : '(none present)'}`);
+  check('env: the agent process cannot see any metered credential',
+    !extraEnv.ANTHROPIC_AUTH_TOKEN && !extraEnv.ANTHROPIC_API_KEY && !extraEnv.DEEPSEEK_API_KEY,
+    envUnset.length ? `blocked: ${envUnset.join(', ')}` : 'none were present');
+  void info;
 
   const secret = ensureHookSecret();
   const approvals = new ApprovalManager({ timeoutMs: 180000 });
@@ -157,7 +169,7 @@ async function main() {
       ownerId: fake.ownerId,
       guildId: null,
       channelId: null,
-      claudeCommand: process.env.CLAUDE_COMMAND || 'claude',
+      claudeCommand: resolveExecutorCommand(),
       defaultCwd: repo,
       approvalHost: '127.0.0.1',
       approvalPort: port,
@@ -172,6 +184,8 @@ async function main() {
     approvalManager: approvals,
     routing,
     logger: new RunLogger(logDir),
+    extraEnv,
+    envUnset,
     client: fake.client,
     autoLogin: false,
   });

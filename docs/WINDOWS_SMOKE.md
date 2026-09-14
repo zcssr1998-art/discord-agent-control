@@ -6,6 +6,46 @@ a reproducible command and a captured result.
 
 No token, secret or credential value is recorded here.
 
+> **V2 update — the backend is now the WorkBuddy free DSF.**
+> Sections 1–11 below were measured against the previous DeepSeek-backed Claude
+> Code CLI. They remain accurate for the bridge mechanics (hook semantics, policy,
+> approval scoping, low-noise progress, session recovery) because none of that
+> changed. The backend-specific parts are superseded by
+> **`docs/WORKBUDDY_BACKEND.md`** and the V2 results below.
+
+## 0. V2 results — WorkBuddy free backend
+
+| Check | Command | Result |
+| --- | --- | --- |
+| unit + integration | `npm test` | 82 passed / 0 failed |
+| syntax | `npm run check` | 37 files, 0 failed |
+| free backend + real tool calls + no fallback | `npm run verify:workbuddy` | 10/10 |
+| real agent end-to-end | `npm run smoke:local` | 22/22 |
+| real control plane, fake Discord transport | `npm run smoke:discord` | 16/16 |
+| installed global hook | `npm run verify:hook` | 9/9 |
+
+Observed backend, from the agent's own `system/init` event:
+
+```text
+apiKeySource = www.workbuddy.ai
+model        = fast-model
+billing      = WorkBuddy Free
+total_cost_usd = 0
+```
+
+Every smoke run above reported `cost=$0`. A metered credential cannot reach the
+agent process: `stripPaidCredentials()` removes it and the child environment is
+asserted in both `tests/startup.test.mjs` and `tests/claude-runner.test.mjs`.
+
+Side effects were real, not simulated: `src/health.mjs` created and asserted to
+return `{"status":"ok"}`, `node --test` passing on the modified repo, a real
+`git commit`, a denied network command that really produced no file, and a denied
+`git push` that really did not push.
+
+Low-noise progress improved as a side effect: the same task that produced 1299
+raw stdout lines with the Claude Code CLI produced **31** with the WorkBuddy CLI,
+while Discord still saw exactly one message updated in place.
+
 ## 1. Environment
 
 | Item | Value |

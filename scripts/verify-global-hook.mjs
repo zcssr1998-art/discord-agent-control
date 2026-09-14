@@ -23,9 +23,16 @@ import { fileURLToPath } from 'node:url';
 import { buildSpawnPlan } from '../src/claude-runner.mjs';
 import { ensureHookSecret } from '../src/hook-server.mjs';
 import { resolveRoutingEnv } from '../src/win-env.mjs';
+import { resolveExecutorCommand } from '../src/backend.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json');
+// The agent shell reads one of these depending on which CLI is configured:
+//   ~/.claude/settings.json    Claude Code
+//   ~/.codebuddy/settings.json WorkBuddy agent CLI
+const SETTINGS_CANDIDATES = [
+  path.join(os.homedir(), '.claude', 'settings.json'),
+  path.join(os.homedir(), '.codebuddy', 'settings.json'),
+];
 
 const results = [];
 function check(name, ok, detail = '') {
@@ -34,23 +41,30 @@ function check(name, ok, detail = '') {
 }
 
 function readGlobalHookCommand() {
-  if (!fs.existsSync(CLAUDE_SETTINGS)) return { hookCommand: null, reason: 'no ~/.claude/settings.json' };
-  const raw = fs.readFileSync(CLAUDE_SETTINGS, 'utf8');
-  if (raw.charCodeAt(0) === 0xFEFF) {
-    // A BOM makes the file invalid JSON for strict parsers, which would silently
-    // stop Claude Code from loading the hook at all.
-    return { hookCommand: null, reason: 'settings.json starts with a UTF-8 BOM (invalid JSON) — re-run scripts/install-global-hook.ps1' };
-  }
-  let settings;
-  try { settings = JSON.parse(raw); }
-  catch (e) { return { hookCommand: null, reason: `settings.json is not valid JSON: ${e.message}` }; }
-
-  for (const group of settings?.hooks?.PreToolUse ?? []) {
-    for (const hook of group.hooks ?? []) {
-      if (String(hook.command || '').includes('approval-hook.mjs')) return { hookCommand: hook.command, reason: null };
+  const problems = [];
+  for (const settingsPath of SETTINGS_CANDIDATES) {
+    if (!fs.existsSync(settingsPath)) { problems.push(`${settingsPath}: not present`); continue; }
+    const raw = fs.readFileSync(settingsPath, 'utf8');
+    if (raw.charCodeAt(0) === 0xFEFF) {
+      // A BOM makes the file invalid JSON for strict parsers, which would silently
+      // stop the agent from loading the hook at all.
+      problems.push(`${settingsPath}: starts with a UTF-8 BOM (invalid JSON) — re-run scripts/install-global-hook.ps1`);
+      continue;
     }
+    let settings;
+    try { settings = JSON.parse(raw); }
+    catch (e) { problems.push(`${settingsPath}: not valid JSON (${e.message})`); continue; }
+
+    for (const group of settings?.hooks?.PreToolUse ?? []) {
+      for (const hook of group.hooks ?? []) {
+        if (String(hook.command || '').includes('approval-hook.mjs')) {
+          return { hookCommand: hook.command, settingsPath, reason: null };
+        }
+      }
+    }
+    problems.push(`${settingsPath}: no approval-hook.mjs entry in hooks.PreToolUse`);
   }
-  return { hookCommand: null, reason: 'no approval-hook.mjs entry in hooks.PreToolUse' };
+  return { hookCommand: null, settingsPath: null, reason: problems.join('; ') };
 }
 
 function setupRepo() {
@@ -69,7 +83,7 @@ function setupRepo() {
  * `callHookClient` in local-e2e.mjs.
  */
 function runClaude({ cwd, prompt, env }) {
-  const plan = buildSpawnPlan(process.env.CLAUDE_COMMAND || 'claude', [
+  const plan = buildSpawnPlan(resolveExecutorCommand(), [
     '-p', prompt, '--output-format', 'json', '--dangerously-skip-permissions',
   ]);
   return new Promise((resolve) => {
@@ -87,7 +101,7 @@ function runClaude({ cwd, prompt, env }) {
 
 async function main() {
   const { hookCommand, reason } = readGlobalHookCommand();
-  check('~/.claude/settings.json is valid JSON and installs the hook', Boolean(hookCommand),
+  check("the agent settings file is valid JSON and installs the hook", Boolean(hookCommand),
     hookCommand || `${reason} — run scripts/install-global-hook.ps1`);
   if (!hookCommand) return finish();
 

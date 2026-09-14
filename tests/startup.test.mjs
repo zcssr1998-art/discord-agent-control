@@ -35,6 +35,14 @@ function bootBridge(env) {
       DISCORD_TOKEN: 'not-a-real-token',
       DISCORD_OWNER_ID: '123456789012345678',
       LOG_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'dac-startup-logs-')),
+      // Use the scripted executor so the startup backend probe is deterministic
+      // and never reaches a real (possibly paid) provider.
+      CLAUDE_COMMAND: path.join(ROOT, 'tests', 'fake-claude.mjs'),
+      AGENT_BACKEND: 'workbuddy-free-dsf',
+      ALLOW_PAID_FALLBACK: 'false',
+      // A metered credential that must never survive into the agent process or
+      // appear anywhere in the logs.
+      ANTHROPIC_AUTH_TOKEN: 'sk-test-must-be-blocked',
       ...env,
     },
     windowsHide: true,
@@ -63,7 +71,14 @@ test('the real entry point brings up a working approval service', async (t) => {
 
   const booted = await waitForLine(bridge.output, /\[hook\] listening at http:\/\/127\.0\.0\.1:\d+/);
   assert.ok(booted, `the hook service never started. output:\n${bridge.output()}`);
-  assert.match(bridge.output(), /\[routing\] source=(process-env|windows-user-env|unavailable)/);
+  assert.match(bridge.output(), /\[backend\] expected=workbuddy-free-dsf paidFallback=disabled/);
+  assert.match(bridge.output(), /\[backend\] WorkBuddy Free DSF confirmed\. Paid fallback: DISABLED\./);
+  assert.match(bridge.output(), /\[routing\] paid provider routing not used/);
+  // Whatever metered variables this machine happens to have must be reported as blocked.
+  const blockedLine = bridge.output().split('\n').find((l) => l.startsWith('[backend] blocked credential vars:'));
+  assert.ok(blockedLine, 'the bridge must report which credential variables it blocked');
+  assert.match(blockedLine, /ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|DEEPSEEK_API_KEY/);
+  assert.ok(!/sk-[A-Za-z0-9]/.test(bridge.output()), 'no credential value may ever be printed');
 
   // The hook contract must work over real HTTP from a different process.
   const allow = await fetch(`http://127.0.0.1:${port}/pre-tool-use`, {

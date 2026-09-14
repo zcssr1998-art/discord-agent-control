@@ -1,3 +1,7 @@
+// First import on purpose: it wraps the `ws` WebSocket constructor before
+// discord.js is evaluated, which is required for the Gateway to use a proxy.
+import './discord-proxy.mjs';
+
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -11,6 +15,9 @@ import fs from 'node:fs';
 import { ClaudeRunner } from './claude-runner.mjs';
 import { TaskProgress, ThrottledEditor, STATE, describeToolCall } from './progress.mjs';
 import { describeRouting } from './win-env.mjs';
+import { discordRestAgent } from './discord-proxy.mjs';
+import { classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
+import { withTimeout } from './limits.mjs';
 
 const DISCORD_LIMIT = 1900;
 
@@ -26,6 +33,10 @@ export class DiscordControlPlane {
     approvalManager,
     routing = { env: {}, source: 'process-env', added: [] },
     logger = null,
+    limits = null,
+    backendState = null,
+    extraEnv = {},
+    envUnset = [],
     // Injectable so the whole control plane can be driven without a live
     // Discord connection (tests + the pre-token end-to-end smoke).
     client = null,
@@ -36,10 +47,16 @@ export class DiscordControlPlane {
     this.approvalManager = approvalManager;
     this.routing = routing;
     this.logger = logger;
+    this.limits = limits;
+    this.backendState = backendState;
+    this.extraEnv = extraEnv;
+    this.envUnset = envUnset;
     this.autoLogin = autoLogin;
     this.runners = new Map();
     this.tasks = new Map();
     this.channelBySession = new Map();
+    this.backendVerdictByChannel = new Map();
+    const restAgent = discordRestAgent();
     this.client = client || new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -48,6 +65,8 @@ export class DiscordControlPlane {
         GatewayIntentBits.MessageContent,
       ],
       partials: [Partials.Channel],
+      // Explicit so the REST side uses the same proxy as the gateway.
+      ...(restAgent ? { rest: { agent: restAgent } } : {}),
     });
   }
 
@@ -57,6 +76,30 @@ export class DiscordControlPlane {
     this.client.on('messageCreate', (m) => this.onMessage(m).catch((e) => console.error('[discord] message handler', e)));
     this.client.on('interactionCreate', (i) => this.onInteraction(i).catch((e) => console.error('[discord] interaction handler', e)));
     if (this.autoLogin) await this.client.login(this.config.discordToken);
+    if (this.config.notifyOnStart !== false) await this.notifyReady();
+  }
+
+  /**
+   * Tell the owner the bridge is actually online.
+   *
+   * Worth the one message: Discord does not replay messages sent while the bot
+   * was offline, so "is it up yet?" has to be answered from the bot side.
+   */
+  async notifyReady() {
+    const owner = await this.client.users.fetch(this.config.ownerId).catch(() => null);
+    if (!owner) return;
+    const backend = this.backendState?.backend ?? null;
+    const text = [
+      '✅ **Bridge ready**',
+      `Executor: Claude Code compatible shell`,
+      `Backend: ${backend?.label ?? 'unknown'}`,
+      `Model: ${backend?.model ?? 'unknown'}`,
+      `Billing route: ${backend ? billingRoute(backend) : 'unknown'}`,
+      `Paid fallback: ${this.config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`,
+      `default cwd: \`${this.config.defaultCwd}\``,
+      'Send a task here, or `!help` for the command list.',
+    ].join('\n');
+    try { await owner.send(text); } catch (error) { console.warn(`[discord] could not send the ready DM: ${error?.message}`); }
   }
 
   allowedMessage(message) {
@@ -78,7 +121,8 @@ export class DiscordControlPlane {
       cwd: chState.cwd,
       sessionId: chState.sessionId,
       includePartialMessages: this.config.includePartialMessages,
-      extraEnv: this.routing.env,
+      extraEnv: this.extraEnv,
+      envUnset: this.envUnset,
       onLog: (entry) => this.tasks.get(channelId)?.runLog?.log(entry),
       onEvent: (e) => this.onRunnerEvent(channelId, e),
       onExit: () => this.runners.delete(channelId),
@@ -96,6 +140,7 @@ export class DiscordControlPlane {
       const chState = this.state.getChannel(channelId, this.config.defaultCwd);
       if (chState.model !== event.model) this.state.patchChannel(channelId, { model: event.model }, this.config.defaultCwd);
     }
+    if (event.type === 'init') this.#noteBackend(channelId, event);
 
     const task = this.tasks.get(channelId);
     if (!task) return;
@@ -105,23 +150,55 @@ export class DiscordControlPlane {
     } else if (event.type === 'text') {
       task.progress.recordText(event.text);
       task.schedule();
+    } else if (event.type === 'retry') {
+      task.progress.recordRetry(event);
+      task.schedule();
     }
+  }
+
+  /**
+   * Record which credential actually served the request, and fail closed when it
+   * is not the expected free backend.
+   */
+  #noteBackend(channelId, event) {
+    const observed = classifyBackend({ apiKeySource: event.apiKeySource, model: event.model });
+    this.backendState = {
+      ...(this.backendState ?? {}),
+      backend: observed,
+      billingRoute: billingRoute(observed),
+      executor: this.config.claudeCommand,
+      allowPaidFallback: this.config.allowPaidFallback,
+    };
+    const verdict = assertBackendAllowed(observed, {
+      allowPaidFallback: this.config.allowPaidFallback,
+      expected: this.config.agentBackend,
+    });
+    // Per channel, so one bad run cannot be masked by another channel's good one.
+    this.backendVerdictByChannel.set(channelId, verdict);
+    console.log(`[backend] observed=${observed.label} model=${observed.model ?? 'unknown'} apiKeySource=${observed.apiKeySource ?? 'none'} -> ${verdict.ok ? 'OK' : 'REJECTED'}`);
+    if (!verdict.ok) console.error(`[backend] ${verdict.reason}`);
+    return verdict;
   }
 
   #statusLine(channelId) {
     const s = this.state.getChannel(channelId, this.config.defaultCwd);
     const runner = this.runners.get(channelId);
-    const routing = describeRouting({ ...process.env, ...this.routing.env });
+    const backend = this.backendState?.backend ?? null;
+    const blocked = this.limits?.blocked(channelId);
     return [
+      `Executor: ${this.config.claudeCommand}`,
+      'Executor type: Claude Code compatible shell',
+      `Backend: ${backend?.label ?? 'unknown'}`,
+      `Model: ${runner?.model || s.model || backend?.model || 'unknown'}`,
+      `Billing route: ${backend ? billingRoute(backend) : 'unknown'}`,
+      `Paid fallback: ${this.config.allowPaidFallback ? 'ENABLED' : 'disabled'}`,
+      `apiKeySource: ${backend?.apiKeySource ?? 'unknown'}`,
       `cwd: \`${s.cwd}\``,
       `session: \`${s.sessionId || 'new'}\``,
-      `executor: \`${this.config.claudeCommand}\``,
-      `backend: \`${routing.base}\``,
-      `model: \`${runner?.model || s.model || routing.model}\``,
-      `routing source: \`${this.routing.source}\``,
       `state: ${runner?.busy ? 'busy' : 'idle'}`,
       `pending approvals: ${this.approvalManager.pending.size}`,
-    ].join('\n');
+      blocked?.blocked ? `⚠️ blocked: ${blocked.reason}` : null,
+    ].filter(Boolean).join('\n');
   }
 
   async onMessage(message) {
@@ -168,8 +245,10 @@ export class DiscordControlPlane {
       this.approvalManager.cancelForSession(sessionId, 'session reset');
       this.approvalManager.clearSessionAllows(sessionId);
       if (sessionId) this.channelBySession.delete(sessionId);
+      this.limits?.reset(message.channelId);
+      this.backendVerdictByChannel.delete(message.channelId);
       this.state.patchChannel(message.channelId, { sessionId: null }, this.config.defaultCwd);
-      await message.reply('Session reset. Next task starts a fresh Claude session.');
+      await message.reply('Session reset. Next task starts a fresh session; failure/restart counters cleared.');
       return;
     }
     if (text === '!handoff') {
@@ -210,6 +289,14 @@ export class DiscordControlPlane {
       return;
     }
 
+    // Refuse to keep hammering a broken setup; that is how a background loop
+    // burns tokens unattended.
+    const blocked = this.limits?.blocked(message.channelId);
+    if (blocked?.blocked) {
+      await message.reply(`⛔ Refusing to start: ${blocked.reason}`);
+      return;
+    }
+
     await this.runTask(message, text);
   }
 
@@ -242,15 +329,29 @@ export class DiscordControlPlane {
     const runner = this.getRunner(channelId);
     if (runner.sessionId) this.channelBySession.set(runner.sessionId, channelId);
     progress.setState(STATE.PLANNING);
+    await editor.flushNow(progress.render());
+    console.log(`[task] start channel=${channelId} cwd=${chState.cwd} prompt=${clip(prompt, 140).replace(/\n/g, ' ⏎ ')}`);
 
     try {
-      const result = await runner.send(prompt);
+      const result = await withTimeout(runner.send(prompt), this.config.taskTimeoutMs, {
+        label: 'task',
+        onTimeout: () => { console.error(`[task] timeout after ${this.config.taskTimeoutMs}ms; killing the agent process`); runner.stop().catch(() => {}); },
+      });
+
+      // Fail closed: never present a paid-backend result as a successful run.
+      // The verdict comes from the init event this run actually produced.
+      const verdict = this.backendVerdictByChannel.get(channelId);
+      if (verdict && !verdict.ok) throw new Error(`Backend rejected: ${verdict.reason}`);
+
       progress.recordText(result.text);
       progress.setState(result.isError ? STATE.FAILED : STATE.DONE);
+      if (result.isError) this.limits?.noteFailure(channelId, result.text);
+      else this.limits?.noteSuccess(channelId);
       if (result.sessionId) {
         this.state.patchChannel(channelId, { sessionId: result.sessionId }, this.config.defaultCwd);
         this.channelBySession.set(result.sessionId, channelId);
       }
+      console.log(`[task] done channel=${channelId} state=${progress.state} tools=${result.tools.length} durationMs=${result.durationMs} tests=${progress.tests || '-'}`);
       const extras = [
         result.costUsd != null ? `Cost: $${result.costUsd.toFixed(4)}` : null,
         runLog.path ? `Log: \`${path.basename(runLog.path)}\`` : null,
@@ -265,8 +366,10 @@ export class DiscordControlPlane {
       ].filter((line) => line !== null).join('\n');
       await editor.flushNow(body);
     } catch (error) {
-      progress.setState(STATE.FAILED, 'agent process failed');
+      progress.setState(STATE.FAILED, 'agent run failed');
       const detail = String(error?.message || error);
+      const failures = this.limits?.noteFailure(channelId, error);
+      console.log(`[task] failed channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
       await editor.flushNow(`${progress.render()}\n\n\`\`\`\n${clip(detail, 900)}\n\`\`\``);
     } finally {
       await task.finish();
@@ -276,6 +379,7 @@ export class DiscordControlPlane {
   async presentApproval(req) {
     const channelId = this.channelBySession.get(req.sessionId) || req.channelId || null;
     const task = channelId ? this.tasks.get(channelId) : null;
+    console.log(`[approval] requested tool=${req.toolName} rule=${req.ruleKey} channel=${channelId || 'dm'} reason=${clip(req.reason, 80)}`);
     if (task) {
       task.progress.setApproval(req);
       await task.editor.flushNow(task.progress.render());
@@ -306,6 +410,7 @@ export class DiscordControlPlane {
   }
 
   onApprovalSettled(answer, meta) {
+    console.log(`[approval] resolved decision=${answer.decision} rule=${meta.ruleKey} reason=${answer.reason}`);
     const channelId = this.channelBySession.get(meta.sessionId) || null;
     const task = channelId ? this.tasks.get(channelId) : null;
     if (!task) return;
