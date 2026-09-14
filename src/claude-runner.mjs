@@ -7,16 +7,50 @@ function userMessage(prompt) {
 }
 
 /**
+ * Quote one argument for a cmd.exe command line.
+ *
+ * With `shell: true` Node joins the command and every argument with a single
+ * space and quotes nothing, so an argument containing a space is silently split
+ * into several arguments (a prompt of "Read the file x" arrives as `Read` plus
+ * three extra argv entries). Implements the standard CommandLineToArgvW escaping
+ * rules: backslashes are only special immediately before a quote.
+ */
+export function quoteWindowsArg(arg) {
+  const s = String(arg);
+  if (s !== '' && !/[\s"^&|<>()%!]/.test(s)) return s;
+
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of s) {
+    if (ch === '\\') {
+      backslashes += 1;
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      out += '\\'.repeat(backslashes + 1) + '"';
+      backslashes = 0;
+      continue;
+    }
+    backslashes = 0;
+    out += ch;
+  }
+  out += '\\'.repeat(backslashes) + '"';
+  return out;
+}
+
+/**
  * Windows spawn is the fragile part of this bridge, so the rules are explicit:
  *
  *  - A Node script (`.mjs` / `.cjs` / `.js`) is launched with `process.execPath`
  *    and no shell. cmd.exe cannot execute `.mjs` reliably (no file association),
  *    so going through a shell is wrong even though it "exits 0".
  *  - Any other Windows command (bare `claude`, `claude.cmd`, a full path inside
- *    `C:\Program Files\...`) is launched through the shell but the executable
- *    itself MUST be quoted: with `shell: true` Node joins the command and args
- *    with spaces without quoting, so a path containing a space is split and the
- *    child dies with "not recognized as an internal or external command".
+ *    `C:\Program Files\...`) is launched through the shell, and BOTH the
+ *    executable and every argument are quoted: with `shell: true` Node joins
+ *    them with spaces without quoting, so a path containing a space is split and
+ *    the child dies with "not recognized as an internal or external command",
+ *    while an argument containing a space is silently split into several args.
  *  - POSIX spawns directly.
  *
  * Exported so the behaviour can be asserted in tests instead of assumed.
@@ -29,7 +63,7 @@ export function buildSpawnPlan(command, baseArgs, { platform = process.platform,
     return { file: execPath, args: [path.resolve(trimmed), ...baseArgs], shell: false };
   }
   if (platform === 'win32') {
-    return { file: `"${trimmed}"`, args: baseArgs, shell: true };
+    return { file: `"${trimmed}"`, args: baseArgs.map(quoteWindowsArg), shell: true };
   }
   return { file: trimmed, args: baseArgs, shell: false };
 }

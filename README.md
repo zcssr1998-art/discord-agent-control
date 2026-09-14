@@ -68,6 +68,7 @@ npm test              # unit + integration tests
 npm run check         # syntax check of every module
 npm run smoke:local   # real Claude Code end-to-end on a throwaway repo (no Discord needed)
 npm run smoke:discord # same, plus the real Discord control plane with a fake transport
+npm run verify:hook   # the installed global hook really fires (and is inert otherwise)
 ```
 
 `npm run smoke:local` drives the real Claude Code CLI through the real bridge
@@ -80,6 +81,12 @@ server, real policy, real `DiscordControlPlane` — only the Discord *network* i
 faked. It sends `!cwd` and a task as the owner, watches the approval messages that
 get posted and taps the buttons, then verifies the outcome. If both smokes are
 green, the only untested hop is Discord's own servers.
+
+`npm run verify:hook` checks the configuration the bridge actually relies on: the
+global `~/.claude/settings.json` hook. It runs real Claude Code twice against a
+repo with no project-level settings — once with `DISCORD_BRIDGE_ACTIVE=1` (the
+hook must fire) and once without (the hook must stay inert and the tool must still
+run). Run `scripts/install-global-hook.ps1` first.
 
 ## Layout
 
@@ -102,6 +109,7 @@ scripts/
   start-windows.ps1        start the bridge
   local-e2e.mjs            real end-to-end smoke test (no Discord)
   discord-e2e.mjs          end-to-end smoke with the real control plane
+  verify-global-hook.mjs   verifies the installed global hook (and its inertness)
   discord-doctor.mjs       credential / connectivity diagnostics
   check-syntax.mjs         syntax check used by `npm run check`
 ```

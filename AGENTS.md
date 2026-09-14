@@ -38,6 +38,13 @@ Implemented and verified on the user's Windows machine:
 - `scripts/discord-e2e.mjs` (`npm run smoke:discord`) — the same loop plus the
   real `DiscordControlPlane`, with only the Discord transport faked. Run this
   before blaming Discord when the live bridge misbehaves.
+- `scripts/verify-global-hook.mjs` (`npm run verify:hook`) — verifies the *global*
+  `~/.claude/settings.json` hook, which is the configuration the bridge actually
+  relies on. The other smokes use a project-scoped hook, so this is the one that
+  proves the real deployment path.
+- `tests/startup.test.mjs` — boots `src/index.mjs` as a child process and checks
+  the approval service really comes up and that bad credentials fail with an
+  actionable message rather than a stack trace.
 - `tests/helpers/fake-discord.mjs` — the fake transport used above. It is test
   infrastructure, not a replacement for the live Discord smoke.
 
@@ -48,5 +55,22 @@ npm test              # unit + integration tests
 npm run check         # syntax check of every module
 npm run smoke:local   # real Claude Code end-to-end on a throwaway repo
 npm run smoke:discord # real control plane, fake Discord transport
+npm run verify:hook   # the installed global hook fires, and stays inert otherwise
 npm run doctor:discord
 ```
+
+## Traps that already cost time once
+
+- **Never use `spawnSync` while a server in the same process has to answer the
+  child.** It blocks the event loop, so the hook client can never get a response
+  and the run hangs until it is killed. Use async `spawn`. This has bitten twice.
+- **`shell: true` on Windows means Node quotes nothing.** Both the executable and
+  every argument must be quoted by hand — see `buildSpawnPlan` / `quoteWindowsArg`.
+  A prompt with spaces otherwise arrives truncated to its first word.
+- **Never write `~/.claude/settings.json` with a BOM.** PowerShell 5.1's
+  `Set-Content -Encoding UTF8` adds one, which makes the file invalid JSON and
+  silently stops Claude Code from loading the hook. Use
+  `[System.IO.File]::WriteAllText` with a BOM-less `UTF8Encoding`.
+- **A smoke test that depends on the model choosing to run a destructive command
+  is flaky.** The agent inspects the repo and declines. Use a gated command with an
+  observable local side effect, or drive the hook client directly.

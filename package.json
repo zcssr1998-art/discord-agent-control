@@ -10,6 +10,7 @@
     "check": "node scripts/check-syntax.mjs",
     "smoke:local": "node scripts/local-e2e.mjs",
     "smoke:discord": "node scripts/discord-e2e.mjs",
+    "verify:hook": "node scripts/verify-global-hook.mjs",
     "doctor:discord": "node scripts/discord-doctor.mjs"
   },
   "dependencies": {

@@ -47,20 +47,22 @@ routing vars   : {"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANT
 ## 2. Automated checks
 
 ```text
-npm test            -> 55 passed / 0 failed
-npm run check       -> checked 27 file(s), 0 failed
+npm test            -> 60 passed / 0 failed
+npm run check       -> checked 29 file(s), 0 failed
 npm run smoke:local -> 22/22 checks passed
 npm run smoke:discord -> 16/16 checks passed
+npm run verify:hook -> 9/9 checks passed
 ```
 
-There are two smoke tests, at two different levels of realism:
+There are three smoke tests, at three different levels of realism:
 
 | | real | faked |
 | --- | --- | --- |
 | `smoke:local` | Claude Code CLI, hook, hook server, policy, approval manager, git, tests | Discord (absent) |
 | `smoke:discord` | everything above **plus** `DiscordControlPlane` — commands, progress throttling, approval buttons, session bookkeeping | only the Discord network |
+| `verify:hook` | everything above **plus** the *global* `~/.claude/settings.json` hook — the configuration the bridge actually relies on | the approval service (a recorder) |
 
-If both are green, the only hop never exercised is Discord's own servers.
+If all three are green, the only hop never exercised is Discord's own servers.
 
 ## 3. The approval gate — verified against the real Claude Code CLI
 
@@ -265,7 +267,43 @@ resumed_answer: 'BANANA42'
 SESSION_RECOVERED: True
 ```
 
-## 7. Bugs found and fixed during this work
+## 7. The configuration the bridge actually relies on
+
+The other smoke tests use a **project-scoped** hook (`<repo>/.claude/settings.json`).
+Production uses the **global** hook written by `scripts/install-global-hook.ps1`
+into `~/.claude/settings.json`. That is a different code path, so it is verified
+separately.
+
+### 7.1 The entry point really starts
+
+`tests/startup.test.mjs` boots `src/index.mjs` as a child process:
+
+- the approval service really comes up and answers the hook contract over HTTP
+  from a *different* process (`Read` → `allow`);
+- a wrong secret is denied (fail closed);
+- an unusable `DISCORD_TOKEN` exits 1 with `[fatal] Discord startup failed: … Check
+  DISCORD_TOKEN … run npm run doctor:discord` and no stack trace;
+- missing credentials are rejected before anything is started.
+
+### 7.2 The global hook fires, and is inert otherwise — `npm run verify:hook`
+
+Real Claude Code, twice, against a throwaway repo with **no** project-level
+settings:
+
+| Run | Expectation | Observed |
+| --- | --- | --- |
+| `DISCORD_BRIDGE_ACTIVE=1` | the global hook fires | 1 hook call, valid local secret, `tool_name=Read` + real `cwd`, tool then executed |
+| no `DISCORD_BRIDGE_ACTIVE` | the hook stays inert | 0 hook calls, tool executed normally |
+
+```text
+9/9 checks passed
+```
+
+**Verified**: the hook is installed with an absolute `node.exe` path, it activates
+only for bridge sessions, and ordinary local Claude Code / the WebUI are
+unaffected.
+
+## 8. Bugs found and fixed during this work
 
 1. **`npm test` was red on Windows (1 failure).** `ClaudeRunner` spawned with
    `shell: true`, and Node joins command + args with spaces **without quoting**,
@@ -318,7 +356,38 @@ SESSION_RECOVERED: True
    `progress.render()` directly instead of being rebuilt, which also removed a
    duplicated tool-count calculation that could disagree with the live status.
 
-## 8. Environment quirks worth knowing
+10. **The installer wrote `~/.claude/settings.json` with a UTF-8 BOM.**
+    PowerShell 5.1's `Set-Content -Encoding UTF8` prepends `EF BB BF`, and a BOM
+    makes the file invalid JSON (`JSON.parse` fails with *Unexpected token ''*).
+    A strict parser would therefore never load the hook, and the failure would be
+    completely silent. Now written with `[System.IO.File]::WriteAllText` and a
+    BOM-less `UTF8Encoding`. `npm run verify:hook` fails loudly if a BOM ever
+    comes back.
+
+11. **`shell: true` also means arguments are not quoted.** The first fix only
+    quoted the executable. An argument containing a space is silently split into
+    several arguments — a prompt of `Read the file package.json` arrives at the
+    child as `Read` plus three extra argv entries, so the agent does something
+    completely different from what was asked. `buildSpawnPlan` now quotes every
+    argument with the standard `CommandLineToArgvW` escaping rules
+    (`quoteWindowsArg`). The bridge itself only passes flags and a session UUID,
+    which is why this stayed hidden until a script passed a real prompt.
+
+12. **The hook installer hard-failed when `node` was not on PATH.** It used
+    `Get-Command node -ErrorAction Stop`. Node is not on PATH in every shell, and
+    the environment roots themselves (`$env:ProgramFiles`, `$env:APPDATA`) can be
+    empty, which also made `Join-Path` throw. The installer now probes the usual
+    install locations plus literal fallbacks and only warns if it truly cannot
+    find node.
+
+13. **`spawnSync` deadlocked a smoke test — again.** `verify-global-hook.mjs`
+    originally ran Claude with `spawnSync` while the recording hook server lived
+    in the same process, so the hook client could never get a response and the run
+    hung until the 5-minute timeout killed it. This is the second time this exact
+    trap appeared; it is now called out in `AGENTS.md` so it does not happen a
+    third time.
+
+## 9. Environment quirks worth knowing
 
 - Claude Code 2.1.270 invokes `reg.exe` internally on Windows. In a sandboxed
   shell that call is blocked and logs a warning; it does not affect the run. In a
@@ -326,8 +395,40 @@ SESSION_RECOVERED: True
 - The `Bash` tool on Windows runs through Git Bash, so POSIX commands
   (`rm -rf`, `curl`) work and are what the policy patterns match.
 - Discord messages are capped at 2000 characters; the bridge clips to 1900.
+- The `os.tmpdir()` on this machine is the 8.3 short form
+  (`C:\Users\ADMINI~1.DES\AppData\Local\Temp`), which is why the path
+  canonicalisation in §8 item 8 matters. Long and short spellings of the same
+  directory must compare equal.
+- Some shells (sandboxed or service-spawned) have `$env:ProgramFiles`,
+  `$env:APPDATA` and `$env:LOCALAPPDATA` **empty** even though the directories
+  exist. Anything that builds paths from those variables must have literal
+  fallbacks — `Join-Path` throws outright on a null root.
+- HTTPS to `github.com:443` is blocked by the local proxy in this environment
+  (`api.github.com` is fine). `git push` over HTTPS exits 0 **without pushing**,
+  so pushes go over SSH on port 443 and are always verified with `git ls-remote`.
 
-## 9. Still requiring a human step
+## 10. Still requiring a human step
+
+### 10.1 Already done on this machine
+
+The global approval hook **has been installed** into
+`~/.claude/settings.json` (there was no such file before, so nothing was
+overwritten):
+
+```json
+{"hooks":{"PreToolUse":[{"hooks":[{"type":"command",
+  "command":"\"C:\\Program Files\\nodejs\\node.exe\" \"<repo>\\scripts\\approval-hook.mjs\"",
+  "timeout":600,"statusMessage":"Waiting for Discord approval when required"}]}]}}
+```
+
+It is inert for ordinary Claude Code and the WebUI — verified in §7.2. To remove
+it:
+
+```powershell
+.\scripts\install-global-hook.ps1 -Uninstall
+```
+
+### 10.2 What only you can do
 
 The real `iPhone Discord -> bridge -> Claude Code -> approval -> Discord` run
 needs a Discord bot that only the user can create:
@@ -349,7 +450,7 @@ npm run doctor:discord -- --send-test-dm   # proves token + DM channel
 .\scripts\start-windows.ps1
 ```
 
-## 10. Reproducing everything
+## 11. Reproducing everything
 
 ```powershell
 npm install
@@ -357,6 +458,7 @@ npm test
 npm run check
 npm run smoke:local      # real Claude Code, throwaway repo, no Discord needed
 npm run smoke:discord    # + real control plane, fake Discord transport
+npm run verify:hook      # + the installed global hook (needs install-global-hook.ps1 first)
 npm run doctor:discord   # needs .env
 .\scripts\start-windows.ps1
 ```

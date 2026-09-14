@@ -351,10 +351,20 @@ async function main() {
   const plan = buildSpawnPlan(process.env.CLAUDE_COMMAND || 'claude', ['-p', plainPrompt, '--output-format', 'json', '--dangerously-skip-permissions']);
   const plainEnv = { ...process.env, ...extraEnv };
   delete plainEnv.DISCORD_BRIDGE_ACTIVE; // exactly what a normal local / WebUI session looks like
-  const plain = spawnSync(plan.file, plan.args, {
-    cwd: repo, env: plainEnv, shell: plan.shell, encoding: 'utf8', windowsHide: true, timeout: 300000,
+  // Async on purpose: the approval server lives in this process, so a blocking
+  // spawnSync would deadlock any hook call that needed it.
+  const plain = await new Promise((resolve) => {
+    const child = spawn(plan.file, plan.args, {
+      cwd: repo, env: plainEnv, shell: plan.shell, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, 300000);
+    child.on('error', (e) => { clearTimeout(timer); resolve({ status: -1, out: `${out}\n${e.message}` }); });
+    child.on('exit', (code) => { clearTimeout(timer); resolve({ status: code, out }); });
   });
-  const plainOut = `${plain.stdout || ''}${plain.stderr || ''}`;
+  const plainOut = plain.out;
   check('E1 plain Claude Code still runs (hook is inert without DISCORD_BRIDGE_ACTIVE)', plain.status === 0, `exit=${plain.status}`);
   check('E2 the plain session really read the file instead of being blocked', /"ok"|status.*ok/i.test(plainOut));
   check('E3 no approval was requested for the plain session', phone.asked.length === asksBefore);
