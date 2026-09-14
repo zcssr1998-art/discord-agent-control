@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/index.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/claude-runner.mjs && node --check src/policy.mjs && node --check src/approval-manager.mjs && node --check scripts/approval-hook.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "smoke:local": "node scripts/local-e2e.mjs",
+    "doctor:discord": "node scripts/discord-doctor.mjs"
   },
   "dependencies": {
     "discord.js": "^14.27.0",

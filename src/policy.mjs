@@ -36,7 +36,11 @@ const NETWORK_BASH = [
 
 const SAFE_BASH = [
   /^\s*(pwd|cd\s+[^;&|]+|dir|ls(?:\s|$)|where\s+|which\s+)/i,
-  /^\s*(git\s+(status|diff|log|show|branch)(?:\s|$))/i,
+  // Local, reversible git work. `git push`, `reset --hard`, `clean` and `rebase`
+  // are matched by DESTRUCTIVE_BASH first, so they stay gated.
+  /^\s*git\s+(status|diff|log|show|branch|add|commit|rev-parse|ls-files|describe|blame|shortlog)\b/i,
+  /^\s*git\s+(checkout\s+-b|switch\s+-c)\s+\S+/i,
+  /^\s*git\s+(remote\s+-v|tag(?:\s+-l)?|stash\s+list)\s*$/i,
   /^\s*(rg|grep|findstr|type|cat|Get-Content)\b/i,
   /^\s*(node|npm|pnpm|yarn)\s+(--version|-v)\s*$/i,
 ];
@@ -48,6 +52,16 @@ const TEST_BASH = [
 
 function normalize(p) {
   return path.resolve(p).toLowerCase();
+}
+
+/** True for commands the policy treats as "run the project's own checks". */
+export function isTestCommand(command) {
+  return TEST_BASH.some((re) => re.test(String(command || '')));
+}
+
+/** True when the tool name is one of the project's own test runners. */
+export function isTestToolName(toolName) {
+  return /^(pytest|jest|vitest)$/i.test(String(toolName || ''));
 }
 
 function inside(root, candidate) {

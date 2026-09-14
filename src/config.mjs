@@ -29,5 +29,10 @@ export function loadConfig() {
     approvalTimeoutMs: int('APPROVAL_TIMEOUT_MS', 540000),
     autoAllowWorkspaceWrites: bool('AUTO_ALLOW_WORKSPACE_WRITES', true),
     autoAllowTestCommands: bool('AUTO_ALLOW_TEST_COMMANDS', true),
+    // `--include-partial-messages` mostly emits thinking-token noise; off by default.
+    includePartialMessages: bool('CLAUDE_PARTIAL_MESSAGES', false),
+    // Minimum gap between edits of the single live Discord status message.
+    progressThrottleMs: int('PROGRESS_THROTTLE_MS', 1500),
+    logDir: process.env.LOG_DIR || null,
   };
 }

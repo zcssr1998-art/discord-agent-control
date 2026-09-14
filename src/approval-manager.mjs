@@ -6,10 +6,16 @@ export class ApprovalManager {
     this.pending = new Map();
     this.sessionAllows = new Set();
     this.presenter = null;
+    this.onSettled = null;
   }
 
   setPresenter(fn) {
     this.presenter = fn;
+  }
+
+  /** Called after every decision so the UI can leave the WAITING_APPROVAL state. */
+  setSettledHandler(fn) {
+    this.onSettled = fn;
   }
 
   isSessionAllowed(sessionId, ruleKey) {
@@ -20,9 +26,29 @@ export class ApprovalManager {
     if (sessionId && ruleKey) this.sessionAllows.add(`${sessionId}:${ruleKey}`);
   }
 
+  /** Drop all session grants — used by `!reset` so a reset really re-arms the gate. */
+  clearSessionAllows(sessionId = null) {
+    if (sessionId == null) {
+      const n = this.sessionAllows.size;
+      this.sessionAllows.clear();
+      return n;
+    }
+    let n = 0;
+    for (const key of [...this.sessionAllows]) {
+      if (key.startsWith(`${sessionId}:`)) { this.sessionAllows.delete(key); n += 1; }
+    }
+    return n;
+  }
+
+  #settle(id, answer, meta) {
+    if (this.onSettled) {
+      try { this.onSettled({ id, answer, meta }); } catch { /* never break the gate */ }
+    }
+  }
+
   async request(meta) {
     if (this.isSessionAllowed(meta.sessionId, meta.ruleKey)) {
-      return { decision: 'allow', reason: 'approved for session' };
+      return { decision: 'allow', reason: 'approved for session', auto: true };
     }
     if (!this.presenter) return { decision: 'deny', reason: 'approval UI unavailable' };
 
@@ -30,14 +56,18 @@ export class ApprovalManager {
     return await new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        resolve({ decision: 'deny', reason: 'approval timed out' });
+        const answer = { decision: 'deny', reason: 'approval timed out' };
+        this.#settle(id, answer, meta);
+        resolve(answer);
       }, this.timeoutMs);
 
       this.pending.set(id, { resolve, timer, meta });
       Promise.resolve(this.presenter({ id, ...meta })).catch(() => {
         clearTimeout(timer);
         this.pending.delete(id);
-        resolve({ decision: 'deny', reason: 'failed to present approval request' });
+        const answer = { decision: 'deny', reason: 'failed to present approval request' };
+        this.#settle(id, answer, meta);
+        resolve(answer);
       });
     });
   }
@@ -48,14 +78,32 @@ export class ApprovalManager {
     clearTimeout(item.timer);
     this.pending.delete(id);
 
+    let answer;
     if (action === 'allow-session') {
       this.allowForSession(item.meta.sessionId, item.meta.ruleKey);
-      item.resolve({ decision: 'allow', reason: 'approved for session' });
+      answer = { decision: 'allow', reason: 'approved for session' };
     } else if (action === 'allow-once') {
-      item.resolve({ decision: 'allow', reason: 'approved once' });
+      answer = { decision: 'allow', reason: 'approved once' };
     } else {
-      item.resolve({ decision: 'deny', reason: 'denied from Discord' });
+      answer = { decision: 'deny', reason: 'denied from Discord' };
     }
+    this.#settle(id, answer, item.meta);
+    item.resolve(answer);
     return true;
+  }
+
+  /** Deny every pending request belonging to a session (used by `!stop` / `!reset`). */
+  cancelForSession(sessionId, reason = 'cancelled') {
+    let n = 0;
+    for (const [id, item] of [...this.pending]) {
+      if (sessionId && item.meta.sessionId !== sessionId) continue;
+      clearTimeout(item.timer);
+      this.pending.delete(id);
+      const answer = { decision: 'deny', reason };
+      this.#settle(id, answer, item.meta);
+      item.resolve(answer);
+      n += 1;
+    }
+    return n;
   }
 }
