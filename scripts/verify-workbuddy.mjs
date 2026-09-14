@@ -45,6 +45,12 @@ function git(args, cwd) {
   return (r.stdout || '').trim();
 }
 
+/** Is a pid still running? `process.kill(pid, 0)` throws once it is gone. */
+function isAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 function setupRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dac-wb-verify-'));
   git(['init', '-q', '-b', 'main'], dir);
@@ -141,6 +147,27 @@ async function main() {
   check('[5] a non-WorkBuddy backend would be refused, not silently billed',
     verdict.ok === false && /paid fallback is disabled/.test(verdict.reason), verdict.reason.slice(0, 90));
   check('[5b] paid fallback is off for this run', (process.env.ALLOW_PAID_FALLBACK || 'false') !== 'true');
+
+  // [6] stop really kills the agent process tree ---------------------------
+  // The user's checklist requires !stop to genuinely terminate the agent rather
+  // than just stop listening to it.
+  const stopper = new ClaudeRunner({ command, cwd: repo, extraEnv: childEnv, envUnset });
+  const pending = stopper.send('Run the shell command `sleep 120` with the Bash tool and wait for it to finish.').then(
+    () => ({ settled: 'resolved' }),
+    (error) => ({ settled: 'rejected', message: String(error?.message || error) }),
+  );
+  await new Promise((r) => setTimeout(r, 10000));
+  const pid = stopper.child?.pid ?? null;
+  check('[6] the agent process is running before the stop', Boolean(pid), `pid=${pid}`);
+  await stopper.stop();
+  const outcome = await Promise.race([
+    pending,
+    new Promise((r) => setTimeout(() => r({ settled: 'still-pending' }), 20000)),
+  ]);
+  check('[6b] stop() settles the in-flight run instead of leaving it hanging',
+    outcome.settled === 'rejected', outcome.settled);
+  check('[6c] the agent process is really gone', !isAlive(pid), pid ? `pid=${pid}` : '(no pid)');
+  check('[6d] the runner no longer holds a child process', !stopper.child);
 
   const failed = results.filter((r) => !r.ok);
   console.log('\n=== summary ===');
