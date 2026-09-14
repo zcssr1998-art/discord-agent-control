@@ -32,34 +32,49 @@ async function main() {
   });
 
   // ---- crash containment ---------------------------------------------------
-  // The Discord control plane and the agent task live in the same process. That
-  // is only acceptable if a single stray error cannot take the process down:
-  // losing the bridge means the phone can no longer send `!status` or `!stop`
-  // to the very task that is misbehaving. So every unexpected error is logged
-  // and survived rather than fatal.
-  //
-  // This is the fix for the real outage: the run wedged on a blocked tool call,
-  // the process died silently (no `[fatal]`, no `[task] done`, no shutdown
-  // line), and the control plane went with it.
+  // The Discord control plane and the agent task live in the same process.
+  // A fatal error in the agent must not leave orphan processes behind, and the
+  // control plane must not pretend it is healthy after an uncaught exception.
+  // Strategy: log → notify owner → reap children → close Discord/hook → exit.
+  // A supervisor script (scripts/start-supervisor.ps1) watches the exit code
+  // and restarts the bridge after a short backoff, so the control plane comes
+  // back online automatically.
   let discord = null;
+  let shuttingDown = false;
 
-  const reportCrash = (label, error) => {
+  const fatalShutdown = async (label, error) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     const detail = error?.stack || String(error?.message || error);
     console.error(`[${label}] ${detail}`);
-    if (!discord) return;
-    // Best effort only — the notification must never be able to throw.
-    try {
-      Promise.resolve(discord.client?.users?.fetch?.(config.ownerId))
-        .then((owner) => owner?.send?.(
-          `⚠️ **Bridge survived an internal error** (\`${label}\`)\n\`\`\`\n${String(detail).slice(0, 900)}\n\`\`\`\n`
-          + 'The control plane is still online. `!status` / `!stop` still work.',
-        ))
-        .catch(() => {});
-    } catch { /* never let the reporter itself fail */ }
+
+    // Best-effort owner notification before we tear everything down.
+    if (discord) {
+      try {
+        await Promise.race([
+          (async () => {
+            const owner = await discord.client?.users?.fetch?.(config.ownerId);
+            await owner?.send?.(
+              `🔴 **Bridge is crashing** (\`${label}\`)\n\`\`\`\n${String(detail).slice(0, 900)}\n\`\`\`\n`
+              + 'Reaping children and exiting. Supervisor will restart shortly.',
+            );
+          })(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('notify timeout')), 5000)),
+        ]).catch(() => {});
+      } catch { /* never let the reporter itself fail */ }
+    }
+
+    // Reap every child tree so a crash never leaves orphan PowerShell/cmd/node.
+    try { await discord?.stopAll?.({ reason: `bridge crash (${label})` }); } catch { /* best effort */ }
+    try { hookServer?.close?.(); } catch { /* best effort */ }
+    try { await discord?.client?.destroy?.(); } catch { /* best effort */ }
+    const pids = killAllChildrenSync();
+    if (pids.length) console.error(`[bridge] reaped ${pids.length} orphan child tree(s): ${pids.join(', ')}`);
+    process.exit(1);
   };
 
-  process.on('uncaughtException', (error) => reportCrash('uncaughtException', error));
-  process.on('unhandledRejection', (reason) => reportCrash('unhandledRejection', reason));
+  process.on('uncaughtException', (error) => { fatalShutdown('uncaughtException', error); });
+  process.on('unhandledRejection', (reason) => { fatalShutdown('unhandledRejection', reason); });
 
   // Last-resort orphan reap. `exit` can only run synchronous code, so this is
   // the one place a blocking taskkill is correct — see src/kill-tree.mjs for why
@@ -157,6 +172,8 @@ async function main() {
   console.log(`[discord] control plane ready | log dir=${config.logDir || path.join(root, 'logs')} default cwd=${config.defaultCwd}`);
 
   const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`\n[bridge] shutting down (${signal})`);
     // Kill every agent tree before we go, so a Ctrl+C can never leave orphan
     // PowerShell / cmd / node processes behind.

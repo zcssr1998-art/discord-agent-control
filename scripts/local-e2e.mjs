@@ -169,6 +169,10 @@ async function main() {
   const routing = await resolveRoutingEnv();
   const effectiveEnv = { ...process.env, ...routing.env };
   const routingInfo = describeRouting(effectiveEnv);
+  // Paid credentials are blocked: this smoke must run on the free backend only.
+  const extraEnv = effectiveEnv;
+  const envUnset = stripPaidCredentials(extraEnv);
+
   console.log('=== environment ===');
   console.log(`routing source : ${routing.source}`);
   console.log(`routing vars   : ${JSON.stringify(redactForLog(effectiveEnv))}`);
@@ -191,9 +195,6 @@ async function main() {
 
   const repo = setupDisposableRepo();
   console.log(`disposable repo: ${repo}`);
-  // Paid credentials are blocked: this smoke must run on the free backend only.
-  const extraEnv = effectiveEnv;
-  const envUnset = stripPaidCredentials(extraEnv);
   console.log(`paid credential vars blocked: ${envUnset.length ? envUnset.join(', ') : '(none present)'}`);
 
   // ---------------------------------------------------------------- Phase A

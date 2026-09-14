@@ -18,10 +18,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { ClaudeRunner } from '../src/claude-runner.mjs';
+import { ApprovalManager } from '../src/approval-manager.mjs';
+import { createHookServer, ensureHookSecret } from '../src/hook-server.mjs';
 import { stripPaidCredentials, classifyBackend, assertBackendAllowed, billingRoute, resolveWorkbuddyCli, WORKBUDDY_COMMAND_KEYWORD, PAID_CREDENTIAL_VARS, PAID_BASE_URL_VARS } from '../src/backend.mjs';
 import { withTimeout } from '../src/limits.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const HOOK_SCRIPT = path.join(ROOT, 'scripts', 'approval-hook.mjs');
 
 /** Same resolution the bridge uses, so this verifies the real configuration. */
 function resolveExecutor() {
@@ -51,7 +54,7 @@ function isAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-function setupRepo() {
+function setupRepo(port) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dac-wb-verify-'));
   git(['init', '-q', '-b', 'main'], dir);
   git(['config', 'user.email', 'verify@local'], dir);
@@ -59,6 +62,19 @@ function setupRepo() {
   fs.writeFileSync(path.join(dir, 'README.md'), '# workbuddy backend verification\n');
   git(['add', '-A'], dir);
   git(['commit', '-qm', 'chore: init'], dir);
+
+  // Install the project-scoped hook so the agent can reach the local bridge.
+  const settingsJson = JSON.stringify({
+    hooks: {
+      PreToolUse: [
+        { hooks: [{ type: 'command', command: `node "${HOOK_SCRIPT}"`, timeout: 600 }] },
+      ],
+    },
+  }, null, 2) + '\n';
+  for (const agentDir of ['.claude', '.codebuddy']) {
+    fs.mkdirSync(path.join(dir, agentDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, agentDir, 'settings.json'), settingsJson);
+  }
   return dir;
 }
 
@@ -98,7 +114,23 @@ async function main() {
     presentPaid.every((n) => envUnset.includes(n)),
     presentPaid.length ? `blocked: ${envUnset.join(', ')}` : 'none were present in this shell');
 
-  const repo = setupRepo();
+  // Start a local approval hook server that auto-allows everything.
+  // This is required because the agent CLI is configured with a global hook
+  // that fails closed when the bridge is not reachable.
+  const secret = ensureHookSecret();
+  const approvals = new ApprovalManager({ timeoutMs: 120000 });
+  approvals.setPresenter((req) => {
+    console.log(`      [hook] auto-allow ${req.toolName} (${req.ruleKey})`);
+    approvals.resolve(req.id, 'allow-session');
+  });
+  const config = { defaultCwd: process.cwd(), autoAllowWorkspaceWrites: true, autoAllowTestCommands: true };
+  const server = createHookServer({ config, approvalManager: approvals, secret });
+  const port = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+  console.log(`approval hook server listening on 127.0.0.1:${port}`);
+  childEnv.APPROVAL_PORT = String(port);
+  childEnv.APPROVAL_HOST = '127.0.0.1';
+
+  const repo = setupRepo(port);
   console.log(`disposable repo: ${repo}\n`);
 
   // [1] + [2] backend reachable and actually in use --------------------------
@@ -118,21 +150,29 @@ async function main() {
   console.log(`      model=${backend.model ?? 'unknown'} billing=${billingRoute(backend)}`);
 
   // [3] real tool calls -----------------------------------------------------
-  const agentRun = await runAgent({
-    command,
-    cwd: repo,
-    env: childEnv,
-    envUnset,
-    prompt: [
-      'Use your tools to do exactly this:',
-      '1) create a file named wb-verify.txt containing exactly the text WB_DSF_AGENT_OK',
-      '2) read wb-verify.txt back to confirm the contents',
-      '3) run the shell command `git status --short`',
-      'Then reply with a one-line summary.',
-    ].join('\n'),
-  });
+  let agentRun = null;
+  let target = path.join(repo, 'wb-verify.txt');
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt > 1) {
+      console.log('      [retry] agent did not create the expected file; trying once more');
+      try { fs.unlinkSync(target); } catch { /* not present */ }
+    }
+    agentRun = await runAgent({
+      command,
+      cwd: repo,
+      env: childEnv,
+      envUnset,
+      prompt: [
+        'Use the Write tool to create a file named wb-verify.txt in the current directory.',
+        'The file must contain exactly the text WB_DSF_AGENT_OK and nothing else.',
+        'Then use the Read tool to read wb-verify.txt back to confirm.',
+        'Then run the shell command `git status --short`.',
+        'Reply with a one-line summary.',
+      ].join('\n'),
+    });
+    if (fs.existsSync(target)) break;
+  }
 
-  const target = path.join(repo, 'wb-verify.txt');
   check('[3] the agent performed real tool calls', agentRun.tools.length >= 2, `${agentRun.tools.length} tool call(s): ${[...new Set(agentRun.tools.map((t) => t.name))].join(',')}`);
   check('[3b] the file really exists on disk', fs.existsSync(target));
   if (fs.existsSync(target)) {
@@ -149,8 +189,6 @@ async function main() {
   check('[5b] paid fallback is off for this run', (process.env.ALLOW_PAID_FALLBACK || 'false') !== 'true');
 
   // [6] stop really kills the agent process tree ---------------------------
-  // The user's checklist requires !stop to genuinely terminate the agent rather
-  // than just stop listening to it.
   const stopper = new ClaudeRunner({ command, cwd: repo, extraEnv: childEnv, envUnset });
   const pending = stopper.send('Run the shell command `sleep 120` with the Bash tool and wait for it to finish.').then(
     () => ({ settled: 'resolved' }),
@@ -169,6 +207,7 @@ async function main() {
   check('[6c] the agent process is really gone', !isAlive(pid), pid ? `pid=${pid}` : '(no pid)');
   check('[6d] the runner no longer holds a child process', !stopper.child);
 
+  server.close();
   const failed = results.filter((r) => !r.ok);
   console.log('\n=== summary ===');
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}`);

@@ -33,7 +33,7 @@
 >    (`src/discord-ui.mjs`). 30+ seconds of silence produced no UI update, so a
 >    wedged task looked frozen indistinguishable from a dead bot.
 >
-> ### Fix (commit `ff03270`)
+> ### Fix (commit `81acd44`)
 >
 > | File | Change |
 > | --- | --- |
