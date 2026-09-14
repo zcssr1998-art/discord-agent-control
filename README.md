@@ -64,15 +64,22 @@ closed** (denies).
 ## Verification
 
 ```powershell
-npm test          # unit + integration tests
-npm run check     # syntax check of every module
+npm test              # unit + integration tests
+npm run check         # syntax check of every module
 npm run smoke:local   # real Claude Code end-to-end on a throwaway repo (no Discord needed)
+npm run smoke:discord # same, plus the real Discord control plane with a fake transport
 ```
 
-`npm run smoke:local` is the important one: it drives the real Claude Code CLI
-through the real bridge components against a disposable git repository and
-asserts on real side effects (files created, tests passing, git commit present,
-a denied destructive command that really did not happen).
+`npm run smoke:local` drives the real Claude Code CLI through the real bridge
+components against a disposable git repository and asserts on real side effects
+(files created, tests passing, a git commit present, a denied destructive command
+that really did not happen).
+
+`npm run smoke:discord` goes one layer further: real Claude Code, real hook
+server, real policy, real `DiscordControlPlane` — only the Discord *network* is
+faked. It sends `!cwd` and a task as the owner, watches the approval messages that
+get posted and taps the buttons, then verifies the outcome. If both smokes are
+green, the only untested hop is Discord's own servers.
 
 ## Layout
 
@@ -94,5 +101,7 @@ scripts/
   install-global-hook.ps1  install/remove the user-level hook
   start-windows.ps1        start the bridge
   local-e2e.mjs            real end-to-end smoke test (no Discord)
+  discord-e2e.mjs          end-to-end smoke with the real control plane
   discord-doctor.mjs       credential / connectivity diagnostics
+  check-syntax.mjs         syntax check used by `npm run check`
 ```

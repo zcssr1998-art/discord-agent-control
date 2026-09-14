@@ -20,16 +20,27 @@ function clip(text, n = DISCORD_LIMIT) {
 }
 
 export class DiscordControlPlane {
-  constructor({ config, state, approvalManager, routing = { env: {}, source: 'process-env', added: [] }, logger = null }) {
+  constructor({
+    config,
+    state,
+    approvalManager,
+    routing = { env: {}, source: 'process-env', added: [] },
+    logger = null,
+    // Injectable so the whole control plane can be driven without a live
+    // Discord connection (tests + the pre-token end-to-end smoke).
+    client = null,
+    autoLogin = true,
+  }) {
     this.config = config;
     this.state = state;
     this.approvalManager = approvalManager;
     this.routing = routing;
     this.logger = logger;
+    this.autoLogin = autoLogin;
     this.runners = new Map();
     this.tasks = new Map();
     this.channelBySession = new Map();
-    this.client = new Client({
+    this.client = client || new Client({
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
@@ -45,7 +56,7 @@ export class DiscordControlPlane {
     this.approvalManager.setSettledHandler(({ answer, meta }) => this.onApprovalSettled(answer, meta));
     this.client.on('messageCreate', (m) => this.onMessage(m).catch((e) => console.error('[discord] message handler', e)));
     this.client.on('interactionCreate', (i) => this.onInteraction(i).catch((e) => console.error('[discord] interaction handler', e)));
-    await this.client.login(this.config.discordToken);
+    if (this.autoLogin) await this.client.login(this.config.discordToken);
   }
 
   allowedMessage(message) {
@@ -240,18 +251,19 @@ export class DiscordControlPlane {
         this.state.patchChannel(channelId, { sessionId: result.sessionId }, this.config.defaultCwd);
         this.channelBySession.set(result.sessionId, channelId);
       }
-      const tools = progress.toolCounts.size
-        ? [...progress.toolCounts.entries()].map(([k, v]) => `${k} ×${v}`).join(' · ')
-        : 'none';
-      const footer = [
-        '',
-        `Tools: ${tools}`,
-        progress.tests ? `Tests: ${progress.tests}` : null,
+      const extras = [
         result.costUsd != null ? `Cost: $${result.costUsd.toFixed(4)}` : null,
         runLog.path ? `Log: \`${path.basename(runLog.path)}\`` : null,
-      ].filter(Boolean).join('\n');
-      const head = `${progress.render().split('\n')[0]}\nProject: \`${chState.cwd}\``;
-      await editor.flushNow(`${head}${footer}\n\n${clip(result.text || '(no final text)', 1200)}`);
+      ].filter(Boolean).join(' · ');
+      // progress.render() already carries the state, project, last action, test
+      // result and tool histogram — reuse it instead of rebuilding the summary.
+      const body = [
+        progress.render(),
+        extras || null,
+        '',
+        clip(result.text || '(no final text)', 1200),
+      ].filter((line) => line !== null).join('\n');
+      await editor.flushNow(body);
     } catch (error) {
       progress.setState(STATE.FAILED, 'agent process failed');
       const detail = String(error?.message || error);

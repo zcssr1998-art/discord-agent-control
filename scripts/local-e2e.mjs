@@ -214,40 +214,68 @@ async function main() {
   check('A6 the agent reported a concrete model', Boolean(phaseA.runner.model), phaseA.runner.model || 'unknown');
 
   // ---------------------------------------------------------------- Phase B
-  const decoy = path.join(repo, 'decoy');
-  fs.mkdirSync(decoy, { recursive: true });
-  fs.writeFileSync(path.join(decoy, 'keep-me.txt'), 'must survive a denied delete\n');
+  // A gated command with a *local side effect*, so "deny" is observable: `curl -o`
+  // is gated by the network rule and only creates the file if it actually runs.
+  //
+  // Note: `rm -rf` and `git push` were tried first and are NOT reliable triggers —
+  // the agent inspects the repo and then declines to run an irreversible or
+  // publishing command, which is sensible behaviour but makes the test
+  // inconclusive. Destructive-rule denial is covered deterministically in Phase D2.
+  const proofFile = path.join(repo, 'network-proof.txt');
+  phone.setScript('bash-network', ['deny', 'deny', 'deny']);
+  phone.reset();
 
-  await runPhase({
-    label: 'Phase B — destructive command must be denied',
-    cwd: repo,
-    port,
-    extraEnv,
-    prompt: [
-      'Run exactly this one shell command and nothing else:',
-      '`rm -rf decoy`',
-      'Then reply with one line saying whether it succeeded.',
-    ].join('\n'),
-  });
+  const denyPrompt = [
+    'Run this shell command with the Bash tool:',
+    '',
+    '    curl -s -o network-proof.txt https://example.com',
+    '',
+    'Run it now and then reply with one line saying whether it succeeded.',
+  ].join('\n');
 
-  check('B1 the destructive call really reached the approval gate',
-    phone.countFor('bash-destructive') >= 1, `${phone.countFor('bash-destructive')} ask(s)`);
-  check('B2 DENY actually prevented the deletion', fs.existsSync(path.join(decoy, 'keep-me.txt')));
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await runPhase({
+      label: `Phase B — gated command must be denied (attempt ${attempt})`,
+      cwd: repo,
+      port,
+      extraEnv,
+      prompt: denyPrompt,
+    });
+    if (phone.countFor('bash-network') >= 1) break;
+    console.log('      [note] the agent did not attempt the gated command; retrying once');
+  }
+
+  check('B1 the gated command really reached the approval gate',
+    phone.countFor('bash-network') >= 1, `${phone.countFor('bash-network')} ask(s)`);
+  check('B2 DENY actually prevented the command from running',
+    !fs.existsSync(proofFile), fs.existsSync(proofFile) ? 'the file was created anyway!' : 'no side effect');
 
   // ---------------------------------------------------------------- Phase C
-  const phaseC = await runPhase({
-    label: 'Phase C — network commands go through the gate',
-    cwd: repo,
-    port,
-    extraEnv,
-    prompt: [
-      'Run these three shell commands one at a time using the Bash tool, in this order:',
-      '1. `curl -s -o /dev/null -w "%{http_code}" https://example.com`',
-      '2. `curl -s -o /dev/null -w "%{http_code}" https://example.com`',
-      '3. `curl -s -o /dev/null -w "%{http_code}" https://example.com`',
-      'Then reply with one line. Do not run anything else.',
-    ].join('\n'),
-  });
+  phone.setScript('bash-network', ['allow-once', 'allow-session']);
+  phone.reset();
+
+  const curlPrompt = [
+    'Run these three shell commands one at a time using the Bash tool, as your first actions, in this order:',
+    '',
+    '    curl -s -o /dev/null -w "%{http_code}" https://example.com',
+    '    curl -s -o /dev/null -w "%{http_code}" https://example.com',
+    '    curl -s -o /dev/null -w "%{http_code}" https://example.com',
+    '',
+    'Do not inspect anything first. Then reply with one line. Do not run anything else.',
+  ].join('\n');
+
+  let phaseC;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    phaseC = await runPhase({
+      label: `Phase C — network commands go through the gate (attempt ${attempt})`,
+      cwd: repo,
+      port,
+      extraEnv,
+      prompt: curlPrompt,
+    });
+    if (phone.countFor('bash-network') >= 1) break;
+    console.log('      [note] the agent did not attempt the gated commands; retrying once');
+  }
 
   const curlCalls = phaseC.result.tools.filter((t) => t.name === 'Bash' && /curl/.test(t.input?.command || '')).length;
   const networkAsks = phone.countFor('bash-network');
@@ -284,6 +312,37 @@ async function main() {
   const otherSession = await callHookClient({ ...payload('curl -s https://example.com'), session_id: 'dac-other-session' }, port);
   check('D5 a different session is NOT covered by the earlier session grant',
     otherSession.permissionDecision === 'deny', `decision=${otherSession.permissionDecision} (script exhausted -> deny)`);
+
+  // --------------------------------------------------------------- Phase D2
+  console.log('\n--- Phase D2 — real hook client: a destructive git push is denied ---');
+  phone.setScript('bash-destructive', ['deny']);
+  const asksBeforePush = phone.countFor('bash-destructive');
+  const push = await callHookClient({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: 'git push origin main' },
+    cwd: repo,
+    session_id: 'dac-push-session',
+    permission_mode: 'bypassPermissions',
+  }, port);
+  check('D6 a git push is classified as destructive and gated',
+    phone.countFor('bash-destructive') === asksBeforePush + 1, `${phone.countFor('bash-destructive')} ask(s)`);
+  check('D7 the denied push returns a real deny to Claude Code',
+    push.permissionDecision === 'deny' && /denied from Discord/.test(push.permissionDecisionReason || ''),
+    push.permissionDecisionReason);
+
+  const allowedPush = await (async () => {
+    phone.setScript('bash-destructive', ['allow-once']);
+    return await callHookClient({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push origin main' },
+      cwd: repo,
+      session_id: 'dac-push-session-2',
+      permission_mode: 'bypassPermissions',
+    }, port);
+  })();
+  check('D8 Allow once lets the very same push through', allowedPush.permissionDecision === 'allow', allowedPush.permissionDecisionReason);
 
   // ---------------------------------------------------------------- Phase E
   console.log('\n--- Phase E — plain Claude Code must be unaffected by the installed hook ---');

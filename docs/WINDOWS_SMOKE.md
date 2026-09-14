@@ -47,10 +47,20 @@ routing vars   : {"ANTHROPIC_BASE_URL":"https://api.deepseek.com/anthropic","ANT
 ## 2. Automated checks
 
 ```text
-npm test        -> 34 passed / 0 failed
-npm run check   -> checked 23 file(s), 0 failed
-npm run smoke:local -> 19/19 checks passed
+npm test            -> 55 passed / 0 failed
+npm run check       -> checked 27 file(s), 0 failed
+npm run smoke:local -> 22/22 checks passed
+npm run smoke:discord -> 16/16 checks passed
 ```
+
+There are two smoke tests, at two different levels of realism:
+
+| | real | faked |
+| --- | --- | --- |
+| `smoke:local` | Claude Code CLI, hook, hook server, policy, approval manager, git, tests | Discord (absent) |
+| `smoke:discord` | everything above **plus** `DiscordControlPlane` — commands, progress throttling, approval buttons, session bookkeeping | only the Discord network |
+
+If both are green, the only hop never exercised is Discord's own servers.
 
 ## 3. The approval gate — verified against the real Claude Code CLI
 
@@ -116,10 +126,11 @@ Prompt asked the agent to add a health endpoint, test it, run the tests and comm
 ```text
 [model] deepseek-flash[1m]
 [progress] 🟡 RUNNING · 5s  | Write .../src/health.mjs
-[progress] 🟡 RUNNING · 12s | Write .../test/health.test.mjs
-[progress] 🧪 TESTING · 15s | Bash: npm test
-[progress] 🟡 RUNNING · 44s | Bash: git add -A && git commit -m "feat: add health endpoint"
-[final]    ✅ DONE · 1m 00s tools=6 cost=$0.22
+[progress] 🟡 RUNNING · 5s  | Write .../test/health.test.mjs
+[progress] 🧪 TESTING · 11s | Bash: npm test
+[progress] 🟡 RUNNING · 40s | Bash: git add -A
+[progress] 🟡 RUNNING · 46s | Bash: git commit -m "feat: add health endpoint"
+[final]    ✅ DONE · 53s tools=5 cost=$0.17
 ```
 
 Checks that passed:
@@ -133,18 +144,25 @@ Checks that passed:
 Note that in-workspace edits, tests and `git add/commit` produced **zero**
 approval prompts — the "don't interrupt me for normal work" requirement.
 
-### Phase B — destructive command is denied
+### Phase B — a gated command is denied and really does not run
 
-A decoy directory containing `keep-me.txt` was created. The agent was asked to run
-`rm -rf decoy`.
+The agent was asked to run `curl -s -o network-proof.txt https://example.com`.
+That command is gated by the network rule and has a *local side effect*, so "deny"
+is observable rather than assumed.
 
 ```text
-[progress] 🟡 RUNNING · 22s | Bash: rm -rf decoy
-[phone]    Bash (bash-destructive) -> deny
+[progress] 🟡 RUNNING · 6s | Bash: curl -s -o network-proof.txt https://example.com
+[phone]    Bash (bash-network) -> deny
+[final]    ✅ DONE · 9s tools=1
 ```
 
-**Verified**: `decoy/keep-me.txt` still exists afterwards. Deny prevented the real
-filesystem operation.
+**Verified**: `network-proof.txt` does not exist afterwards — the command never ran.
+
+Design note: `rm -rf decoy` and `git push origin main` were tried first as the
+gated trigger and are **not** reliable. The agent inspects the repository and then
+declines to run an irreversible or publishing command — sensible model behaviour,
+but it makes the test inconclusive. The destructive rule is therefore covered
+deterministically in Phase D2 instead.
 
 ### Phase C — network commands are gated, then covered by "Allow session"
 
@@ -174,6 +192,19 @@ times with the same `session_id`, then once with a different one:
 **Verified**: `Allow session` is scoped to `sessionId:ruleKey` and does not leak
 to other sessions or to other rule keys.
 
+### Phase D2 — destructive rule, deterministically
+
+The same real hook client, now with `git push origin main` (rule key
+`bash-destructive`, the canonical example from the task book):
+
+| Call | Expected | Observed |
+| --- | --- | --- |
+| `git push`, phone taps Deny | `deny` with reason `denied from Discord` | as expected |
+| `git push`, phone taps Allow once | `allow` | as expected |
+
+**Verified**: the destructive rule is gated, and both decisions reach Claude Code
+as real `permissionDecision` values.
+
 ### Phase E — ordinary Claude Code is unaffected
 
 The same repo, same installed hook, but **without** `DISCORD_BRIDGE_ACTIVE`:
@@ -186,7 +217,40 @@ E3 no approval was requested for the plain session
 
 **Verified**: the hook is inert for normal local Claude Code and the WebUI.
 
-## 5. Session / state recovery
+## 5. Discord layer end-to-end — `npm run smoke:discord`
+
+Same real Claude Code, plus the real `DiscordControlPlane`. The owner is
+simulated by injecting `messageCreate` events, and the "phone" is simulated by
+watching the messages that get posted and tapping the buttons on them — reacting
+to exactly what a human would see. Only the Discord transport is faked.
+
+Flow that was exercised: `!cwd <repo>` → task message → the agent edits code,
+runs tests, commits, then runs a gated `rm -rf decoy` → an approval message with
+`Allow once` / `Allow session` / `Deny` is posted **in the channel** → the phone
+taps `Deny` → the agent reports the denial and finishes.
+
+```text
+16/16 checks passed
+```
+
+Notable results:
+
+| Check | Evidence |
+| --- | --- |
+| bind + task | `Bound this Discord channel to ...`, then a live status message |
+| real code change | `src/health.mjs` exists and returns `{"status":"ok"}` |
+| real tests | `node --test` re-run independently: exit 0 |
+| real git | commit `feat: add health endpoint` in `git log` |
+| deny is real | `decoy/keep-me.txt` still present |
+| approval UX | 1 prompt posted, in the originating channel, carrying all three buttons |
+| decision applied | phone decisions `allow-once,deny`; the agent's final text reported the denial |
+| low noise | **1** status message, 16 edits, against **1299** raw stdout lines and 11 tool calls |
+| transcript | full stream-json written to the run log, not to Discord |
+
+The low-noise number is the one worth remembering: an 80-second task produced
+1299 lines of raw Claude output. Discord saw one message, updated 16 times.
+
+## 6. Session / state recovery
 
 The channel binding is `channel_id -> cwd + claude session_id` in
 `data/state.json`, and the bridge resumes with `--resume <session_id>`.
@@ -201,7 +265,7 @@ resumed_answer: 'BANANA42'
 SESSION_RECOVERED: True
 ```
 
-## 6. Bugs found and fixed during this work
+## 7. Bugs found and fixed during this work
 
 1. **`npm test` was red on Windows (1 failure).** `ClaudeRunner` spawned with
    `shell: true`, and Node joins command + args with spaces **without quoting**,
@@ -233,7 +297,28 @@ SESSION_RECOVERED: True
    `system` event per token. Now opt-in via `CLAUDE_PARTIAL_MESSAGES` (default
    off); the bridge only needs complete assistant turns plus the final result.
 
-## 7. Environment quirks worth knowing
+7. **`thinking_tokens` is emitted even with partial messages off.** Measured on a
+   single 90 s task: **2451 of 2505** stdout lines were `system/thinking_tokens`.
+   Every one was being JSON-parsed and dispatched to the control plane for
+   nothing. They are still written to the run log (so nothing is lost) but are no
+   longer dispatched. Covered by a test.
+
+8. **Windows short (8.3) paths broke the workspace check.** The same directory can
+   be spelled `C:\Users\Administrator.DESKTOP-RHFCBBR\...` or
+   `C:\Users\ADMINI~1.DES\...` — `os.tmpdir()` returns the short form on this
+   machine. If the hook's `cwd` and the tool's target path use different
+   spellings, the plain prefix comparison classifies every in-workspace edit as
+   "write outside workspace" and the user gets an approval prompt for every single
+   edit. Paths are now canonicalised with `fs.realpathSync.native`, resolving the
+   nearest existing ancestor for paths that do not exist yet.
+
+9. **The final status message was missing a newline.** The summary and the extras
+   line were concatenated without a separator, producing
+   ``Project: `C:\...`Tools: none``. The summary is now taken from
+   `progress.render()` directly instead of being rebuilt, which also removed a
+   duplicated tool-count calculation that could disagree with the live status.
+
+## 8. Environment quirks worth knowing
 
 - Claude Code 2.1.270 invokes `reg.exe` internally on Windows. In a sandboxed
   shell that call is blocked and logs a warning; it does not affect the run. In a
@@ -242,7 +327,7 @@ SESSION_RECOVERED: True
   (`rm -rf`, `curl`) work and are what the policy patterns match.
 - Discord messages are capped at 2000 characters; the bridge clips to 1900.
 
-## 8. Still requiring a human step
+## 9. Still requiring a human step
 
 The real `iPhone Discord -> bridge -> Claude Code -> approval -> Discord` run
 needs a Discord bot that only the user can create:
@@ -264,16 +349,17 @@ npm run doctor:discord -- --send-test-dm   # proves token + DM channel
 .\scripts\start-windows.ps1
 ```
 
-## 9. Reproducing everything
+## 10. Reproducing everything
 
 ```powershell
 npm install
 npm test
 npm run check
 npm run smoke:local      # real Claude Code, throwaway repo, no Discord needed
+npm run smoke:discord    # + real control plane, fake Discord transport
 npm run doctor:discord   # needs .env
 .\scripts\start-windows.ps1
 ```
 
-The disposable repo used by `smoke:local` is left on disk and its path is printed
-at the end of the run so the result can be inspected by hand.
+The disposable repo used by each smoke test is left on disk and its path is
+printed at the end of the run so the result can be inspected by hand.

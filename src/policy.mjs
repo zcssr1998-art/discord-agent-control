@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'TodoRead']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
@@ -50,8 +51,48 @@ const TEST_BASH = [
   /^\s*(pytest|python\s+-m\s+pytest|dotnet\s+test|cargo\s+test|go\s+test)\b/i,
 ];
 
+const canonicalCache = new Map();
+
+/**
+ * Resolve to a canonical absolute path.
+ *
+ * Windows can spell the same directory two ways: the long form and the 8.3 short
+ * form (`C:\Users\ADMINI~1.DES\...`, which is what `os.tmpdir()` returns on some
+ * machines). If `cwd` and the tool's target path use different spellings, a plain
+ * prefix check classifies every in-workspace edit as "write outside workspace" and
+ * the user gets an approval prompt for every single edit. `realpathSync.native`
+ * expands short names; for paths that do not exist yet we canonicalise the nearest
+ * existing ancestor and re-append the remainder.
+ */
+function canonical(p) {
+  const abs = path.resolve(p);
+  const cached = canonicalCache.get(abs);
+  if (cached !== undefined) return cached;
+
+  let result = abs;
+  try {
+    result = fs.realpathSync.native(abs);
+  } catch {
+    const parts = [];
+    let dir = abs;
+    for (;;) {
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      parts.unshift(path.basename(dir));
+      dir = parent;
+      try {
+        result = path.join(fs.realpathSync.native(dir), ...parts);
+        break;
+      } catch { /* keep walking up */ }
+    }
+  }
+  if (canonicalCache.size > 500) canonicalCache.clear();
+  canonicalCache.set(abs, result);
+  return result;
+}
+
 function normalize(p) {
-  return path.resolve(p).toLowerCase();
+  return canonical(p).toLowerCase();
 }
 
 /** True for commands the policy treats as "run the project's own checks". */

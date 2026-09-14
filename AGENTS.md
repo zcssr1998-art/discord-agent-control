@@ -35,12 +35,18 @@ Implemented and verified on the user's Windows machine:
   must never be rendered into Discord; it goes to `logs/`.
 - `scripts/local-e2e.mjs` (`npm run smoke:local`) — real end-to-end smoke test
   without Discord. Treat a red run here as a release blocker.
+- `scripts/discord-e2e.mjs` (`npm run smoke:discord`) — the same loop plus the
+  real `DiscordControlPlane`, with only the Discord transport faked. Run this
+  before blaming Discord when the live bridge misbehaves.
+- `tests/helpers/fake-discord.mjs` — the fake transport used above. It is test
+  infrastructure, not a replacement for the live Discord smoke.
 
 Verification commands:
 
 ```text
-npm test          # unit + integration tests
-npm run check     # syntax check of every module
+npm test              # unit + integration tests
+npm run check         # syntax check of every module
 npm run smoke:local   # real Claude Code end-to-end on a throwaway repo
+npm run smoke:discord # real control plane, fake Discord transport
 npm run doctor:discord
 ```

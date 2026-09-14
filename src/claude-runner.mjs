@@ -137,6 +137,12 @@ export class ClaudeRunner {
     try { event = JSON.parse(line); }
     catch { this.onEvent({ type: 'raw', text: line }); return; }
 
+    // Claude Code emits one `system/thinking_tokens` event per thinking token
+    // (measured: 2451 of 2505 stdout lines in a single 90s task, even with
+    // --include-partial-messages off). It carries no information the bridge can
+    // act on, so it is recorded in the run log but never dispatched.
+    if (event.type === 'system' && event.subtype === 'thinking_tokens') return;
+
     if (event.type === 'system' && event.subtype === 'init') {
       if (event.session_id) {
         this.sessionId = event.session_id;
