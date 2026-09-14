@@ -15,6 +15,72 @@ No token, secret or credential value is recorded here.
 
 ## 0. V2 results — WorkBuddy free backend
 
+### 0.1 Real Discord end-to-end (the acceptance test)
+
+Run from the user's own Discord client against the live bridge, with no test
+harness in the path. Three tasks were sent; the agent ran on the WorkBuddy free
+backend and the approval buttons were tapped by the user.
+
+| # | Message sent from Discord | Result |
+| --- | --- | --- |
+| 1 | `帮我找下电脑上有没有一个叫龟龟的文件夹` | DONE, 5 tools, 94 s — two approvals, both answered **Allow session** |
+| 2 | `在测试目录创建 wb-discord-test.txt，写入 WB_DISCORD_DSF_OK，读取确认后告诉我完成` | DONE, 4 tools, 27 s |
+| 3 | `运行命令：curl -s -o proof.txt https://example.com` | approval answered **Deny** |
+
+Bridge console for task 1 — the backend is reported by the agent itself on every
+run, and the approval decisions are real:
+
+```text
+[task] start channel=… cwd=D:\dac-smoke prompt=帮我找下电脑上有没有一个叫龟龟的文件夹
+[backend] observed=WorkBuddy Free DSF model=fast-model apiKeySource=www.workbuddy.ai -> OK
+[approval] requested tool=Bash rule=bash-other channel=… reason=unclassified shell command
+[approval] resolved decision=allow rule=bash-other reason=approved for session
+[approval] requested tool=PowerShell rule=unknown:PowerShell channel=… reason=unknown tool: PowerShell
+[approval] resolved decision=allow rule=unknown:PowerShell reason=approved for session
+[task] done channel=… state=DONE tools=5 durationMs=93674
+```
+
+Task 3 — deny, and the side effect really did not happen:
+
+```text
+[task] start channel=… prompt=运行命令：curl -s -o proof.txt https://example.com
+[approval] requested tool=Bash rule=bash-network reason=network/install/publish shell command
+[approval] resolved decision=deny rule=bash-network reason=denied from Discord
+[task] done channel=… state=DONE tools=1 durationMs=14015
+```
+
+Task 2's transcript, taken from the run log on disk:
+
+```text
+prompt       : 在测试目录创建 wb-discord-test.txt，写入 WB_DISCORD_DSF_OK，读取确认后告诉我完成
+apiKeySource : www.workbuddy.ai
+model        : fast-model
+cost_usd     : 0
+raw lines    : 18
+tool calls   : Bash(ls -la) · Bash(ls test/) · Write(test/wb-discord-test.txt) · Read(test/wb-discord-test.txt)
+final text   : 完成。路径 `d:\dac-smoke\test\wb-discord-test.txt`，内容 `WB_DISCORD_DSF_OK`，读取验证内容一致 ✓
+```
+
+**Real side effects on disk, verified independently of the agent:**
+
+| Check | Result |
+| --- | --- |
+| `D:\dac-smoke\test\wb-discord-test.txt` exists | yes, 17 bytes |
+| its content | `WB_DISCORD_DSF_OK` (exact) |
+| `D:\dac-smoke\proof.txt` after the denied `curl` | **absent** — deny really blocked execution |
+| the disposable repo's own `npm test` | still 1 passed / 0 failed |
+| session persisted | `state.json` holds `cwd: D:\dac-smoke`, `sessionId: 2516f1b6-…`, `model: fast-model` |
+
+Cost of every run above: **$0**. No paid credential was reachable from the agent
+process.
+
+Approval coverage on the real phone: **Allow session** (task 1, twice) and
+**Deny** (task 3) were tapped by the user. **Allow once** is covered by the
+automated smokes, which drive the same control plane and the same button
+`customId` path (`smoke:local` D1–D2, `smoke:discord` D11–D12).
+
+### 0.2 Automated results
+
 | Check | Command | Result |
 | --- | --- | --- |
 | unit + integration | `npm test` | 82 passed / 0 failed |
