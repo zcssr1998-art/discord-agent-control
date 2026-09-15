@@ -24,6 +24,7 @@ import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
 import { ChatRuntime } from './chat-runtime.mjs';
 import { ProviderHealthRegistry } from './provider-health.mjs';
+import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import { loadLiteLLMConfig, checkLiteLLMHealth, readOpenCodeGoKey } from './litellm.mjs';
 import { redactSecrets } from './secrets.mjs';
 
@@ -246,6 +247,11 @@ async function main() {
     workbuddyStatus,
   };
 
+  // Serialises Jarvis-managed Work per canonical workspace. In-memory on
+  // purpose: an active Agent does not survive a bridge restart, so persisting a
+  // queued-but-not-started task would add complexity without recovery value.
+  const workspaceScheduler = new WorkspaceScheduler();
+
   discord = new DiscordControlPlane({
     config,
     state,
@@ -260,6 +266,7 @@ async function main() {
     executorManager: executors,
     chatRuntime,
     gatewayHealth,
+    workspaceScheduler,
     extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });

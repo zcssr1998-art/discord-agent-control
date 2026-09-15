@@ -24,6 +24,7 @@ import { helpText, readyText, formatStatus, APPROVAL_BUTTONS, PERM_LABEL, PERM_S
 import { PROTOCOL, TRANSPORT, normalizeBaseUrl, providerErrorMessage } from './provider-manager.mjs';
 import { SessionManager } from './session-manager.mjs';
 import { MODE, parseModeCommand, stripSelfMention } from './mode-router.mjs';
+import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 
 const DISCORD_LIMIT = 1900;
 
@@ -77,6 +78,65 @@ function protocolButtons() {
   );
 }
 
+function settingsButtons({ workThread = false } = {}) {
+  const top = [];
+  // A permanent Work thread has no Chat context, so the Chat-route control is
+  // deliberately absent there.
+  if (!workThread) top.push(new ButtonBuilder().setCustomId('set:chatauto').setLabel('💬 Chat→AUTO').setStyle(ButtonStyle.Secondary));
+  top.push(
+    new ButtonBuilder().setCustomId('set:executor').setLabel('🛠️ 执行器').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('set:provider').setLabel('🌐 提供商').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('set:model').setLabel('🧠 模型').setStyle(ButtonStyle.Secondary),
+  );
+  return [
+    new ActionRowBuilder().addComponents(...top),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('set:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('set:refresh').setLabel('🔄 刷新').setStyle(ButtonStyle.Primary),
+    ),
+  ];
+}
+
+function settingsBackRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('set:refresh').setLabel('⬅️ 返回').setStyle(ButtonStyle.Secondary),
+  );
+}
+
+export const SETTINGS_MODEL_LIMIT = 20;
+
+/**
+ * Turn a choice list into button rows (5 per row, 5 rows). Returns null when the
+ * list does not fit; callers fall back to the existing text command instead of
+ * building pagination in P1.
+ */
+function choiceRows(prefix, items, { current = null } = {}) {
+  if (!items.length || items.length > 25) return null;
+  const rows = [];
+  for (let i = 0; i < items.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(
+      ...items.slice(i, i + 5).map((item) => new ButtonBuilder()
+        .setCustomId(`${prefix}:${item.id}`)
+        .setLabel(item.id === current ? `✓ ${item.label}`.slice(0, 80) : String(item.label).slice(0, 80))
+        .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        .setDisabled(Boolean(item.disabled))),
+    ));
+  }
+  return rows;
+}
+
+const THREAD_NAME_MAX = 90;
+
+export function sanitizeThreadName(task) {
+  const cleaned = String(task ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/[`*_~|]/g, '')
+    .trim();
+  const base = cleaned || 'Work';
+  const name = `🛠 ${base}`;
+  return name.length <= 100 ? name : `${name.slice(0, THREAD_NAME_MAX)}…`;
+}
+
 function modelPageButtons(page, pages) {
   if (pages <= 1) return null;
   return new ActionRowBuilder().addComponents(
@@ -118,6 +178,7 @@ export class DiscordControlPlane {
     executorManager = null,
     chatRuntime = null,
     gatewayHealth = null,
+    workspaceScheduler = null,
     extraEnv = {},
     envUnset = [],
     client = null,
@@ -137,6 +198,11 @@ export class DiscordControlPlane {
     this.executorManager = executorManager;
     this.chatRuntime = chatRuntime;
     this.gatewayHealth = gatewayHealth;
+    // Workspace serialization lives in the Work orchestration layer, not in
+    // LiteLLM/provider routing and not in the per-channel busy flag: two threads
+    // can target the same cwd.
+    this.scheduler = workspaceScheduler || new WorkspaceScheduler();
+    this.queuedNotices = new Map();
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
     this.autoLogin = autoLogin;
@@ -362,6 +428,8 @@ export class DiscordControlPlane {
       permissionLabel: permLabel,
       blocked: blocked?.blocked ? blocked.reason : providerBlocked,
       mode: s.mode,
+      workState: this.#workStateText(channelId),
+      workWorkspace: this.scheduler.stateFor(channelId).workspace || s.cwd,
       chatRoute: this.#chatRouteText(channelId),
       chatActual: this.#chatActualText(channelId),
       chatHealth: this.#chatHealthText(channelId),
@@ -396,6 +464,44 @@ export class DiscordControlPlane {
 
   #busy(channelId) {
     return this.tasks.has(channelId) || Boolean(this.runners.get(channelId)?.busy);
+  }
+
+  #workStateText(channelId) {
+    const work = this.scheduler.stateFor(channelId);
+    if (work.state === 'running') return 'running';
+    if (work.state === 'queued') return `queued (#${work.position})`;
+    return 'idle';
+  }
+
+  /**
+   * Compact settings panel. It only *renders* state; every mutation reuses the
+   * same SessionManager / PermissionManager logic as the text commands, so there
+   * is exactly one configuration system.
+   */
+  #settingsPanel(channelId) {
+    const state = this.sessionManager.get(channelId);
+    const provider = this.providerManager?.get(state.providerId);
+    const executor = this.executorManager?.get(state.executorId);
+    const actual = this.#chatActualText(channelId);
+    const lines = [
+      '⚙️ **Jarvis Settings**',
+      '',
+      '💬 **CHAT**',
+      `Route: ${this.#chatRouteText(channelId)}`,
+      `Last actual: ${actual || '—'}`,
+      '',
+      '🛠 **WORK**',
+      `Executor: ${executor?.displayName || state.executorId || '未选择'}`,
+      `Provider: ${provider?.displayName || state.providerId || '未选择'}`,
+      `Model: ${state.model || '未选择'}`,
+      `Workspace: \`${state.cwd}\``,
+      `Permission: ${PERM_SHORT[this.permissionManager.getLevel(channelId)]}`,
+      `State: ${this.#workStateText(channelId)}`,
+      ...(this.#isWorkThread(channelId) ? ['', '🛠 这是永久 Work 线程；请到父频道使用 Chat。'] : []),
+      '',
+      '使用下方按钮修改；文本指令仍然有效。',
+    ];
+    return { content: clip(lines.join('\n')), components: settingsButtons({ workThread: this.#isWorkThread(channelId) }) };
   }
 
   #configCard(channelId) {
@@ -640,6 +746,10 @@ export class DiscordControlPlane {
       await message.reply(this.#configCard(message.channelId));
       return;
     }
+    if (text === '!settings') {
+      await message.reply(this.#settingsPanel(message.channelId));
+      return;
+    }
     const executorCommand = text.toLowerCase().match(/^!executor(?:\s+(\S+))?$/);
     if (executorCommand) {
       await message.reply(executorCommand[1]
@@ -750,6 +860,14 @@ export class DiscordControlPlane {
       return;
     }
     if (text === '!stop') {
+      // A queued-but-not-started task owns no Agent process: drop it from the
+      // workspace queue and leave the active owner untouched.
+      const queued = this.scheduler?.cancelQueued(message.channelId);
+      if (queued) {
+        this.queuedNotices.delete(message.channelId);
+        await message.reply(`⛔ 已取消排队中的任务（原队列位置 ${queued.position}）。活动任务不受影响。`);
+        return;
+      }
       // Order matters. Mark the task cancelled and release the agent *before*
       // replying, so the channel is immediately usable again: a stuck task must
       // never leave `busy` set, and `!stop` must kill the whole child tree, not
@@ -844,6 +962,10 @@ export class DiscordControlPlane {
         await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
         return;
       }
+      if (this.scheduler?.stateFor(message.channelId).state === 'queued') {
+        await message.reply('⏳ 该频道已有任务在队列中等待。使用 `!stop` 取消排队。');
+        return;
+      }
       // Refuse to keep hammering a broken setup; that is how a background loop
       // burns tokens unattended.
       const blocked = this.limits?.blocked(message.channelId);
@@ -864,22 +986,37 @@ export class DiscordControlPlane {
    */
   async #handleModeCommand(message, command) {
     const channelId = message.channelId;
+
+    // A permanent Work thread is Work-scoped: `chat` must never silently turn it
+    // back into Chat, and `work <task>` must never nest a second thread.
+    if (this.#isWorkThread(channelId)) {
+      if (command.mode === MODE.CHAT) {
+        await message.reply('这是 Work 线程。请到父频道使用 Chat。');
+        return;
+      }
+      if (!command.prompt) {
+        await message.reply('🛠 这是 Work 线程，下一条普通消息将作为 Agent 任务执行。');
+        return;
+      }
+      await this.#startWorkInChannel(message, command.prompt);
+      return;
+    }
+
+    // Thread-capable guild parent + inline task: isolate the Work into a thread
+    // and leave the parent in Chat. DMs / non-thread channels keep the existing
+    // inline behavior.
+    if (command.mode === MODE.WORK && command.prompt && this.#supportsThreads(message)) {
+      await this.#startWorkThread(message, command.prompt);
+      return;
+    }
+
     await this.sessionManager.setMode(channelId, command.mode);
     if (command.mode === MODE.WORK) {
       if (!command.prompt) {
         await message.reply('🛠 已切换到 Work 模式。下一条普通消息将作为 Agent 任务执行。');
         return;
       }
-      if (this.tasks.has(channelId) || this.runners.get(channelId)?.busy) {
-        await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
-        return;
-      }
-      const blocked = this.limits?.blocked(channelId);
-      if (blocked?.blocked) {
-        await message.reply(`⛔ 拒绝启动：${redact(blocked.reason)}`);
-        return;
-      }
-      await this.runTask(message, command.prompt);
+      await this.#startWorkInChannel(message, command.prompt);
       return;
     }
     if (!command.prompt) {
@@ -887,6 +1024,87 @@ export class DiscordControlPlane {
       return;
     }
     await this.runChat(message, command.prompt);
+  }
+
+  /** Local pre-flight for Work: refuse double-run and a blocked setup. */
+  async #startWorkInChannel(message, prompt) {
+    const channelId = message.channelId;
+    if (this.tasks.has(channelId) || this.runners.get(channelId)?.busy) {
+      await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
+      return;
+    }
+    if (this.scheduler?.stateFor(channelId).state === 'queued') {
+      await message.reply('⏳ 该频道已有任务在队列中等待。使用 `!stop` 取消排队。');
+      return;
+    }
+    const blocked = this.limits?.blocked(channelId);
+    if (blocked?.blocked) {
+      await message.reply(`⛔ 拒绝启动：${redact(blocked.reason)}`);
+      return;
+    }
+    await this.runTask(message, prompt);
+  }
+
+  #isWorkThread(channelId) {
+    return Boolean(this.state.getChannel(channelId, this.config.defaultCwd).workThread);
+  }
+
+  #supportsThreads(message) {
+    const channel = message.channel;
+    if (!message.guildId || !channel) return false;
+    if (this.#isWorkThread(message.channelId)) return false;
+    if (typeof channel.isThread === 'function' && channel.isThread()) return false;
+    if (typeof message.startThread === 'function') return true;
+    return Boolean(channel.threads && typeof channel.threads.create === 'function');
+  }
+
+  /**
+   * Create one permanent Work thread for an inline task. On any Discord
+   * permission/API failure the task is NOT executed anywhere: silently falling
+   * back to running Work in the parent Chat channel would be a surprise.
+   */
+  async #startWorkThread(message, task) {
+    const parentId = message.channelId;
+    let thread;
+    try {
+      const name = sanitizeThreadName(task);
+      thread = typeof message.startThread === 'function'
+        ? await message.startThread({ name, autoArchiveDuration: 1440 })
+        : await message.channel.threads.create({ name, autoArchiveDuration: 1440 });
+    } catch (error) {
+      await message.reply(`❌ 无法创建 Work 线程：${redact(error?.message || error)}\n任务未启动；父频道仍为 Chat。`);
+      return;
+    }
+    if (!thread?.id) {
+      await message.reply('❌ 无法创建 Work 线程（Discord 未返回线程）。任务未启动；父频道仍为 Chat。');
+      return;
+    }
+
+    const parent = this.sessionManager.get(parentId);
+    this.state.patchChannel(thread.id, {
+      mode: MODE.WORK,
+      workThread: true,
+      parentChannelId: parentId,
+      cwd: parent.cwd,
+      executorId: parent.executorId,
+      providerId: parent.providerId,
+      model: parent.model,
+      sessionId: null,
+    }, this.config.defaultCwd);
+    // Permission inheritance is explicit: copy the parent's current level. The
+    // parent may later change without affecting the thread's snapshot.
+    this.permissionManager.switchLevel(thread.id, this.permissionManager.getLevel(parentId));
+
+    console.log(`[work-thread] created thread=${thread.id} parent=${parentId} cwd=${parent.cwd}`);
+    await message.reply(`🛠 已创建 Work 线程 <#${thread.id}>，任务已在线程中开始。父频道保持 Chat。`);
+
+    const threadMessage = {
+      channelId: thread.id,
+      guildId: message.guildId,
+      channel: thread,
+      reply: (payload) => thread.send(payload),
+    };
+    await this.runTask(threadMessage, task);
   }
 
   /**
@@ -1002,7 +1220,52 @@ export class DiscordControlPlane {
     return `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`。\n该选择不会自动回退到其他模型。`;
   }
 
+  /**
+   * Queue the task behind a per-workspace FIFO lock. The workspace lock is
+   * acquired before the Agent starts, so a second task on the same cwd never runs
+   * concurrently and a queued task never creates a runner.
+   */
   async runTask(message, prompt) {
+    const channelId = message.channelId;
+    const chState = this.sessionManager.get(channelId);
+    const workspace = chState.cwd || this.config.defaultCwd;
+
+    if (this.scheduler.stateFor(channelId).state === 'queued') {
+      await message.reply('⏳ 该频道已有任务在队列中等待。使用 `!stop` 取消排队。');
+      return;
+    }
+
+    const entry = this.scheduler.submit({
+      workspace,
+      channelId,
+      label: message.guildId ? `<#${channelId}>` : 'DM',
+      run: () => this.#runTaskNow(message, prompt),
+      onQueued: ({ position, active }) => this.#notifyQueued(message, workspace, position, active),
+      onStart: async () => {
+        const notice = this.queuedNotices.get(channelId);
+        if (!notice) return;
+        this.queuedNotices.delete(channelId);
+        await notice.edit('▶️ 已获得工作区锁，任务开始执行。').catch(() => {});
+      },
+    });
+    return entry.done;
+  }
+
+  async #notifyQueued(message, workspace, position, active) {
+    const activeLabel = active?.channelId ? `<#${active.channelId}>` : '其他任务';
+    try {
+      const sent = await message.reply([
+        `⏳ Workspace busy: ${workspace}`,
+        `Queue position: ${position}`,
+        `Active task: ${activeLabel}`,
+      ].join('\n'));
+      this.queuedNotices.set(message.channelId, sent);
+    } catch (error) {
+      console.warn(`[queue] could not send the queue notice: ${redact(error?.message || error)}`);
+    }
+  }
+
+  async #runTaskNow(message, prompt) {
     const channelId = message.channelId;
     const chState = this.sessionManager.get(channelId);
     let runner;
@@ -1189,6 +1452,72 @@ export class DiscordControlPlane {
     }
     const [prefix, id, action] = interaction.customId.split(':');
     const channelId = interaction.message.channelId;
+    if (prefix === 'set') {
+      if (id === 'chatauto') {
+        this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
+        await interaction.update(this.#settingsPanel(channelId));
+        return;
+      }
+      if (id === 'permission') {
+        await interaction.update(this.#permissionMenu(channelId));
+        return;
+      }
+      if (id === 'executor') {
+        const current = this.sessionManager.get(channelId).executorId;
+        const items = (this.executorManager?.list() ?? []).map((executor) => ({
+          id: executor.id,
+          label: `${executor.displayName}${executor.status && executor.status !== 'PASS' ? ` (${executor.status})` : ''}`,
+          disabled: !executor.available,
+        }));
+        const rows = choiceRows('setexec', items, { current });
+        await interaction.update(rows
+          ? { content: '🛠️ 选择执行器', components: [...rows, settingsBackRow()] }
+          : { content: this.#executorText(channelId), components: [settingsBackRow()] });
+        return;
+      }
+      if (id === 'provider') {
+        const state = this.sessionManager.get(channelId);
+        const items = (this.providerManager?.list() ?? [])
+          .filter((provider) => this.providerManager.hasCredential(provider)
+            && (!this.executorManager || this.executorManager.compatible(state.executorId, provider.protocol)))
+          .map((provider) => ({ id: provider.id, label: provider.displayName }));
+        const rows = choiceRows('setprov', items, { current: state.providerId });
+        await interaction.update(rows
+          ? { content: '🌐 选择 Provider', components: [...rows, settingsBackRow()] }
+          : { content: this.#providersText(channelId), components: [settingsBackRow()] });
+        return;
+      }
+      if (id === 'model') {
+        const state = this.sessionManager.get(channelId);
+        const provider = this.providerManager?.get(state.providerId);
+        const models = provider?.models ?? [];
+        if (models.length && models.length <= SETTINGS_MODEL_LIMIT) {
+          const rows = choiceRows('setmodel', models.map((model) => ({ id: model.id, label: model.id })), { current: state.model });
+          await interaction.update({ content: `🧠 选择模型（${provider.displayName}）`, components: [...rows, settingsBackRow()] });
+        } else {
+          await interaction.update({
+            content: `🧠 模型数量较多或未缓存（${models.length}）。请使用 \`!models\` / \`!model <model-id>\`。`,
+            components: [settingsBackRow()],
+          });
+        }
+        return;
+      }
+      // refresh / back / unknown
+      await interaction.update(this.#settingsPanel(channelId));
+      return;
+    }
+    if (prefix === 'setexec' || prefix === 'setprov' || prefix === 'setmodel') {
+      const result = prefix === 'setexec'
+        ? await this.#switchExecutor(channelId, id)
+        : prefix === 'setprov'
+          ? await this.#switchProvider(channelId, id)
+          : await this.#selectModel(channelId, id);
+      await interaction.update({
+        content: clip(`${result}\n\n${this.#settingsPanel(channelId).content}`),
+        components: settingsButtons({ workThread: this.#isWorkThread(channelId) }),
+      });
+      return;
+    }
     if (prefix === 'cfg') {
       if (id === 'executor') await interaction.update({ content: this.#executorText(channelId), components: [] });
       else if (id === 'provider') await interaction.update({ content: this.#providersText(channelId), components: [] });
