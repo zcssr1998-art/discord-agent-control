@@ -8,7 +8,8 @@ if (process.env.DISCORD_BRIDGE_ACTIVE !== '1') process.exit(0);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const secretPath = path.join(root, 'data', 'hook-secret');
+const defaultSecretPath = path.join(root, 'data', 'hook-secret');
+const secretPath = process.env.DISCORD_BRIDGE_SECRET_FILE || defaultSecretPath;
 const host = process.env.APPROVAL_HOST || '127.0.0.1';
 const port = Number(process.env.APPROVAL_PORT || 37911);
 
@@ -22,9 +23,17 @@ function deny(reason) {
   }));
 }
 
-let secret;
-try { secret = fs.readFileSync(secretPath, 'utf8').trim(); }
-catch { deny('Discord approval bridge secret unavailable; failing closed.'); process.exit(0); }
+// The bridge injects DISCORD_BRIDGE_SECRET into the agent child environment, so
+// the hook always uses the secret of the bridge that actually launched it. The
+// file is only a fallback: a globally installed hook can live in a different
+// checkout, whose data/hook-secret would otherwise be stale and cause HTTP 401.
+const envSecret = String(process.env.DISCORD_BRIDGE_SECRET || '').trim();
+let secret = envSecret;
+if (!secret) {
+  try { secret = fs.readFileSync(secretPath, 'utf8').trim(); }
+  catch { deny('Discord approval bridge secret unavailable; failing closed.'); process.exit(0); }
+}
+if (!secret) { deny('Discord approval bridge secret is empty; failing closed.'); process.exit(0); }
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;

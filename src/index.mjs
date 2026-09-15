@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { ApprovalManager } from './approval-manager.mjs';
 import { createHookServer, ensureHookSecret } from './hook-server.mjs';
+import { ensureGlobalHook } from './global-hook.mjs';
 import { StateStore } from './state.mjs';
 import { RunLogger } from './logger.mjs';
 import { RunLimits } from './limits.mjs';
@@ -40,6 +41,15 @@ async function main() {
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
   const permissions = new PermissionManager();
   const secret = ensureHookSecret();
+  // Repair a stale global hook (a hook installed from a different checkout
+  // reads a different data/hook-secret and 401s every tool call). The hook
+  // script itself also prefers the secret the bridge injects into the agent
+  // child, so this is defense in depth, not the only guard.
+  if (config.autoInstallHook) {
+    const hook = ensureGlobalHook({ root });
+    const changed = hook.results.filter((r) => r.changed).map((r) => r.target);
+    console.log(`[hook] global hook ${hook.installed ? 'ready' : 'unavailable'}${changed.length ? ` (updated: ${changed.join(', ')})` : ''}`);
+  }
   const logger = new RunLogger(config.logDir || path.join(root, 'logs'));
   const limits = new RunLimits({
     maxConsecutiveFailures: config.maxConsecutiveFailures,
@@ -122,7 +132,13 @@ async function main() {
   const executors = new ExecutorManager({
     workbuddyCommand: config.claudeCommand,
     workbuddyEnv: childEnv,
-    bridgeEnv: { APPROVAL_HOST: config.approvalHost, APPROVAL_PORT: String(config.approvalPort) },
+    bridgeEnv: {
+      APPROVAL_HOST: config.approvalHost,
+      APPROVAL_PORT: String(config.approvalPort),
+      // The hook client prefers this over its local data/hook-secret so a
+      // globally installed hook can never use a stale secret.
+      DISCORD_BRIDGE_SECRET: secret,
+    },
   });
   await executors.discover();
   for (const executor of executors.list()) {
@@ -244,7 +260,7 @@ async function main() {
     executorManager: executors,
     chatRuntime,
     gatewayHealth,
-    extraEnv: childEnv,
+    extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });
 

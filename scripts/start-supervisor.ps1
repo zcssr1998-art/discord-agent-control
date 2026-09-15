@@ -51,7 +51,7 @@ function Get-Delay {
 # alongside the bridge, so a gateway crash is repaired instead of silently
 # downgrading Chat to direct providers. If LiteLLM is not installed the
 # supervisor simply runs the bridge on its own.
-$repoRoot = Split-Path $Entry -Parent | Split-Path -Parent
+$repoRoot = Split-Path $PSScriptRoot -Parent
 $gatewayExe = Join-Path $repoRoot 'data\litellm\venv\Scripts\litellm.exe'
 $gatewayPidFile = Join-Path $repoRoot 'data\litellm\gateway.pid'
 $gatewayScript = Join-Path $PSScriptRoot 'start-litellm.ps1'
@@ -90,8 +90,9 @@ $consecutiveCrashes = 0
 $bridgePid = $null
 $shuttingDown = $false
 
-# Ctrl+C handler
-$null = [Console]::TreatControlCAsInput = $true
+# Ctrl+C handler (best effort: there may be no interactive console, e.g. when
+# launched by a service or a test harness).
+try { $null = [Console]::TreatControlCAsInput = $true } catch { }
 
 Write-Log "Supervisor starting. Entry=$Entry MaxRestarts=$MaxRestarts"
 
@@ -112,7 +113,9 @@ try {
     # Wait for exit, but also poll for Ctrl+C so the supervisor itself can be
     # stopped cleanly even when the child is wedged.
     while (!$proc.HasExited) {
-      if ([Console]::KeyAvailable) {
+      $keyAvailable = $false
+      try { $keyAvailable = [Console]::KeyAvailable } catch { }
+      if ($keyAvailable) {
         $key = [Console]::ReadKey($true)
         if ($key.Key -eq 'C' -and $key.Modifiers -eq 'Control') {
           Write-Log "Ctrl+C pressed — stopping bridge gracefully"

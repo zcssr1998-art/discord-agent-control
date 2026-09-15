@@ -43,6 +43,8 @@ function bootBridge(env) {
       CLAUDE_COMMAND: path.join(ROOT, 'tests', 'fake-claude.mjs'),
       AGENT_BACKEND: 'workbuddy-free-dsf',
       ALLOW_PAID_FALLBACK: 'false',
+      // Do not touch the real user-level agent settings from a test.
+      DISCORD_AUTO_HOOK: '0',
       // A metered credential that must never survive into the agent process or
       // appear anywhere in the logs.
       ANTHROPIC_AUTH_TOKEN: 'sk-test-must-be-blocked',
