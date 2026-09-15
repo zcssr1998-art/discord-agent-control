@@ -797,6 +797,8 @@ export class DiscordControlPlane {
 
   async onMessage(message) {
     if (!this.allowedMessage(message)) return;
+    // Routing evidence: which live bridge PID handled this DM/guild message.
+    console.log(`[discord] message pid=${process.pid} source=${message.guildId ? 'guild' : 'dm'} channel=${message.channelId}`);
     // Strip our own leading mention so `@Jarvis 你好` chats exactly like `你好`,
     // and so `@Jarvis work` still parses as a local mode command.
     const text = stripSelfMention(String(message.content ?? '').trim(), this.client?.user?.id ?? null);
@@ -855,6 +857,7 @@ export class DiscordControlPlane {
       return;
     }
     if (text === '!panel' || text === '/panel') {
+      console.log(`[panel] pid=${process.pid} source=${message.guildId ? 'guild' : 'dm'} channel=${message.channelId} (local, no model call)`);
       const panel = message.channel?.send ? await message.channel.send(this.#controlPanel(message.channelId)) : await message.reply(this.#controlPanel(message.channelId));
       let pinned = false;
       try {
