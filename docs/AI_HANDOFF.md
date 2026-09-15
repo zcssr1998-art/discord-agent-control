@@ -2,88 +2,81 @@
 
 Keep this file short and overwrite/update it at every meaningful handoff. Do not paste old chat transcripts here.
 
-## Current task
-
-Jarvis V4 P2: persistent control panel + Work launcher + Chat history + New/Compact + attachments.
-
 ## Branch
 
-`jarvis-v4-p2-control-context` (do not merge `main`).
+`jarvis-v4-p2-control-context` (PR #4, Draft; do not merge yet).
 
-## Active spec
+## Active specs
 
-`docs/JARVIS_V4_P2_TASK.md`
+- `docs/JARVIS_V4_P2_TASK.md` — P2 implementation complete; human Discord smoke was in progress.
+- `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — **current task**.
 
-`docs/JARVIS_V4_P1_1_CONTROL_PANEL_TASK.md` is superseded and only points here.
-
-## Last known good baseline
+## Last known good state
 
 P0/P0.5 + P1 are merged on `main`.
 
-Verified P1 baseline:
-
-- `npm test` 195/0
-- `npm run check` 76/0
-- `npm run smoke:p1` 20/20
-- real Discord same-workspace queue PASS
-- real guild Work thread + same-session continuation PASS
-- Chat via LiteLLM remains Agent-free
-
-Evidence: `docs/V4_P1_SMOKE.md`.
-
-## P2 status (this branch)
-
-Implemented: `!panel` control panel + New Work modal, Chat/Work model selectors, panel settings/permission/status/stop/help, bounded persistent Chat history, `!new`/`!compact`, Discord attachments (Work local inbox + Chat text/image with a real vision route).
-
-Verified on this machine:
+P2 on this branch is implemented and machine-verified:
 
 - `npm test` 226/0
 - `npm run check` 83/0
-- `npm run smoke:p2` 11/11 (real LiteLLM chat-fast, real chat context recall, real vision `deepseek-v4-flash-vision-exp` -> 红色, real Agent file task in a panel-created Work thread)
+- `npm run smoke:p2` 11/11
+- real LiteLLM Chat context recall PASS
+- real vision PASS
+- real Agent file task from P2 panel-created Work thread PASS
 
-Only remaining: owner-run human real-Discord smoke (`docs/V4_P2_SMOKE.md` §8). Evidence: `docs/V4_P2_SMOKE.md`.
+Human Discord proved the live P2 `!panel` is now running; final P2 owner smoke is not yet closed.
 
-Key P2 files: `src/chat-history.mjs`, `src/attachments.mjs`, `src/discord-ui.mjs`, `src/chat-runtime.mjs`, `scripts/p2-e2e.mjs`.
+## Current owner request (P2.1)
 
-## P2 architecture decisions
+Make Jarvis native/easy to control from Discord and make a running Work task interactive:
 
-- Persistent panel uses stable interaction IDs; no panel registry/database.
-- Panel actions reuse existing SessionManager/PermissionManager/ModelManager and shared Work start/stop paths.
-- `🛠 新建 Work` uses one modal task field; guild parent -> existing Work thread path, DM -> inline, Work thread -> same thread.
-- Chat and Work model selectors are separate and use Provider -> model; Work selector must not be trapped on WorkBuddy `fast-model`.
-- Chat history is channel-scoped, persistent, bounded, and separate from Work Agent session IDs.
-- A successful Chat turn appends history once; provider retries/fallbacks must not duplicate it.
-- New Chat clears Chat context only; it preserves model/work configuration.
-- Compact is explicit and model-assisted; failed compact leaves original history intact. No surprise background summarization calls.
-- Work attachments download once to a safe runtime inbox and are passed to Agent as local file paths.
-- Chat supports bounded text attachments and common images; unsupported binaries are rejected with a Work hint rather than ignored.
-- Image AUTO should use a configured LiteLLM vision route when available; manual pinned Chat stays pinned.
+1. register real application commands `/panel /work /model /settings /permission /status /stop /new /compact /help`
+2. active/queued Work progress cards show `➕ 追加需求` + `⛔ Stop`
+3. append button opens multiline Modal
+4. while Work is active, normal owner text in the Work thread / Work-mode DM/channel queues through the same follow-up backend
+5. follow-ups execute FIFO as later turns in the same Agent session; never start a concurrent Agent for the same active run
+6. every follow-up re-enters existing `runTask` + `WorkspaceScheduler` after current turn releases the lock, preserving workspace fairness
+7. guild parent normal text remains Chat
+8. Stop reuses exact existing stop semantics and also clears pending follow-ups
+9. stale progress-card controls bind to run ID and cannot affect a newer task
 
-## Execution order
+## Architecture constraints
 
-1. P2A persistent panel + Work launcher — done
-2. P2B ChatHistoryStore + history-aware ChatRuntime — done
-3. P2C New Chat + Compact — done
-4. P2D attachments — done
-5. P2E deterministic full suite + machine-side real smoke — done; human real-Discord smoke pending owner
+- reuse existing P2 panel/model/settings/status/help renderers
+- reuse existing New Work path for `/work`
+- one shared stop path for text command, panel, slash command, and progress card
+- no parallel config/state system
+- no mid-process stdin injection
+- no market-data/P3 work in this branch
+- preserve P0/P1/P2 routing, history, attachments, permissions, queue and Work-thread invariants
 
-## Minimal relevant files to inspect first
+## Minimal files first
 
 - `src/discord-ui.mjs`
-- `src/chat-runtime.mjs`
+- `src/progress.mjs`
 - `src/session-manager.mjs`
-- `src/state.mjs`
-- `src/provider-manager.mjs`
-- `src/model-manager.mjs`
 - `src/workspace-scheduler.mjs`
 - `tests/helpers/fake-discord.mjs`
+- existing P2 tests
 
-Do not rescan the whole repository before these.
+Do not rescan the entire repository unless these are insufficient.
+
+## Verification
+
+Targeted tests while coding, then:
+
+```text
+npm test
+npm run check
+npm run smoke:p2
+```
+
+Add only a small focused smoke if needed for command registration/card component persistence. Human Discord evidence goes into `docs/V4_P2_SMOKE.md` as P2.1.
 
 ## Blocker
 
-None technical. The human real-Discord smoke (`docs/V4_P2_SMOKE.md` §8) is `PENDING_OWNER_DISCORD_SMOKE` because the bridge cannot act as the human owner. A real vision route exists (`opencode-go / deepseek-v4-flash-vision-exp`) and passed the machine-side image smoke.
+None known. Do not redo P2 implementation; extend it.
 
 ## Delivery
 
-Update `CURRENT`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_SMOKE.md`; commit and push to the P2 branch. Final worker reply stays short.
+Update `CURRENT`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_SMOKE.md`; commit + push to `jarvis-v4-p2-control-context`. Final worker reply stays short.
