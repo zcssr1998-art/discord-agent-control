@@ -4,55 +4,70 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 ## Branch
 
-`jarvis-v4-p1-workflow`
+`jarvis-v4-p2-control-context`
 
 ## Milestone
 
-Jarvis V4 P1 — safe Work concurrency + Work-thread UX + compact settings UX.
+Jarvis V4 P2 — persistent control panel + Work launcher + Chat history + New/Compact + attachments.
 
 ## Stable baseline
 
-P0/P0.5 was merged to `main` via PR #2 and is the rollback point
-(`docs/V4_SMOKE.md`). Its invariants are preserved: default Chat, ordinary Chat
-never starts an Agent, LiteLLM primary + OpenCode Go direct fallback,
-fallback/cooldown attribution, manual pin never falls back, Work
-permissions/approval, real `!stop` process-tree kill, AUTO never spends METERED.
+P0/P0.5 and P1 are merged to `main` and are the rollback point.
 
-## Current status
+Preserve these invariants:
 
-P1A/P1B/P1C are implemented and verified, including the real Discord network
-smoke (`docs/V4_P1_SMOKE.md` section 6): same-workspace queue across
-`#jarvis-p1-a` / `#jarvis-p1-b`, real thread Work + session continuation.
+- ordinary Chat never starts an Agent
+- LiteLLM primary + OpenCode Go direct fallback
+- manual Chat pin never silently falls back
+- AUTO never surprises the owner with metered routes
+- guild `work <task>` creates a permanent Work thread; parent remains Chat
+- one canonical workspace has at most one active Jarvis Work task; same-workspace tasks FIFO
+- queued Work never starts an Agent before lock acquisition
+- real `!stop` kills active process trees / cancels queued work correctly
+- permission/approval/session safety remains intact
 
-- P1A `src/workspace-scheduler.mjs` — one active Jarvis Work task per canonical
-  workspace, FIFO queue, in-memory, release on every exit path, queued cancel.
-  `runTask` acquires the workspace before the Agent starts; `!status` shows
-  `idle / running / queued (#N)`; `!stop` on a queued channel removes only that
-  request.
-- P1B Work threads — thread-capable guild parent + `work <task>` creates one
-  permanent Work thread, parent stays Chat, one thread = one session, no nested
-  threads, DM Work unchanged, thread-create failure runs nothing.
-- P1C `!settings` — compact Chat + Work panel reusing the existing
-  SessionManager/PermissionManager mutations (no second config system), no
-  runner/LLM calls; Chat control omitted inside a permanent Work thread.
+P1 real Discord smoke passed for cross-channel workspace queue and Work-thread session continuation. Evidence: `docs/V4_P1_SMOKE.md`.
 
 ## Current task
 
-`docs/JARVIS_V4_P1_TASK.md`. All P1 acceptance items are implemented.
+`docs/JARVIS_V4_P2_TASK.md`
+
+The earlier P1.1 control-panel task was folded into P2; do not implement it separately.
+
+## P2 scope
+
+1. persistent `!panel` control panel
+2. `🛠 新建 Work` modal that reuses existing Work paths
+3. Chat/Work Provider -> model selectors
+4. Settings / Permission / Status / Stop / Usage Guide from the panel
+5. bounded persistent channel-scoped Chat history
+6. New Chat (`!new`, panel; `/new` where supported)
+7. Compact context (`!compact`, panel; `/compact` where supported)
+8. Discord attachments: Work files + Chat text/images with safe limits
+
+## Key architecture decisions
+
+- no second settings/model/work implementation: panel delegates to existing managers and P1 Work paths
+- no SQLite/Redis; small local JSON/JSONL runtime state is enough
+- Chat history is separate from Work Agent sessions
+- failed Chat fallback attempts must not duplicate history
+- explicit Compact may call the Chat model; no surprise background summarization calls
+- Work attachments download once to a safe runtime inbox and are passed to Agent as local paths
+- Chat binary files are not silently ignored; unsupported files should be redirected to Work
 
 ## Next action
 
-P1 acceptance is complete. P1 PR is ready for final review; next milestone is P2
-(attachments, chat history, `/new` `/compact`). Do not merge `main`.
+Worker implements P2 in order: P2A panel -> P2B history -> P2C New/Compact -> P2D attachments -> P2E real smoke/evidence.
 
-## Verification
+Do not merge to `main` until final review.
+
+## Verification baseline
+
+Before P2 changes, stable P1 baseline was:
 
 ```text
 npm test      -> 195 passed / 0 failed
 npm run check -> 76 file(s), 0 failed
-npm run smoke:p1 -> 20/20 real Agent checks (Claude Code + OpenCode Go)
-Real Discord: same-workspace queue PASS; thread real Work + continuation PASS
-Real Chat via LiteLLM chat-fast -> opencode-go/deepseek-v4.1-flash, 2.2 s
+npm run smoke:p1 -> 20/20
+Real Discord queue/thread smoke -> PASS
 ```
-
-Evidence: `docs/V4_P1_SMOKE.md`.
