@@ -7,8 +7,11 @@ Real-machine evidence and known gotchas: `docs/WINDOWS_SMOKE.md`.
 Principles:
 - Do not rewrite from scratch; inspect and extend the existing implementation.
 - Jarvis is the stable Discord AI terminal. Models/providers/Agent CLIs are replaceable backends.
-- Default user mode is **Chat**. Chat must call a model API directly and must not start an Agent.
+- Default user mode is **Chat**. Chat must not start an Agent.
 - **Work** is explicit and uses an Agent runtime.
+- **LiteLLM is the primary standard model gateway in V4**. Use it for provider normalization/routing/cost metadata where real compatibility is proven.
+- LiteLLM is not the Agent/orchestration layer. Jarvis still owns mode, sessions, workspace, permissions, queue and cancellation.
+- OpenCode Go is a special provider: verify LiteLLM compatibility on the real Windows/account setup before routing it through LiteLLM. Preserve the working direct adapter if necessary.
 - Reuse proven upstream implementations before writing a new subsystem.
 - Keep Agent and model selections independent.
 - AUTO routing must prefer healthy FREE/SUBSCRIPTION routes and must not silently spend on METERED/unknown billing.
@@ -34,10 +37,16 @@ Base V3 already provides:
 V4 foundation adds:
 - `src/mode-router.mjs` — deterministic local Chat/Work controls
 - `src/provider-health.mjs` — circuit breaker/cooldowns
-- `src/chat-runtime.mjs` — direct API Chat route with safe AUTO fallback
+- `src/chat-runtime.mjs` — direct API Chat compatibility/special-provider route
 - Chat-specific persistent state fields in `StateStore` / `SessionManager`
 
-The integration work is intentionally left in `docs/JARVIS_V4_TASK.md` so it can be completed and smoke-tested on the user's actual Windows/Discord environment.
+V4 integration task additionally requires:
+- LiteLLM local gateway for standard providers
+- local-only listener
+- validated/pinned stable LiteLLM version
+- supervisor lifecycle integration
+- health/status integration
+- real OpenCode Go compatibility probe before attempting to force it through LiteLLM
 
 ## Verification commands
 
@@ -55,9 +64,11 @@ npm run doctor:discord
 
 ## Traps that already cost time once
 
-- **Never use `spawnSync` while a server in the same process has to answer the child.** It blocks the event loop, so the hook client can never get a response and the run hangs until it is killed. Use async `spawn`.
-- **`shell: true` on Windows means Node quotes nothing.** Both the executable and every argument must be quoted by hand — see `buildSpawnPlan` / `quoteWindowsArg`.
-- **Never write `~/.claude/settings.json` with a BOM.** PowerShell 5.1's `Set-Content -Encoding UTF8` adds one and can silently break hook loading.
-- **A smoke test that depends on the model choosing a destructive command is flaky.** Use a gated command with an observable local side effect, or drive the hook client directly.
+- **Never use `spawnSync` while a server in the same process has to answer the child.** It blocks the event loop. Use async `spawn`.
+- **`shell: true` on Windows means Node quotes nothing.** Quote executable and every argument by hand; see `buildSpawnPlan` / `quoteWindowsArg`.
+- **Never write `~/.claude/settings.json` with a BOM.** PowerShell 5.1 can silently break hook loading.
+- **A smoke test that depends on the model choosing a destructive command is flaky.** Use an observable safe local side effect or drive the hook client directly.
 - Do not simplify Discord networking to one proxy path. The existing gateway and REST proxy handling is deliberate.
-- Do not regress the current fail-closed backend/credential isolation when adding Chat fallback.
+- Do not regress fail-closed backend/credential isolation.
+- Do not add Postgres/Redis/Kubernetes just because LiteLLM supports them; this is a personal local deployment.
+- Do not run two independent full routing engines that fight each other: LiteLLM owns normal provider routing; Jarvis owns policy and special-provider escape hatches.
