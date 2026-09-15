@@ -100,7 +100,7 @@ test('Discord OWNER can add an API without leaking its key, then select and run 
   assert.ok(fake.texts().some((text) => /model-a/.test(text)));
   await fake.sendAsUser({ content: '!model model-a' });
   assert.equal(plane.sessionManager.get(fake.channelId).model, 'model-a');
-  await fake.sendAsUser({ content: '创建验证文件' });
+  await fake.sendAsUser({ content: 'work 创建验证文件' });
   assert.equal(fs.readFileSync(path.join(dir, 'v3-proof.txt'), 'utf8'), 'V3_OK');
   assert.ok(fake.texts().some((text) => /✅ 已完成/.test(text)));
 
@@ -180,7 +180,7 @@ test('OWNER can select OpenCode Go, see transports, and only run a transport-com
   await fake.sendAsUser({ content: '!model minimax-m3' });
   assert.equal(plane.sessionManager.get(fake.channelId).model, 'minimax-m3');
 
-  await fake.sendAsUser({ content: '创建验证文件' });
+  await fake.sendAsUser({ content: 'work 创建验证文件' });
   assert.equal(fs.readFileSync(path.join(dir, 'v3-proof.txt'), 'utf8'), 'V3_OK');
 
   await fake.sendAsUser({ content: '!status' });

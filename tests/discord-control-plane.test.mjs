@@ -15,6 +15,9 @@ const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 function makePlane({ sendImpl, approvals, throttleMs = 10_000, config = {} } = {}) {
   const fake = new FakeDiscord();
   const state = new StateStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dac-ui-')), 'state.json'));
+  // This suite exercises the Agent/Work control plane. V4 defaults a channel to
+  // Chat, so put it in Work mode explicitly instead of relying on the old default.
+  state.patchChannel(fake.channelId, { mode: 'work' }, process.cwd());
   const manager = approvals ?? new ApprovalManager({ timeoutMs: 5000 });
   const plane = new DiscordControlPlane({
     config: {
@@ -353,7 +356,7 @@ test('a pre-existing session is resumed and the model is persisted', async () =>
   const fake = new FakeDiscord();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dac-ui-'));
   const state = new StateStore(path.join(dir, 'state.json'));
-  state.patchChannel(fake.channelId, { sessionId: 'old-session', cwd: os.tmpdir() }, os.tmpdir());
+  state.patchChannel(fake.channelId, { sessionId: 'old-session', cwd: os.tmpdir(), mode: 'work' }, os.tmpdir());
 
   const plane = new DiscordControlPlane({
     config: {

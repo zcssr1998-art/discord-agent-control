@@ -189,6 +189,7 @@ test('session changes stop the old executor, clear its id and restore STANDARD',
   assert.deepEqual(sessions.snapshot('c'), {
     cwd: 'C:\\repo', executorId: 'workbuddy', providerId: 'custom-1', model: null,
     sessionId: null, executorSessionId: null, permission: 'standard',
+    mode: 'chat', chatProviderId: 'auto', chatModel: null,
   });
   assert.equal(permissions.getLevel('c'), 'standard');
   const running = new SessionManager({ state, permissionManager: permissions, approvalManager: approvals, defaultCwd: 'C:\\repo', isRunning: () => true });

@@ -66,6 +66,13 @@ export function loadConfig() {
     agentBackend: process.env.AGENT_BACKEND || 'workbuddy-free-dsf',
     allowPaidFallback: bool('ALLOW_PAID_FALLBACK', false),
 
+    // --- chat (direct model API) -----------------------------------------
+    // AUTO must never silently spend on METERED/unknown-billing providers. This
+    // only enables those as a *last* AUTO candidate; a manual pin still works.
+    allowMeteredChatFallback: bool('ALLOW_METERED_CHAT_FALLBACK', false),
+    // Wall-clock cap on one direct Chat request.
+    chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
+
     // --- runaway protection ----------------------------------------------
     // Hard wall-clock cap on one task. Hitting it kills the agent process.
     taskTimeoutMs: int('TASK_TIMEOUT_MS', 900000),

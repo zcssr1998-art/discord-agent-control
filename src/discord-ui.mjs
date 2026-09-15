@@ -23,6 +23,7 @@ import { PermissionManager, LEVEL } from './permission-manager.mjs';
 import { helpText, readyText, formatStatus, APPROVAL_BUTTONS, PERM_LABEL, PERM_SHORT, redact } from './i18n.mjs';
 import { PROTOCOL, TRANSPORT, normalizeBaseUrl, providerErrorMessage } from './provider-manager.mjs';
 import { SessionManager } from './session-manager.mjs';
+import { MODE, parseModeCommand, stripSelfMention } from './mode-router.mjs';
 
 const DISCORD_LIMIT = 1900;
 
@@ -115,6 +116,7 @@ export class DiscordControlPlane {
     providerManager = null,
     modelManager = null,
     executorManager = null,
+    chatRuntime = null,
     extraEnv = {},
     envUnset = [],
     client = null,
@@ -132,6 +134,7 @@ export class DiscordControlPlane {
     this.providerManager = providerManager;
     this.modelManager = modelManager;
     this.executorManager = executorManager;
+    this.chatRuntime = chatRuntime;
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
     this.autoLogin = autoLogin;
@@ -140,6 +143,8 @@ export class DiscordControlPlane {
     this.channelBySession = new Map();
     this.backendVerdictByChannel = new Map();
     this.apiOnboarding = new Map();
+    // Last provider/model a Chat turn actually used, for the short status footer.
+    this.chatActual = new Map();
     this.sessionManager = new SessionManager({
       state,
       permissionManager: this.permissionManager,
@@ -354,6 +359,10 @@ export class DiscordControlPlane {
       pendingApprovals: this.approvalManager.pending.size,
       permissionLabel: permLabel,
       blocked: blocked?.blocked ? blocked.reason : providerBlocked,
+      mode: s.mode,
+      chatRoute: this.#chatRouteText(channelId),
+      chatActual: this.#chatActualText(channelId),
+      chatHealth: this.#chatHealthText(channelId),
     });
   }
 
@@ -576,7 +585,9 @@ export class DiscordControlPlane {
 
   async onMessage(message) {
     if (!this.allowedMessage(message)) return;
-    const text = message.content.trim();
+    // Strip our own leading mention so `@Jarvis 你好` chats exactly like `你好`,
+    // and so `@Jarvis work` still parses as a local mode command.
+    const text = stripSelfMention(String(message.content ?? '').trim(), this.client?.user?.id ?? null);
     if (!text) return;
 
     if (text === '!api') {
@@ -684,6 +695,11 @@ export class DiscordControlPlane {
       } else {
         await message.reply(await this.#selectModel(message.channelId, modelId));
       }
+      return;
+    }
+    const chatModelCommand = text.match(/^!chatmodel(?:\s+(.+))?$/i);
+    if (chatModelCommand) {
+      await message.reply(await this.#chatModelCommand(message.channelId, chatModelCommand[1]?.trim() || null));
       return;
     }
     if (text === '!health') {
@@ -805,20 +821,174 @@ export class DiscordControlPlane {
       return;
     }
 
-    if (this.tasks.has(message.channelId) || this.runners.get(message.channelId)?.busy) {
-      await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
+    // --- local mode control (deterministic, never calls a model) ------------
+    // Handled before any Agent runner is touched, so `work` / `chat` can never be
+    // forwarded to WorkBuddy as if it were a task prompt.
+    const modeCommand = parseModeCommand(text);
+    if (modeCommand) {
+      await this.#handleModeCommand(message, modeCommand);
       return;
     }
 
-    // Refuse to keep hammering a broken setup; that is how a background loop
-    // burns tokens unattended.
-    const blocked = this.limits?.blocked(message.channelId);
-    if (blocked?.blocked) {
-      await message.reply(`⛔ 拒绝启动：${redact(blocked.reason)}`);
+    // Ordinary messages are routed by the channel's current mode. Chat is the
+    // default and never enters the Agent path.
+    const mode = this.sessionManager.get(message.channelId).mode;
+    if (mode === MODE.WORK) {
+      if (this.tasks.has(message.channelId) || this.runners.get(message.channelId)?.busy) {
+        await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
+        return;
+      }
+      // Refuse to keep hammering a broken setup; that is how a background loop
+      // burns tokens unattended.
+      const blocked = this.limits?.blocked(message.channelId);
+      if (blocked?.blocked) {
+        await message.reply(`⛔ 拒绝启动：${redact(blocked.reason)}`);
+        return;
+      }
+      await this.runTask(message, text);
       return;
     }
 
-    await this.runTask(message, text);
+    await this.runChat(message, text);
+  }
+
+  /**
+   * Switch mode locally and, when an inline prompt is present, execute it in the
+   * target mode. This function never calls a model on its own.
+   */
+  async #handleModeCommand(message, command) {
+    const channelId = message.channelId;
+    await this.sessionManager.setMode(channelId, command.mode);
+    if (command.mode === MODE.WORK) {
+      if (!command.prompt) {
+        await message.reply('🛠 已切换到 Work 模式。下一条普通消息将作为 Agent 任务执行。');
+        return;
+      }
+      if (this.tasks.has(channelId) || this.runners.get(channelId)?.busy) {
+        await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
+        return;
+      }
+      const blocked = this.limits?.blocked(channelId);
+      if (blocked?.blocked) {
+        await message.reply(`⛔ 拒绝启动：${redact(blocked.reason)}`);
+        return;
+      }
+      await this.runTask(message, command.prompt);
+      return;
+    }
+    if (!command.prompt) {
+      await message.reply('💬 已切换到 Chat 模式。下一条普通消息将直接调用模型 API（不启动 Agent）。');
+      return;
+    }
+    await this.runChat(message, command.prompt);
+  }
+
+  /**
+   * Direct Chat path. Calls ChatRuntime.send() and nothing else: no getRunner,
+   * no ExecutorManager, no approval hook, no workspace scan, no Agent session.
+   */
+  async runChat(message, prompt) {
+    const channelId = message.channelId;
+    const text = String(prompt ?? '').trim();
+    if (!text) {
+      await message.reply('请输入要发送给模型的内容。');
+      return;
+    }
+    if (!this.chatRuntime) {
+      await message.reply('❌ Chat 运行时未接入。未启动 Agent；请检查 ChatRuntime 配置。');
+      return;
+    }
+
+    const selection = this.sessionManager.get(channelId);
+    const providerId = selection.chatProviderId || 'auto';
+    const model = selection.chatModel || null;
+    const startedAt = Date.now();
+    let result;
+    try {
+      result = await this.chatRuntime.send({ prompt: text, providerId, model });
+    } catch (error) {
+      console.error(`[chat] failed channel=${channelId} provider=${providerId} model=${model ?? 'auto'} code=${error?.code ?? 'UNKNOWN'} ${redact(error?.message || error)}`);
+      await message.reply(this.#chatFailureText(error, { providerId, model }));
+      return;
+    }
+
+    const durationMs = Date.now() - startedAt;
+    const fallback = Array.isArray(result.attempts) && result.attempts.length > 0;
+    this.chatActual.set(channelId, {
+      providerId: result.providerId, providerName: result.providerName, model: result.model,
+      fallback, durationMs, at: Date.now(),
+    });
+    const footer = [
+      '💬 Chat',
+      result.providerName || result.providerId || providerId,
+      result.model,
+      ...(fallback ? ['fallback'] : []),
+      `${(durationMs / 1000).toFixed(1)}s`,
+    ].join(' · ');
+    console.log(`[chat] done channel=${channelId} provider=${result.providerId} model=${result.model} fallback=${fallback} durationMs=${durationMs}`);
+    await message.reply(clip(`${result.text}\n\n${footer}`));
+  }
+
+  #chatFailureText(error, { providerId, model }) {
+    const pinned = (providerId && providerId !== 'auto') || Boolean(model);
+    if (error?.code === 'NO_CHAT_PROVIDER') {
+      return pinned
+        ? `❌ 指定的 Chat 模型不可用（provider=${providerId}${model ? ` model=${model}` : ''}）。手动选择不会自动切换。`
+        : '❌ 当前没有可用的 Chat 模型（需要凭据有效且计费为免费/订阅的 Provider）。';
+    }
+    const detail = redact(error?.message || error);
+    return pinned
+      ? `❌ 指定的 Chat 模型调用失败：${detail}\n（手动选择不会自动切换到其他 Provider/模型）`
+      : `❌ Chat 调用失败：${detail}`;
+  }
+
+  #chatRouteText(channelId) {
+    const selection = this.sessionManager.get(channelId);
+    const providerId = selection.chatProviderId || 'auto';
+    if (providerId === 'auto') return 'AUTO';
+    const provider = this.providerManager?.get(providerId);
+    return `${provider?.displayName || providerId}${selection.chatModel ? ` · ${selection.chatModel}` : ''}`;
+  }
+
+  #chatActualText(channelId) {
+    const actual = this.chatActual.get(channelId);
+    if (!actual) return null;
+    return `${actual.providerName || actual.providerId} · ${actual.model}${actual.fallback ? ' · fallback' : ''}`;
+  }
+
+  #chatHealthText(channelId) {
+    const selection = this.sessionManager.get(channelId);
+    const providerId = selection.chatProviderId || 'auto';
+    if (providerId === 'auto' || !this.chatRuntime?.health) return null;
+    const snapshot = this.chatRuntime.health.snapshot(providerId, selection.chatModel || '*');
+    return snapshot.status === 'unknown' ? 'healthy' : snapshot.status;
+  }
+
+  async #chatModelCommand(channelId, argument) {
+    if (!argument) {
+      const selection = this.sessionManager.get(channelId);
+      const actual = this.#chatActualText(channelId);
+      return [
+        '💬 **Chat 模型**',
+        `路由：${this.#chatRouteText(channelId)}`,
+        ...(actual ? [`最近实际：${actual}`] : []),
+        '',
+        '切换：`!chatmodel auto` 或 `!chatmodel <provider-id> <model-id>`',
+        '手动指定后不会自动回退。',
+      ].join('\n');
+    }
+    if (argument.toLowerCase() === 'auto') {
+      this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
+      return '✅ Chat 路由已设为 **AUTO**（优先 OpenCode Go DeepSeek Flash → GLM Flash → 其他健康免费/订阅模型）。';
+    }
+    const [providerId, modelId] = argument.split(/\s+/);
+    const provider = this.providerManager?.get(providerId);
+    if (!provider) return `❌ 未知 Provider：\`${providerId}\`。`;
+    if (provider.protocol === PROTOCOL.WORKBUDDY) return '❌ WorkBuddy 不是 Chat Provider。';
+    if (!this.providerManager.hasCredential(provider)) return `❌ Provider \`${providerId}\` 缺少 credential。`;
+    if (!modelId) return `❌ 请同时指定 model：\`!chatmodel ${providerId} <model-id>\`。`;
+    this.sessionManager.setChatSelection(channelId, { providerId, model: modelId });
+    return `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`。\n该选择不会自动回退到其他模型。`;
   }
 
   async runTask(message, prompt) {

@@ -21,6 +21,8 @@ import { CredentialStore } from './credential-store.mjs';
 import { ProviderManager } from './provider-manager.mjs';
 import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
+import { ChatRuntime } from './chat-runtime.mjs';
+import { ProviderHealthRegistry } from './provider-health.mjs';
 import { redactSecrets } from './secrets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -127,6 +129,20 @@ async function main() {
   }
   const models = new ModelManager(providers);
 
+  // ---- chat runtime --------------------------------------------------------
+  // Ordinary messages go here and only here: a direct model API call with its own
+  // health/cooldown state. It deliberately reuses the same ProviderManager and
+  // CredentialStore as the Agent path so there is a single provider database and
+  // a single secret store. It never starts an Agent, a workspace scan or a hook.
+  const chatHealth = new ProviderHealthRegistry();
+  const chatRuntime = new ChatRuntime({
+    providerManager: providers,
+    credentialStore: credentials,
+    health: chatHealth,
+    timeoutMs: config.chatTimeoutMs,
+    allowMeteredFallback: config.allowMeteredChatFallback,
+  });
+
   // Preflight: prove the free backend answers before accepting any work.
   console.log(`[backend] probing executor "${config.claudeCommand}" ...`);
   const workbuddyProbeEnv = executors.buildEnvironment('workbuddy', providers.get('workbuddy-free'), null, null);
@@ -189,6 +205,7 @@ async function main() {
     providerManager: providers,
     modelManager: models,
     executorManager: executors,
+    chatRuntime,
     extraEnv: childEnv,
     envUnset,
   });
@@ -207,6 +224,7 @@ async function main() {
   console.log(`[bridge] Model: ${backendState.backend?.model ?? 'unknown'}`);
   console.log(`[bridge] Billing route: ${backendState.billingRoute}`);
   console.log(`[bridge] Paid fallback: ${config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`[chat] mode=CHAT(default) route=AUTO meteredFallback=${config.allowMeteredChatFallback ? 'ENABLED' : 'DISABLED'} timeoutMs=${config.chatTimeoutMs}`);
   console.log(`[discord] control plane ready | log dir=${config.logDir || path.join(root, 'logs')} default cwd=${config.defaultCwd}`);
 
   const shutdown = async (signal) => {
