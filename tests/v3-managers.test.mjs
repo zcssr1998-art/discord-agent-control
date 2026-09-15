@@ -155,7 +155,7 @@ test('executor discovery reports installed, missing and adapter-not-ready honest
   assert.equal(executors.get('codex').status, 'ADAPTER_NOT_READY');
   assert.deepEqual(executors.compatibleExecutors(PROTOCOL.ANTHROPIC).map((item) => item.id), ['claude']);
   const provider = { protocol: PROTOCOL.ANTHROPIC, baseUrl: 'https://api.example.test' };
-  const runner = executors.createRunner({ executorId: 'claude', provider, credential: 'current-secret', model: 'model', cwd: 'C:\\repo' });
+  const runner = await executors.createRunner({ executorId: 'claude', provider, credential: 'current-secret', model: 'model', cwd: 'C:\\repo' });
   assert.equal(runner.options.extraEnv.ANTHROPIC_API_KEY, 'current-secret');
   assert.equal(runner.options.extraEnv.ANTHROPIC_AUTH_TOKEN, 'current-secret');
   assert.equal(runner.options.extraEnv.OPENAI_API_KEY, undefined);
@@ -289,7 +289,10 @@ test('OpenCode Go model validation uses the model transport and refuses unknown 
 });
 
 test('OpenCode Go compatibility is per model transport, and its child env is credential-isolated', async () => {
-  class FakeRunner { constructor(options) { this.options = options; } }
+  class FakeRunner {
+    constructor(options) { this.options = options; }
+    async stop() { if (this.options.onDispose) await this.options.onDispose(); return { killed: false, pid: null }; }
+  }
   const sourceEnv = {
     PATH: 'bin', OPENAI_API_KEY: 'other-secret', ANTHROPIC_AUTH_TOKEN: 'deepseek-secret', DISCORD_TOKEN: 'discord-secret',
   };
@@ -302,20 +305,40 @@ test('OpenCode Go compatibility is per model transport, and its child env is cre
   const provider = { id: 'opencode-go', protocol: PROTOCOL.OPENCODE_GO, baseUrl: 'https://opencode.ai/zen/go' };
 
   assert.equal(executors.compatible('claude', PROTOCOL.OPENCODE_GO, TRANSPORT.ANTHROPIC_MESSAGES), true);
-  assert.equal(executors.compatible('claude', PROTOCOL.OPENCODE_GO, TRANSPORT.OPENAI_CHAT), false);
+  assert.equal(executors.compatible('claude', PROTOCOL.OPENCODE_GO, TRANSPORT.OPENAI_CHAT), true, 'via the local adapter');
+  assert.equal(executors.compatible('claude', PROTOCOL.OPENCODE_GO, TRANSPORT.OPENAI_RESPONSES), false, 'responses is not adapted yet');
   assert.equal(executors.compatible('claude', PROTOCOL.OPENCODE_GO, TRANSPORT.UNKNOWN), false);
   assert.deepEqual(executors.compatibleExecutors(PROTOCOL.OPENCODE_GO).map((executor) => executor.id), ['claude']);
+  assert.equal(executors.adapterLabel(PROTOCOL.OPENCODE_GO, TRANSPORT.OPENAI_CHAT), 'Anthropic → OpenAI Chat');
+  assert.equal(executors.adapterLabel(PROTOCOL.OPENCODE_GO, TRANSPORT.ANTHROPIC_MESSAGES), null);
 
-  const runner = executors.createRunner({ executorId: 'claude', provider, credential: 'opencode-key', model: 'minimax-m3', cwd: 'C:\\repo' });
-  assert.equal(runner.options.extraEnv.ANTHROPIC_BASE_URL, 'https://opencode.ai/zen/go');
-  assert.equal(runner.options.extraEnv.ANTHROPIC_API_KEY, 'opencode-key');
-  assert.equal(runner.options.extraEnv.ANTHROPIC_AUTH_TOKEN, undefined, 'Bearer is rejected by OpenCode Go');
-  assert.equal(runner.options.extraEnv.OPENAI_API_KEY, undefined);
-  assert.equal(runner.options.extraEnv.DISCORD_TOKEN, undefined);
-  assert.equal(runner.options.inheritEnv, false);
+  const direct = await executors.createRunner({ executorId: 'claude', provider, credential: 'opencode-key', model: 'minimax-m3', cwd: 'C:\\repo' });
+  assert.equal(direct.options.extraEnv.ANTHROPIC_BASE_URL, 'https://opencode.ai/zen/go');
+  assert.equal(direct.options.extraEnv.ANTHROPIC_API_KEY, 'opencode-key');
+  assert.equal(direct.options.extraEnv.ANTHROPIC_AUTH_TOKEN, undefined, 'Bearer is rejected by OpenCode Go');
+  assert.equal(direct.options.extraEnv.OPENAI_API_KEY, undefined);
+  assert.equal(direct.options.extraEnv.DISCORD_TOKEN, undefined);
+  assert.equal(direct.options.inheritEnv, false);
+  assert.equal(direct.adapter, undefined, 'anthropic-messages is a direct route');
 
-  assert.throws(
-    () => executors.createRunner({ executorId: 'claude', provider, credential: 'opencode-key', model: 'glm-5.2', cwd: 'C:\\repo' }),
+  const adapted = await executors.createRunner({ executorId: 'claude', provider, credential: 'opencode-key', model: 'glm-5.2', cwd: 'C:\\repo' });
+  try {
+    assert.equal(adapted.adapter, 'anthropic-to-openai-chat');
+    assert.equal(adapted.adapterLabel, 'Anthropic → OpenAI Chat');
+    assert.match(adapted.options.extraEnv.ANTHROPIC_BASE_URL, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal(adapted.options.extraEnv.ANTHROPIC_API_KEY, adapted.gateway.token, 'the child only sees the local token');
+    assert.notEqual(adapted.options.extraEnv.ANTHROPIC_API_KEY, 'opencode-key', 'the real key never reaches the child env');
+    assert.equal(adapted.gateway.credential, 'opencode-key');
+    assert.equal(adapted.options.extraEnv.ANTHROPIC_AUTH_TOKEN, undefined);
+    assert.equal(adapted.options.extraEnv.OPENAI_API_KEY, undefined);
+    assert.equal(adapted.options.inheritEnv, false);
+    assert.equal(adapted.gateway.upstreamRequests.length, 0, 'no upstream call before a task runs');
+  } finally {
+    await adapted.stop({ reason: 'test cleanup' });
+  }
+
+  await assert.rejects(
+    () => executors.createRunner({ executorId: 'claude', provider, credential: 'opencode-key', model: 'grok-4.6', cwd: 'C:\\repo' }),
     { code: 'INCOMPATIBLE' },
   );
   assert.match(providerErrorMessage({ code: 'INCOMPATIBLE' }), /不支持此模型协议/);

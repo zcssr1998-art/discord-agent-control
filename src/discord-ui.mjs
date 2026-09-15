@@ -232,7 +232,7 @@ export class DiscordControlPlane {
     return true;
   }
 
-  getRunner(channelId) {
+  async getRunner(channelId) {
     const existing = this.runners.get(channelId);
     if (existing) return existing;
 
@@ -261,7 +261,7 @@ export class DiscordControlPlane {
       if (provider.credentialRef && !credential) throw Object.assign(new Error('Provider credential missing'), { code: 'INVALID_CREDENTIAL' });
       const model = chState.model || (provider.protocol === PROTOCOL.WORKBUDDY ? provider.models?.[0]?.id : null);
       if (!model) throw Object.assign(new Error('请先使用 !model <model-id> 选择模型'), { code: 'MODEL_REQUIRED' });
-      runner = this.executorManager.createRunner({
+      runner = await this.executorManager.createRunner({
         executorId: chState.executorId, provider, credential, model, ...common,
       });
     } else {
@@ -331,13 +331,17 @@ export class DiscordControlPlane {
       ? (this.backendState.workbuddyStatus === 'BLOCKED_BY_QUOTA' ? 'WorkBuddy 当前额度不足' : 'WorkBuddy 当前不可用')
       : null;
     const permLabel = PERM_SHORT[this.permissionManager.getLevel(channelId)] || PERM_SHORT.standard;
-    const protocol = provider?.protocol === PROTOCOL.OPENCODE_GO
-      ? transportLabel(this.executorManager?.resolveTransport(provider, s.model))
-      : protocolLabel(provider?.protocol);
+    const modelId = runner?.model || s.model || null;
+    const transport = provider?.protocol === PROTOCOL.OPENCODE_GO
+      ? this.executorManager?.resolveTransport(provider, modelId)
+      : null;
+    const protocol = provider?.protocol === PROTOCOL.OPENCODE_GO ? transportLabel(transport) : protocolLabel(provider?.protocol);
+    const adapter = provider ? this.executorManager?.adapterLabel(provider.protocol, transport) : null;
     return formatStatus({
       executor: executor?.displayName ?? this.config.claudeCommand,
       provider: this.providerManager ? provider?.displayName || '未选择' : undefined,
       protocol,
+      adapter,
       backend: backend?.label ?? 'unknown',
       model: runner?.model || s.model || backend?.model || 'unknown',
       billingRoute: backend ? billingRoute(backend) : 'unknown',
@@ -386,9 +390,11 @@ export class DiscordControlPlane {
     const state = this.sessionManager.get(channelId);
     const executor = this.executorManager?.get(state.executorId);
     const provider = this.providerManager?.get(state.providerId);
-    const protocol = provider?.protocol === PROTOCOL.OPENCODE_GO
-      ? transportLabel(this.executorManager?.resolveTransport(provider, state.model))
-      : protocolLabel(provider?.protocol);
+    const transport = provider?.protocol === PROTOCOL.OPENCODE_GO
+      ? this.executorManager?.resolveTransport(provider, state.model)
+      : null;
+    const protocol = provider?.protocol === PROTOCOL.OPENCODE_GO ? transportLabel(transport) : protocolLabel(provider?.protocol);
+    const adapter = provider ? this.executorManager?.adapterLabel(provider.protocol, transport) : null;
     return {
       content: [
         '【⚙️ Agent 配置】', '',
@@ -396,6 +402,7 @@ export class DiscordControlPlane {
         `🌐 提供商\n${provider?.displayName || '未选择'}`, '',
         `🧠 模型\n${state.model || '未选择'}`, '',
         `🔌 协议\n${protocol}`, '',
+        ...(adapter ? [`🔄 兼容层\n${adapter}`, ''] : []),
         `🔐 权限\n${PERM_SHORT[this.permissionManager.getLevel(channelId)]}`, '',
         `💰 计费\n${billingLabel(provider?.billingType)}`,
       ].join('\n'),
@@ -452,8 +459,11 @@ export class DiscordControlPlane {
         const marks = [];
         if (provider.protocol === PROTOCOL.OPENCODE_GO) {
           const compatible = this.executorManager?.compatible(state.executorId, provider.protocol, model.transport);
+          const adapter = this.executorManager?.adapterLabel(provider.protocol, model.transport);
           marks.push(`🔌 ${transportLabel(model.transport)}`);
-          marks.push(compatible ? `✅ ${executor?.displayName || state.executorId}` : '❌ 不支持当前执行器');
+          marks.push(compatible
+            ? `✅ ${executor?.displayName || state.executorId}${adapter ? `（${adapter}）` : ''}`
+            : '❌ 不支持当前执行器');
         }
         const suffix = marks.length ? `\n  ${marks.join(' · ')}` : '';
         return `${model.id === state.model ? '✅' : '•'} ${model.displayName}\n  \`${model.id}\`${suffix}`;
@@ -815,7 +825,7 @@ export class DiscordControlPlane {
     const channelId = message.channelId;
     const chState = this.sessionManager.get(channelId);
     let runner;
-    try { runner = this.getRunner(channelId); }
+    try { runner = await this.getRunner(channelId); }
     catch (error) {
       const text = ['INVALID_CREDENTIAL', 'PROVIDER_NOT_FOUND', 'WORKBUDDY_QUOTA', 'WORKBUDDY_UNAVAILABLE', 'INCOMPATIBLE'].includes(error.code)
         ? providerErrorMessage(error)

@@ -3,6 +3,8 @@ import { buildSpawnPlan, ClaudeRunner } from './claude-runner.mjs';
 import { stripPaidCredentials } from './backend.mjs';
 import { PROTOCOL, TRANSPORT, openCodeGoTransport } from './provider-manager.mjs';
 import { EVENT_KIND } from './event-presenter.mjs';
+import { CompatGateway } from './compat-gateway.mjs';
+import { ADAPTER, ADAPTER_LABEL } from './protocol-adapters/anthropic-to-openai-chat.mjs';
 
 const SAFE_ENV = [
   'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'windir', 'ComSpec', 'USERPROFILE', 'HOME',
@@ -80,6 +82,9 @@ export class ExecutorManager {
         // Claude Code speaks the Anthropic Messages wire format. Through OpenCode
         // Go that means the anthropic-messages model families (minimax-*, qwen*).
         supportedTransports: [TRANSPORT.ANTHROPIC_MESSAGES],
+        // For other transports (openai-chat today) the bridge runs a local
+        // protocol adapter, so Claude Code still sees a Messages endpoint.
+        adapterTransports: [TRANSPORT.OPENAI_CHAT],
         adapterReady: true, normalizeEvent: normalizeExecutorEvent,
       }],
       ['opencode', {
@@ -110,20 +115,38 @@ export class ExecutorManager {
   get(id) { return this.executors.get(id) ?? null; }
 
   /**
+   * The local protocol adapter needed to reach a transport, or null for a direct
+   * route. Only the Anthropic -> OpenAI Chat adapter exists today; the Responses
+   * path is an explicit extension point, not a silent guess.
+   */
+  adapterFor(protocol, transport) {
+    if (protocol === PROTOCOL.OPENCODE_GO && transport === TRANSPORT.OPENAI_CHAT) return ADAPTER.ANTHROPIC_TO_OPENAI_CHAT;
+    return null;
+  }
+
+  adapterLabel(protocol, transport) {
+    const adapter = this.adapterFor(protocol, transport);
+    return adapter ? ADAPTER_LABEL[adapter] : null;
+  }
+
+  /**
    * Whether an Executor can run a Provider/model pair.
    *
    * Most Providers have a single protocol, so the Executor's `supportedProtocols`
    * decides. OpenCode Go is different: the Provider is a gateway whose models are
    * served over three different wire protocols, so compatibility is decided by the
-   * model's `transport`. Passing no transport asks the weaker question "does this
-   * Executor support any OpenCode Go model at all?" (used to allow `!provider`).
+   * model's `transport`: either natively, or through a local protocol adapter.
+   * Passing no transport asks the weaker question "does this Executor support any
+   * OpenCode Go model at all?" (used to allow `!provider`).
    */
   compatible(executorId, protocol, transport = null) {
     const executor = this.get(executorId);
     if (!executor?.available || !executor.adapterReady) return false;
     if (protocol === PROTOCOL.OPENCODE_GO) {
       const supported = executor.supportedTransports ?? [];
-      return transport ? supported.includes(transport) : supported.length > 0;
+      if (!transport) return supported.length > 0 || Boolean(this.adapterFor(protocol, TRANSPORT.OPENAI_CHAT) && executor.adapterTransports?.length);
+      if (supported.includes(transport)) return true;
+      return Boolean(this.adapterFor(protocol, transport) && (executor.adapterTransports ?? []).includes(transport));
     }
     return executor.supportedProtocols.includes(protocol);
   }
@@ -142,7 +165,7 @@ export class ExecutorManager {
     return TRANSPORT.UNKNOWN;
   }
 
-  buildEnvironment(executorId, provider, credential, model, transport = null) {
+  buildEnvironment(executorId, provider, credential, model, transport = null, adapter = null) {
     if (executorId === 'workbuddy') {
       const env = isolatedBase(this.workbuddyEnv, this.bridgeEnv);
       for (const [name, value] of Object.entries(this.workbuddyEnv)) {
@@ -166,6 +189,12 @@ export class ExecutorManager {
       env.ANTHROPIC_BASE_URL = provider.baseUrl;
       env.ANTHROPIC_API_KEY = credential;
       if (model) env.ANTHROPIC_MODEL = model;
+    } else if (provider.protocol === PROTOCOL.OPENCODE_GO && wire === TRANSPORT.OPENAI_CHAT && adapter) {
+      // Claude Code points at the local adapter and never sees the real key: the
+      // child gets a random per-gateway token instead.
+      env.ANTHROPIC_BASE_URL = adapter.baseUrl;
+      env.ANTHROPIC_API_KEY = adapter.apiKey;
+      if (model) env.ANTHROPIC_MODEL = model;
     } else if (provider.protocol === PROTOCOL.OPENAI) {
       env.OPENAI_BASE_URL = provider.baseUrl;
       env.OPENAI_API_KEY = credential;
@@ -174,7 +203,7 @@ export class ExecutorManager {
     return { env, envUnset: [] };
   }
 
-  createRunner({ executorId, provider, credential, model, ...options }) {
+  async createRunner({ executorId, provider, credential, model, ...options }) {
     const executor = this.get(executorId);
     if (!executor?.available) throw Object.assign(new Error('executor is not installed'), { code: 'EXECUTOR_NOT_INSTALLED' });
     if (!executor.adapterReady) throw Object.assign(new Error('executor adapter is not ready'), { code: 'ADAPTER_NOT_READY' });
@@ -182,6 +211,29 @@ export class ExecutorManager {
     if (!this.compatible(executorId, provider.protocol, transport)) {
       throw Object.assign(new Error('executor does not support this model transport'), { code: 'INCOMPATIBLE' });
     }
+
+    const adapterId = this.adapterFor(provider.protocol, transport);
+    if (adapterId === ADAPTER.ANTHROPIC_TO_OPENAI_CHAT) {
+      const gateway = new CompatGateway({ provider, credential, model, transport });
+      await gateway.start();
+      const { env, envUnset } = this.buildEnvironment(executorId, provider, credential, model, transport, {
+        baseUrl: gateway.url, apiKey: gateway.token,
+      });
+      const runner = new this.RunnerClass({
+        ...options,
+        command: executor.command,
+        model,
+        extraEnv: env,
+        envUnset,
+        inheritEnv: false,
+        onDispose: () => gateway.close(),
+      });
+      runner.adapter = adapterId;
+      runner.adapterLabel = ADAPTER_LABEL[adapterId];
+      runner.gateway = gateway;
+      return runner;
+    }
+
     const { env, envUnset } = this.buildEnvironment(executorId, provider, credential, model, transport);
     return new this.RunnerClass({
       ...options,

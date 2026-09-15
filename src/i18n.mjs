@@ -135,7 +135,7 @@ export function readyText({ executor, provider, protocol, backend, model, billin
 
 /** 格式化 !status 输出。 */
 export function formatStatus({
-  executor, provider, protocol, backend, model, billingRoute, billingType, paidFallback,
+  executor, provider, protocol, adapter, backend, model, billingRoute, billingType, paidFallback,
   cwd, sessionId, state, idleSec, pendingApprovals, permissionLabel, blocked,
 }) {
   const lines = [
@@ -147,6 +147,7 @@ export function formatStatus({
     `🛠️ 执行器：${executor ?? 'unknown'}`,
     `🌐 ${provider ? '提供商' : '后端'}：${provider ?? backend ?? 'unknown'}`,
     `🔌 协议：${protocol ?? 'unknown'}`,
+    ...(adapter ? [`🔄 兼容层：${adapter}`] : []),
     `🧠 模型：${model ?? '未选择'}`,
     `💰 ${provider ? '计费' : '计费线路'}：${billingType ?? billingRoute ?? '未知'}`,
     `🧠 Session / 会话：\`${sessionId || '新会话'}\``,

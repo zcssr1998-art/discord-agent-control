@@ -152,6 +152,69 @@ opencode-go-test.txt exists, content OPENCODE_GO_OK
 git status --short -> ?? opencode-go-test.txt
 ```
 
+## 协议适配层（Claude Code + OpenCode Go openai-chat）
+
+Claude Code 永远只说 Anthropic Messages。OpenCode Go 的 `minimax-*` / `qwen*` 直接走 `/v1/messages`；其余模型走 OpenAI Chat。需求明确要求 **保留 Claude Code 作为 Agent Harness** 并让 DeepSeek / GLM 可用，因此增加本地协议适配层，而不是更换 Executor：
+
+```text
+Claude Code
+  -> Anthropic Messages
+  -> CompatGateway (127.0.0.1, 动态空闲端口)
+  -> OpenAI Chat Completions
+  -> OpenCode Go -> DeepSeek V4.1 Flash / GLM-5.3-Flash
+  -> 反向转换回 Anthropic Messages / SSE
+  -> Claude Code
+```
+
+- `src/compat-gateway.mjs`：本地 HTTP 网关，只监听 `127.0.0.1`，只做协议翻译，不执行工具、不驱动 Agent Loop、不修改项目文件。Claude Code 仍是唯一 Agent。
+- `src/protocol-adapters/anthropic-to-openai-chat.mjs`：纯函数 + 流式状态机，独立可单测。
+
+### 兼容矩阵（模型级）
+
+| model.transport | Claude Code | 方式 |
+| --- | --- | --- |
+| `anthropic-messages` | ✅ | 直连 OpenCode Go `/v1/messages`（不经适配层） |
+| `openai-chat` | ✅ | 本地 `Anthropic → OpenAI Chat` 适配层 |
+| `openai-responses` | ❌ | 预留扩展点，本轮未实现 |
+| `unknown` | ❌ | 无法验证，拒绝选择 |
+
+Executor 用 `adapterTransports` 声明“可经适配层到达”的 transport，`compatible()` 先看原生 transport，再看适配层，因此不会为了让测试变绿而放行任意模型。
+
+### 转换正确性（依据真实抓包，而非记忆）
+
+用当前 `Claude Code 2.1.270 + OpenCode Go + MiniMax M3` 抓取了真实请求与 SSE，并据此实现：
+
+- 请求：`system`（string / text 数组）、`messages`（含 role `system`、text/assistant/tool_use/tool_result/thinking）、`tools[].input_schema` → OpenAI `tools[].function.parameters`（去掉 `$schema`）、`tool_choice`、`max_tokens`、`temperature`、`stop_sequences`、`stream`。
+- Tool Call：Anthropic `tool_use` ↔ OpenAI `tool_calls`，`tool_result` → `role: tool` 消息，保持 `tool_use_id` / `tool_call_id` 对应。
+- Streaming：OpenAI `delta.content` / `delta.tool_calls[].function.arguments` → Anthropic `message_start`、`content_block_start`、`text_delta`、`input_json_delta`、`content_block_stop`、`message_delta`、`message_stop`（与抓包格式一致）。
+- `finish_reason` → `stop_reason`：`tool_calls→tool_use`、`stop→end_turn`、`length→max_tokens`。
+- 错误：上游 401/403/429/5xx 映射为 Anthropic `authentication_error` / `rate_limit_error` / `api_error`，由 Claude Code 正常终止；`TASK_TIMEOUT`、watchdog、`!stop` 仍生效。
+
+### Session / Cache / 凭据
+
+- 转发 `x-claude-code-session-id`（Claude Code 原生 session 头，真实抓包确认）并同时写入 `x-opencode-session`，同一 Claude Code session 对 OpenCode Go 是稳定身份，不是每请求随机。
+- 只转发安全头；Discord Bot Token、其它 Provider Key、Cookie 一律不转发。
+- **凭据隔离**：真实 OpenCode Go Key 只存在于网关进程内。Claude Code 子进程拿到的是每个网关随机生成的本地 token，`ANTHROPIC_BASE_URL` 指向 `127.0.0.1:<动态端口>`；子进程环境仍从系统变量白名单构建。
+- `!stop` / `!reset` / 会话切换 / bridge 关闭都会 `runner.stop()` → 关闭网关 → abort 所有 in-flight 上游 fetch，不残留请求或子进程。
+
+### 真实证据
+
+`npm run verify:claude-opencode-chat`（30/30）在一次性 git 仓库中真实运行：
+
+```text
+===== deepseek-v4.1-flash =====
+tools=Write, Read, Bash
+upstream models=["deepseek-v4.1-flash", ...]   （model 未被替换）
+child uses the local token, not the real key
+claude-ds-test.txt exists, content CLAUDE_DS_OK
+git status --short -> ?? claude-ds-test.txt
+
+===== glm-5.3-flash =====
+tools=Write, Read, Bash
+upstream models=["glm-5.3-flash", ...]
+claude-glm-test.txt exists, content CLAUDE_GLM_OK
+```
+
 ## 自动化证据
 
 - V2 基线：100 passed / 0 failed。

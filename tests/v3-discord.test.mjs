@@ -165,10 +165,16 @@ test('OWNER can select OpenCode Go, see transports, and only run a transport-com
   assert.match(modelsText, /anthropic-messages/);
   assert.match(modelsText, /openai-chat/);
   assert.match(modelsText, /unknown/);
+  assert.match(modelsText, /Anthropic → OpenAI Chat/, 'openai-chat models show the adapter');
 
+  // openai-chat is reachable through the local adapter; an unknown transport is not.
   await fake.sendAsUser({ content: '!model glm-5.2' });
-  assert.match(fake.messages.at(-1).content, /当前执行器不支持此模型协议/);
-  assert.equal(plane.sessionManager.get(fake.channelId).model, null);
+  assert.match(fake.messages.at(-1).content, /已切换模型/);
+  assert.equal(plane.sessionManager.get(fake.channelId).model, 'glm-5.2');
+  await fake.sendAsUser({ content: '!status' });
+  assert.match(fake.messages.at(-1).content, /协议：openai-chat/);
+  assert.match(fake.messages.at(-1).content, /兼容层：Anthropic → OpenAI Chat/);
+
   await fake.sendAsUser({ content: '!model omen-alpha' });
   assert.match(fake.messages.at(-1).content, /当前执行器不支持此模型协议/);
   await fake.sendAsUser({ content: '!model minimax-m3' });

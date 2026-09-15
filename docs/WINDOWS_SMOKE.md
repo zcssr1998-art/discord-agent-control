@@ -769,3 +769,58 @@ Bridge 已在线。OWNER 在自己的 Discord 客户端发送：
 ### 13.7 Git 与 Secret
 
 提交前执行 `git status --short` / `git diff` 与工作树 secret 扫描；`data/credentials.json`、`data/providers.json`、`.env`、hook secret 均由 `.gitignore` 排除且未进入 Git。
+
+## 14. V3 — Claude Code + OpenCode Go 协议适配（DeepSeek / GLM）
+
+### 14.1 问题
+
+`openai-chat` 模型（DeepSeek / GLM）被兼容矩阵拒绝给 Claude Code，但需求是保留 Claude Code Harness。解决方式是本地协议适配层，不是换 Executor。
+
+### 14.2 真实抓包（Claude Code 2.1.270 + OpenCode Go + MiniMax M3）
+
+抓包确认：
+
+- 请求路径 `POST /v1/messages?beta=true`，`accept: application/json`；
+- Claude Code 的原生 session 头是 **`x-claude-code-session-id`**（不是 `x-session-id`），OpenCode Go 识别它；网关转发时应同时写入 `x-opencode-session` 以保证稳定；
+- 请求体含 `system`、`messages`（存在 role `system`、`tool_use`、`tool_result`、`thinking`）、`tools[].input_schema`、`max_tokens: 32000`、`stream: true`；
+- 上游 Anthropic SSE 事件序列：`message_start` → `ping` → `content_block_start(thinking/tool_use)` → `thinking_delta`/`signature_delta`/`input_json_delta` → `content_block_stop` → `message_delta(stop_reason)` → `message_stop`；
+- 认证差异：`/v1/messages` 用 `x-api-key`（Bearer 返回 `401 Missing API key`），`/v1/chat/completions` 用 `Authorization: Bearer`。
+
+### 14.3 DeepSeek / GLM 的 OpenAI Chat tool calling 真实探测
+
+```text
+POST /v1/chat/completions  model=deepseek-v4.1-flash  -> 200, finish_reason=tool_calls
+POST /v1/chat/completions  model=glm-5.3-flash        -> 200, finish_reason=tool_calls
+```
+
+### 14.4 真实 E2E：Claude Code + 适配层 + OpenCode Go
+
+`npm run verify:claude-opencode-chat` -> **30/30**：
+
+```text
+===== deepseek-v4.1-flash =====
+CLI model=deepseek-v4.1-flash apiKeySource=ANTHROPIC_API_KEY
+tools=Write, Read, Bash
+upstream models=["deepseek-v4.1-flash","deepseek-v4.1-flash","deepseek-v4.1-flash","deepseek-v4.1-flash"]
+prompts=(none)  final=DONE
+claude-ds-test.txt -> 存在，内容 CLAUDE_DS_OK
+git status --short -> ?? claude-ds-test.txt
+
+===== glm-5.3-flash =====
+CLI model=glm-5.3-flash apiKeySource=ANTHROPIC_API_KEY
+tools=Write, Read, Bash
+upstream models=["glm-5.3-flash", ...]
+claude-glm-test.txt -> 存在，内容 CLAUDE_GLM_OK
+```
+
+模型真实性由**上游请求体 `model` 字段**证明（全部等于所选模型），不是问模型“你是谁”。子进程只拿到网关本地 token，真实 OpenCode Go Key 未进入子进程环境。
+
+### 14.5 回归
+
+```text
+npm test                     -> 135 passed / 0 failed
+npm run check                -> 58 file(s), 0 failed
+npm run verify:opencode-go   -> 17/17（MiniMax anthropic-messages 直连路线未回归）
+npm run verify:claude-opencode-chat -> 30/30
+verify:hook / smoke:discord  -> WorkBuddy 403，标记 BLOCKED_BY_WORKBUDDY
+```

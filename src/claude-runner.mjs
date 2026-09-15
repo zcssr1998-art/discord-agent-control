@@ -82,6 +82,7 @@ export class ClaudeRunner {
     onEvent = () => {},
     onExit = () => {},
     onLog = null,
+    onDispose = null,
   }) {
     this.command = command;
     this.cwd = cwd;
@@ -96,6 +97,10 @@ export class ClaudeRunner {
     this.onEvent = onEvent;
     this.onExit = onExit;
     this.onLog = onLog;
+    // Optional cleanup for resources owned by the runner (e.g. a local protocol
+    // adapter gateway). Called exactly once, from stop().
+    this.onDispose = onDispose;
+    this.disposed = false;
     this.child = null;
     this.pending = [];
     this.current = null;
@@ -371,9 +376,21 @@ export class ClaudeRunner {
     this.child = null;
     const cancelled = Object.assign(new Error(reason), { code: 'TASK_CANCELLED' });
     this.#failCurrent(cancelled);
-    if (!child || !child.pid) return { killed: false, pid: null };
-    unregisterChild(child.pid);
-    const killed = await killTree(child.pid);
-    return { killed, pid: child.pid };
+    let result = { killed: false, pid: null };
+    if (child && child.pid) {
+      unregisterChild(child.pid);
+      const killed = await killTree(child.pid);
+      result = { killed, pid: child.pid };
+    }
+    await this.#dispose();
+    return result;
+  }
+
+  /** Release runner-owned resources (for example the local adapter gateway). */
+  async #dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (!this.onDispose) return;
+    try { await this.onDispose(); } catch { /* cleanup must never throw */ }
   }
 }

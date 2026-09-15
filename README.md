@@ -131,6 +131,7 @@ npm run smoke:local   # real Claude Code end-to-end on a throwaway repo (no Disc
 npm run smoke:discord # same, plus the real Discord control plane with a fake transport
 npm run verify:hook   # the installed global hook really fires (and is inert otherwise)
 npm run verify:opencode-go # real Claude Code -> OpenCode Go -> real tool calls (disposable repo)
+npm run verify:claude-opencode-chat # Claude Code -> local adapter -> OpenCode Go DeepSeek / GLM
 ```
 
 `npm run smoke:local` drives the real Claude Code CLI through the real bridge
@@ -161,6 +162,9 @@ src/
   session-manager.mjs  Executor / Provider / Model / cwd session lifecycle
   credential-store.mjs gitignored local credential persistence
   secrets.mjs          shared secret registration, masking and redaction
+  compat-gateway.mjs   local Anthropic <-> OpenAI chat gateway (127.0.0.1 only)
+  protocol-adapters/
+    anthropic-to-openai-chat.mjs  pure request/stream/error translation
   config.mjs           env configuration
   claude-runner.mjs    persistent Claude Code stream-json process
   discord-ui.mjs       Discord control plane, commands, approval buttons
