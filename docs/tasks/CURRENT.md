@@ -5,15 +5,16 @@ Current execution specification:
 `docs/JARVIS_V4_P1_TASK.md`
 
 Status: P1A (workspace lock/queue), P1B (Work threads) and P1C (settings UX) are
-implemented, tested and real-machine smoked on `jarvis-v4-p1-workflow`.
+implemented, tested and smoke-verified on `jarvis-v4-p1-workflow`, including the
+real Discord guild network smoke (same-workspace queue + thread Work/session
+continuation).
 
 Execution order:
 
 1. P1A workspace lock/queue — done
 2. P1B Work threads — done
 3. P1C compact settings UX — done
-4. real smoke/evidence and final review — machine smoke done; two real-Discord
-   network checks pending human interaction
+4. real smoke/evidence — done (machine `smoke:p1` + real Discord queue/thread)
 
 Worker instructions:
 

@@ -20,7 +20,9 @@ permissions/approval, real `!stop` process-tree kill, AUTO never spends METERED.
 
 ## Current status
 
-P1A/P1B/P1C are implemented and verified:
+P1A/P1B/P1C are implemented and verified, including the real Discord network
+smoke (`docs/V4_P1_SMOKE.md` section 6): same-workspace queue across
+`#jarvis-p1-a` / `#jarvis-p1-b`, real thread Work + session continuation.
 
 - P1A `src/workspace-scheduler.mjs` — one active Jarvis Work task per canonical
   workspace, FIFO queue, in-memory, release on every exit path, queued cancel.
@@ -40,16 +42,16 @@ P1A/P1B/P1C are implemented and verified:
 
 ## Next action
 
-Real-Discord verification of the two remaining network-only items
-(`PENDING_REAL_MULTI_CHANNEL_SMOKE`, `PENDING_REAL_GUILD_THREAD_SMOKE`), then P2
+P1 acceptance is complete. P1 PR is ready for final review; next milestone is P2
 (attachments, chat history, `/new` `/compact`). Do not merge `main`.
 
 ## Verification
 
 ```text
-npm test      -> 194 passed / 0 failed
+npm test      -> 195 passed / 0 failed
 npm run check -> 76 file(s), 0 failed
 npm run smoke:p1 -> 20/20 real Agent checks (Claude Code + OpenCode Go)
+Real Discord: same-workspace queue PASS; thread real Work + continuation PASS
 Real Chat via LiteLLM chat-fast -> opencode-go/deepseek-v4.1-flash, 2.2 s
 ```
 
