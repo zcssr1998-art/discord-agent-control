@@ -4,72 +4,72 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Current task
 
-Jarvis V4 P1: workspace lock/queue, Work-thread isolation, minimum settings UX.
+Jarvis V4 P2: persistent control panel + Work launcher + Chat history + New/Compact + attachments.
 
 ## Branch
 
-`jarvis-v4-p1-workflow` (do not merge `main`).
+`jarvis-v4-p2-control-context` (do not merge `main`).
 
-## Last known good state
+## Active spec
 
-P1A/P1B/P1C implemented, tested and smoke-verified, including the real Discord
-guild network smoke (queue across two channels + thread Work/session
-continuation). `npm test` 195/0, `npm run check` 76/0, `npm run smoke:p1` 20/20
-with real Claude Code agents. Evidence: `docs/V4_P1_SMOKE.md`. P0/P0.5 is merged
-on `main` and remains the rollback point.
+`docs/JARVIS_V4_P2_TASK.md`
 
-## Architecture decisions (P1)
+`docs/JARVIS_V4_P1_1_CONTROL_PANEL_TASK.md` is superseded and only points here.
 
-- `WorkspaceScheduler` owns one-active-Work-task-per-canonical-workspace + FIFO
-  queue; it is Work-orchestration state, not LiteLLM/provider state.
-- Canonical key: resolve → realpath → strip trailing separators → lower-case on
-  Windows. The queue is in-memory on purpose (no SQLite/Redis).
-- `runTask` acquires the workspace before `getRunner`; a queued item never creates
-  a runner. Release happens in the scheduler's `finally` on every exit path.
-- Work threads: `work <task>` in a thread-capable guild channel creates one
-  permanent Work thread; parent stays Chat; thread-create failure starts nothing.
-- `!settings` reuses the existing SessionManager/PermissionManager mutations; it
-  never starts a runner and never calls ChatRuntime.
+## Last known good baseline
 
-## Done
+P0/P0.5 + P1 are merged on `main`.
 
-- `src/workspace-scheduler.mjs` + `tests/workspace-scheduler.test.mjs`
-- scheduler wired into `src/discord-ui.mjs` (`runTask`, `!stop`, `!status`) and
-  `src/index.mjs`
-- Work threads in `discord-ui.mjs`; `FakeDiscord` gained thread/channel support
-- `!settings` panel + interaction handlers
-- `scripts/p1-e2e.mjs` (`npm run smoke:p1`) — real Agent queue/thread/cancel smoke
+Verified P1 baseline:
 
-## Pending
+- `npm test` 195/0
+- `npm run check` 76/0
+- `npm run smoke:p1` 20/20
+- real Discord same-workspace queue PASS
+- real guild Work thread + same-session continuation PASS
+- Chat via LiteLLM remains Agent-free
 
-- P2: attachments, chat history, `/new` `/compact`
-- WorkBuddy backend is currently quota-exhausted (429); unrelated to P1
+Evidence: `docs/V4_P1_SMOKE.md`.
+
+## P2 architecture decisions
+
+- Persistent panel uses stable interaction IDs; no panel registry/database.
+- Panel actions reuse existing SessionManager/PermissionManager/ModelManager and shared Work start/stop paths.
+- `🛠 新建 Work` uses one modal task field; guild parent -> existing Work thread path, DM -> inline, Work thread -> same thread.
+- Chat and Work model selectors are separate and use Provider -> model; Work selector must not be trapped on WorkBuddy `fast-model`.
+- Chat history is channel-scoped, persistent, bounded, and separate from Work Agent session IDs.
+- A successful Chat turn appends history once; provider retries/fallbacks must not duplicate it.
+- New Chat clears Chat context only; it preserves model/work configuration.
+- Compact is explicit and model-assisted; failed compact leaves original history intact. No surprise background summarization calls.
+- Work attachments download once to a safe runtime inbox and are passed to Agent as local file paths.
+- Chat supports bounded text attachments and common images; unsupported binaries are rejected with a Work hint rather than ignored.
+- Image AUTO should use a configured LiteLLM vision route when available; manual pinned Chat stays pinned.
+
+## Execution order
+
+1. P2A persistent panel + Work launcher
+2. P2B ChatHistoryStore + history-aware ChatRuntime
+3. P2C New Chat + Compact
+4. P2D attachments
+5. P2E deterministic full suite + real Discord smoke/evidence
+
+## Minimal relevant files to inspect first
+
+- `src/discord-ui.mjs`
+- `src/chat-runtime.mjs`
+- `src/session-manager.mjs`
+- `src/state.mjs`
+- `src/provider-manager.mjs`
+- `src/model-manager.mjs`
+- `src/workspace-scheduler.mjs`
+- `tests/helpers/fake-discord.mjs`
+
+Do not rescan the whole repository before these.
 
 ## Blocker
 
-None. All P1 real-Discord checks passed.
+None at task creation. Real image smoke may become `PENDING_REAL_VISION_SMOKE` if the connected account has no usable vision route; do not fake evidence.
 
-## Next action
+## Delivery
 
-P1 is complete; leave the P1 PR unmerged for final review, then start P2.
-
-## Verification
-
-```text
-npm test
-npm run check
-npm run smoke:p1
-```
-
-Real Discord smoke evidence (queue + thread/session) is in
-`docs/V4_P1_SMOKE.md` section 6. Note: write `data/state.json` without a BOM
-(`StateStore.load` now strips one, but PowerShell `Set-Content -Encoding UTF8`
-still adds it).
-
-## Minimal relevant files
-
-- `src/workspace-scheduler.mjs`
-- `src/discord-ui.mjs`
-- `src/i18n.mjs`
-- `scripts/p1-e2e.mjs`
-- `tests/v4-p1-*.test.mjs`, `tests/workspace-scheduler.test.mjs`
+Update `CURRENT`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_SMOKE.md`; commit and push to the P2 branch. Final worker reply stays short.
