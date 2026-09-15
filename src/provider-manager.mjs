@@ -31,6 +31,18 @@ const OPENCODE_GO = {
 };
 
 /**
+ * LiteLLM is the primary standard model gateway. It is only registered when the
+ * user has configured it, so a machine without the gateway does not get a
+ * phantom AUTO candidate that always fails.
+ */
+const LITELLM = {
+  id: 'litellm', displayName: 'LiteLLM Gateway', protocol: PROTOCOL.OPENAI,
+  baseUrl: 'http://127.0.0.1:4000/v1', billingType: 'SUBSCRIPTION',
+  credentialRef: 'provider:litellm', models: [], modelsFetchedAt: null,
+  source: 'built-in-special', removable: false,
+};
+
+/**
  * Transport is a property of the *model*, not the provider: OpenCode Go serves
  * different model families over different protocols. The families below come
  * from the official endpoint table at
@@ -252,6 +264,25 @@ export class ProviderManager {
   get(id) { return this.profiles.get(id) ?? null; }
 
   hasCredential(profile) { return !profile?.credentialRef || this.credentialStore.has(profile.credentialRef); }
+
+  /**
+   * Register the LiteLLM gateway as a first-class OpenAI-compatible provider.
+   * Reuses the last successful alias cache when one exists. The gateway is only
+   * added to AUTO candidates when its billing type is FREE/SUBSCRIPTION.
+   */
+  registerLitellm({ baseUrl, billingType = 'SUBSCRIPTION' } = {}) {
+    if (!baseUrl) throw Object.assign(new Error('litellm base url is required'), { code: 'INVALID_URL' });
+    const existing = this.get(LITELLM.id);
+    const profile = {
+      ...LITELLM,
+      baseUrl: normalizeBaseUrl(baseUrl),
+      billingType: String(billingType || 'SUBSCRIPTION').toUpperCase(),
+      models: existing?.models ?? [],
+      modelsFetchedAt: existing?.modelsFetchedAt ?? null,
+    };
+    this.profiles.set(profile.id, profile);
+    return profile;
+  }
 
   noteWorkbuddyModel(model) {
     if (!model) return;

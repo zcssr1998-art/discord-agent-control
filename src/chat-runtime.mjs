@@ -3,9 +3,15 @@ import { PROTOCOL, TRANSPORT, openCodeGoTransport } from './provider-manager.mjs
 import { ProviderHealthRegistry, classifyProviderFailure } from './provider-health.mjs';
 
 const DEFAULT_MODEL_PATTERNS = Object.freeze([
-  /^deepseek-v4(?:\.1)?-flash$/i,
+  // LiteLLM logical alias for the safe AUTO route. The gateway owns the
+  // DeepSeek -> GLM fallback behind this alias.
+  /^chat-fast$/i,
+  /^chat-smart$/i,
+  // Direct-provider preference, most specific first.
+  /^deepseek-v4\.1-flash$/i,
+  /^deepseek-v4-flash$/i,
   /^deepseek.*flash/i,
-  /^glm-5(?:\.3)?-flash$/i,
+  /^glm-5\.3-flash$/i,
   /^glm.*flash/i,
   /^minimax/i,
   /^qwen/i,
@@ -101,7 +107,13 @@ export class ChatRuntime {
         .filter((profile) => this.providers.hasCredential(profile))
         .filter((profile) => usableBilling(profile, this.allowMeteredFallback))
         .sort((a, b) => {
-          const score = (p) => p.id === 'opencode-go' ? 0 : p.billingType === 'FREE' ? 1 : p.billingType === 'SUBSCRIPTION' ? 2 : 3;
+          // LiteLLM is the primary standard gateway; OpenCode Go is the special
+          // direct route kept as a safety net (and for providers LiteLLM cannot
+          // represent). Free providers come next, then subscription.
+          const score = (p) => p.id === 'litellm' ? 0
+            : p.id === 'opencode-go' ? 1
+              : p.billingType === 'FREE' ? 2
+                : p.billingType === 'SUBSCRIPTION' ? 3 : 4;
           return score(a) - score(b);
         });
 
@@ -170,7 +182,12 @@ export class ChatRuntime {
 
     const headers = { accept: 'application/json', 'content-type': 'application/json' };
     if (profile.protocol === PROTOCOL.OPENAI) headers.authorization = `Bearer ${secret}`;
-    else headers['x-api-key'] = secret;
+    else if (profile.protocol === PROTOCOL.OPENCODE_GO && transport !== TRANSPORT.ANTHROPIC_MESSAGES) {
+      // OpenCode Go authenticates /v1/chat/completions and /v1/responses with a
+      // bearer token; only /v1/messages uses x-api-key (verified on the real
+      // account). Using x-api-key here returns 401 Missing API key.
+      headers.authorization = `Bearer ${secret}`;
+    } else headers['x-api-key'] = secret;
     if (profile.protocol === PROTOCOL.ANTHROPIC || transport === TRANSPORT.ANTHROPIC_MESSAGES) headers['anthropic-version'] = '2023-06-01';
     if (profile.protocol === PROTOCOL.OPENCODE_GO) headers['x-opencode-session'] = `jarvis-chat-${randomUUID()}`;
 
@@ -221,6 +238,12 @@ export class ChatRuntime {
     if (!response.ok) throw httpError(response, data);
     const output = parse(data);
     if (!output) throw Object.assign(new Error('provider returned no assistant text'), { code: 'EMPTY_RESPONSE' });
-    return { text: output, raw: data };
+    // When the reply came through LiteLLM, the alias (chat-fast) is what Jarvis
+    // asked for; this header carries the concrete upstream deployment/model for
+    // attribution without Jarvis reimplementing the router.
+    const upstreamModel = typeof response.headers?.get === 'function'
+      ? response.headers.get('x-litellm-model-id')
+      : null;
+    return { text: output, raw: data, ...(upstreamModel ? { upstreamModel } : {}) };
   }
 }

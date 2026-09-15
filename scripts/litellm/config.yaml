@@ -1,0 +1,68 @@
+# Jarvis V4 - LiteLLM gateway config (template).
+#
+# Only the small deployment the personal bridge needs:
+#   - one OpenAI-compatible listener on 127.0.0.1
+#   - logical aliases instead of leaking provider/model ids into Jarvis
+#   - secrets come from the environment; never put a key in this file
+#
+# Start with: scripts/start-litellm.ps1
+# Env consumed here (set in .env):
+#   OPENCODE_GO_API_KEY   OpenCode Go subscription key
+#   DEEPSEEK_API_KEY      optional metered fallback (not in chat-fast AUTO chain)
+#   LITELLM_MASTER_KEY    optional; when set, clients must send it as the bearer token
+#
+# chat-fast is the only alias the default AUTO route uses. It contains only
+# FREE/SUBSCRIPTION routes and falls back inside the gateway from
+# DeepSeek 4.1 Flash to GLM 5.3 Flash. chat-smart is a manual pin for the user.
+
+model_list:
+  # --- chat-fast: cheap/subscription routes only -----------------------------
+  # OpenCode Go requires an x-opencode-session header on every routed request.
+  # LiteLLM's openai provider does not add it, so the deployments set it here.
+  - model_name: chat-fast
+    litellm_params:
+      model: openai/deepseek-v4.1-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_GO_API_KEY
+      custom_llm_provider: openai
+      extra_headers:
+        x-opencode-session: jarvis-litellm
+    model_info:
+      id: opencode-go/deepseek-v4.1-flash
+  - model_name: chat-fast-glm
+    litellm_params:
+      model: openai/glm-5.3-flash
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_GO_API_KEY
+      custom_llm_provider: openai
+      extra_headers:
+        x-opencode-session: jarvis-litellm
+    model_info:
+      id: opencode-go/glm-5.3-flash
+
+  # --- chat-smart: manual pin, still a subscription route --------------------
+  - model_name: chat-smart
+    litellm_params:
+      model: openai/deepseek-v4-pro
+      api_base: https://opencode.ai/zen/go/v1
+      api_key: os.environ/OPENCODE_GO_API_KEY
+      custom_llm_provider: openai
+      extra_headers:
+        x-opencode-session: jarvis-litellm
+    model_info:
+      id: opencode-go/deepseek-v4-pro
+
+router_settings:
+  # Bounded retry/fallback: DeepSeek 4.1 Flash -> GLM 5.3 Flash.
+  num_retries: 1
+  allowed_fails: 1
+  cooldown_time: 30
+  fallbacks:
+    - chat-fast: ["chat-fast-glm"]
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -35,7 +35,7 @@ function fakeProviders(profiles = [OPENCODE_GO]) {
   };
 }
 
-function makePlane({ fetchImpl, profiles, mode = 'chat', workbuddyStatus = null, runner = null } = {}) {
+function makePlane({ fetchImpl, profiles, mode = 'chat', workbuddyStatus = null, runner = null, gatewayHealth = null } = {}) {
   const fake = new FakeDiscord();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-v4-chat-'));
   const state = new StateStore(path.join(dir, 'state.json'));
@@ -60,6 +60,7 @@ function makePlane({ fetchImpl, profiles, mode = 'chat', workbuddyStatus = null,
     permissionManager: new PermissionManager(),
     providerManager: providers,
     chatRuntime,
+    gatewayHealth,
     logger: new RunLogger(path.join(dir, 'logs')),
     backendState: {
       backend: { id: 'workbuddy-free-dsf', label: 'WorkBuddy Free DSF', apiKeySource: 'www.workbuddy.ai', model: 'fast-model', free: true },
@@ -234,13 +235,23 @@ test('WorkBuddy quota cannot block Chat', async () => {
 });
 
 test('!status shows separate CHAT and WORK configuration', async () => {
-  const { fake, plane } = makePlane();
+  const { fake, plane } = makePlane({ gatewayHealth: async () => ({ ok: true, detail: 'healthy' }) });
   await plane.start();
   await fake.sendAsUser({ content: '你好' });
   await fake.sendAsUser({ content: '!status' });
   const status = lastText(fake);
   assert.match(status, /🧭 模式：💬 Chat/);
+  assert.match(status, /LiteLLM：🟢/);
   assert.match(status, /💬 \*\*CHAT\*\*/);
   assert.match(status, /路由：AUTO/);
   assert.match(status, /实际：OpenCode Go · deepseek-v4\.1-flash/);
+});
+
+test('a LiteLLM health failure is reported in status and never crashes the control plane', async () => {
+  const { fake, plane } = makePlane({ gatewayHealth: async () => { throw new Error('gateway exploded'); } });
+  await plane.start();
+  await fake.sendAsUser({ content: '!status' });
+  assert.match(lastText(fake), /LiteLLM：🔴/);
+  await fake.sendAsUser({ content: '你好' });
+  assert.match(lastText(fake), /你好，我是 Jarvis。/);
 });

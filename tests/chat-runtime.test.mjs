@@ -15,6 +15,7 @@ function fixture(fetchImpl) {
       models: [
         { id: 'deepseek-v4.1-flash', transport: TRANSPORT.OPENAI_CHAT },
         { id: 'glm-5.3-flash', transport: TRANSPORT.OPENAI_CHAT },
+        { id: 'minimax-m3', transport: TRANSPORT.ANTHROPIC_MESSAGES },
       ],
     },
   ];
@@ -63,4 +64,20 @@ test('manual provider/model pin never silently falls back', async () => {
     runtime.send({ prompt: 'x', providerId: 'opencode-go', model: 'deepseek-v4.1-flash' }),
     (error) => error.code === 'RATE_LIMIT' && error.attempts?.length === 1,
   );
+});
+
+test('OpenCode Go auth matches the transport: bearer for chat/responses, x-api-key for messages', async () => {
+  const seen = [];
+  const runtime = fixture(async (_url, options) => {
+    seen.push(options.headers);
+    return response(200, { choices: [{ message: { content: 'ok' } }], content: [{ type: 'text', text: 'ok' }] });
+  });
+
+  await runtime.send({ prompt: 'hi', model: 'deepseek-v4.1-flash' });
+  assert.match(seen.at(-1).authorization || '', /^Bearer /);
+  assert.equal(seen.at(-1)['x-api-key'], undefined);
+
+  await runtime.send({ prompt: 'hi', model: 'minimax-m3' });
+  assert.match(seen.at(-1)['x-api-key'], /^secret/);
+  assert.equal(seen.at(-1).authorization, undefined);
 });

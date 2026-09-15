@@ -24,7 +24,9 @@ param(
   [int]$SuccessWindowSec = 60,
   [string]$LogDir = "$PSScriptRoot\..\logs",
   [string]$Node = 'node',
-  [string]$Entry = "$PSScriptRoot\..\src\index.mjs"
+  [string]$Entry = "$PSScriptRoot\..\src\index.mjs",
+  [int]$GatewayPort = 4000,
+  [switch]$NoGateway
 )
 
 $ErrorActionPreference = 'Continue'
@@ -44,6 +46,46 @@ function Get-Delay {
   return [Math]::Min([int]$delay, $MaxDelaySec)
 }
 
+# --- LiteLLM gateway lifecycle ---------------------------------------------
+# LiteLLM is the primary standard model gateway. The supervisor keeps it alive
+# alongside the bridge, so a gateway crash is repaired instead of silently
+# downgrading Chat to direct providers. If LiteLLM is not installed the
+# supervisor simply runs the bridge on its own.
+$repoRoot = Split-Path $Entry -Parent | Split-Path -Parent
+$gatewayExe = Join-Path $repoRoot 'data\litellm\venv\Scripts\litellm.exe'
+$gatewayPidFile = Join-Path $repoRoot 'data\litellm\gateway.pid'
+$gatewayScript = Join-Path $PSScriptRoot 'start-litellm.ps1'
+
+function Test-Gateway {
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$GatewayPort/health/liveliness" -TimeoutSec 3 -UseBasicParsing
+    return $r.StatusCode -eq 200
+  } catch { return $false }
+}
+
+function Ensure-Gateway {
+  if ($NoGateway) { return }
+  if (-not (Test-Path $gatewayExe)) { Write-Log 'LiteLLM not installed; bridge runs without the gateway.'; return }
+  if (Test-Gateway) { Write-Log "LiteLLM healthy on 127.0.0.1:$GatewayPort"; return }
+  Write-Log "Starting LiteLLM on 127.0.0.1:$GatewayPort ..."
+  try {
+    & $gatewayScript -Port $GatewayPort | Out-Null
+    if (Test-Gateway) { Write-Log 'LiteLLM started and healthy' }
+    else { Write-Log 'LiteLLM start returned but health is not up yet' }
+  } catch {
+    Write-Log "LiteLLM start failed: $_"
+  }
+}
+
+function Stop-Gateway {
+  if (-not (Test-Path $gatewayPidFile)) { return }
+  $gpid = (Get-Content $gatewayPidFile -Raw).Trim()
+  if ($gpid) {
+    Write-Log "Stopping LiteLLM pid=$gpid"
+    taskkill /PID $gpid /T /F 2>$null | Out-Null
+  }
+}
+
 $consecutiveCrashes = 0
 $bridgePid = $null
 $shuttingDown = $false
@@ -56,6 +98,7 @@ Write-Log "Supervisor starting. Entry=$Entry MaxRestarts=$MaxRestarts"
 try {
   while ($consecutiveCrashes -lt $MaxRestarts) {
     $runStart = Get-Date
+    Ensure-Gateway
     Write-Log "Starting bridge (consecutive crashes=$consecutiveCrashes)"
 
     # Launch bridge directly so stdout/stderr flow straight to the console.
@@ -136,5 +179,6 @@ try {
   if ($bridgePid -and !$shuttingDown) {
     taskkill /PID $bridgePid /T /F 2>$null | Out-Null
   }
+  Stop-Gateway
   Write-Log "Supervisor exited."
 }

@@ -23,6 +23,7 @@ import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
 import { ChatRuntime } from './chat-runtime.mjs';
 import { ProviderHealthRegistry } from './provider-health.mjs';
+import { loadLiteLLMConfig, checkLiteLLMHealth, readOpenCodeGoKey } from './litellm.mjs';
 import { redactSecrets } from './secrets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,6 +130,42 @@ async function main() {
   }
   const models = new ModelManager(providers);
 
+  // ---- LiteLLM gateway -----------------------------------------------------
+  // Primary standard model gateway. It is one OpenAI-compatible endpoint on
+  // 127.0.0.1; Jarvis keeps mode/session/permission/billing policy and only
+  // delegates provider normalization, retry/fallback and cost metadata here.
+  // A missing/unhealthy gateway must never strand Chat: candidates without a
+  // reachable model list are simply skipped and OpenCode Go direct takes over.
+  const litellmConfig = loadLiteLLMConfig(process.env, { root });
+  let gatewayStatus = { ok: false, detail: 'disabled' };
+  if (litellmConfig.enabled) {
+    if (litellmConfig.masterKey) credentials.set('provider:litellm', litellmConfig.masterKey);
+    providers.registerLitellm({ baseUrl: litellmConfig.baseUrl, billingType: litellmConfig.billingType });
+    gatewayStatus = await checkLiteLLMHealth({
+      healthUrl: litellmConfig.healthUrl, masterKey: litellmConfig.masterKey, timeoutMs: litellmConfig.timeoutMs,
+    });
+    console.log(`[litellm] baseUrl=${litellmConfig.baseUrl} billing=${litellmConfig.billingType} health=${gatewayStatus.ok ? 'UP' : 'DOWN'} (${gatewayStatus.detail})`);
+  } else {
+    console.log('[litellm] disabled by configuration; Chat uses direct providers only');
+  }
+  const gatewayHealth = litellmConfig.enabled
+    ? () => checkLiteLLMHealth({
+      healthUrl: litellmConfig.healthUrl, masterKey: litellmConfig.masterKey, timeoutMs: litellmConfig.timeoutMs,
+    })
+    : null;
+
+  // Direct OpenCode Go escape hatch. LiteLLM is primary, but a validated direct
+  // route must still serve a configured subscription model if the gateway is
+  // down. The key is only read, never printed.
+  const opencodeGo = providers.get('opencode-go');
+  if (opencodeGo && !providers.hasCredential(opencodeGo)) {
+    const key = readOpenCodeGoKey();
+    if (key) {
+      credentials.set('provider:opencode-go', key);
+      console.log('[chat] seeded OpenCode Go direct credential from the local OpenCode auth store');
+    }
+  }
+
   // ---- chat runtime --------------------------------------------------------
   // Ordinary messages go here and only here: a direct model API call with its own
   // health/cooldown state. It deliberately reuses the same ProviderManager and
@@ -206,6 +243,7 @@ async function main() {
     modelManager: models,
     executorManager: executors,
     chatRuntime,
+    gatewayHealth,
     extraEnv: childEnv,
     envUnset,
   });

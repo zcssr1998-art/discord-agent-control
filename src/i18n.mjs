@@ -141,12 +141,13 @@ export function readyText({ executor, provider, protocol, backend, model, billin
 export function formatStatus({
   executor, provider, protocol, adapter, backend, model, billingRoute, billingType, paidFallback,
   cwd, sessionId, state, idleSec, pendingApprovals, permissionLabel, blocked,
-  mode, chatRoute, chatActual, chatHealth,
+  mode, chatRoute, chatActual, chatHealth, gateway,
 }) {
   const lines = [
     '🤖 **Jarvis 状态**',
     '',
     `🧭 模式：${mode === 'work' ? '🛠 Work' : '💬 Chat'}`,
+    ...(gateway ? [`🌐 LiteLLM：${gateway.ok ? '🟢' : `🔴 · ${gateway.detail || 'down'}`}`] : []),
     ...(chatRoute ? [
       '',
       '💬 **CHAT**',

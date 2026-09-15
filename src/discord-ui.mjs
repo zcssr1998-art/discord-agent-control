@@ -117,6 +117,7 @@ export class DiscordControlPlane {
     modelManager = null,
     executorManager = null,
     chatRuntime = null,
+    gatewayHealth = null,
     extraEnv = {},
     envUnset = [],
     client = null,
@@ -135,6 +136,7 @@ export class DiscordControlPlane {
     this.modelManager = modelManager;
     this.executorManager = executorManager;
     this.chatRuntime = chatRuntime;
+    this.gatewayHealth = gatewayHealth;
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
     this.autoLogin = autoLogin;
@@ -324,7 +326,7 @@ export class DiscordControlPlane {
     return verdict;
   }
 
-  #statusLine(channelId) {
+  #statusLine(channelId, gateway = null) {
     const s = this.sessionManager.get(channelId);
     const runner = this.runners.get(channelId);
     const backend = this.backendState?.backend ?? null;
@@ -363,6 +365,7 @@ export class DiscordControlPlane {
       chatRoute: this.#chatRouteText(channelId),
       chatActual: this.#chatActualText(channelId),
       chatHealth: this.#chatHealthText(channelId),
+      gateway,
     });
   }
 
@@ -627,7 +630,10 @@ export class DiscordControlPlane {
       return;
     }
     if (text === '!status') {
-      await message.reply({ content: clip(this.#statusLine(message.channelId)), components: [permissionMenuButton()] });
+      const gateway = this.gatewayHealth
+        ? await this.gatewayHealth().catch(() => ({ ok: false, detail: 'error' }))
+        : null;
+      await message.reply({ content: clip(this.#statusLine(message.channelId, gateway)), components: [permissionMenuButton()] });
       return;
     }
     if (text === '!config') {
@@ -914,18 +920,21 @@ export class DiscordControlPlane {
 
     const durationMs = Date.now() - startedAt;
     const fallback = Array.isArray(result.attempts) && result.attempts.length > 0;
+    const served = result.upstreamModel && result.upstreamModel !== result.model
+      ? `${result.model} → ${result.upstreamModel}`
+      : result.model;
     this.chatActual.set(channelId, {
       providerId: result.providerId, providerName: result.providerName, model: result.model,
-      fallback, durationMs, at: Date.now(),
+      served, fallback, durationMs, at: Date.now(),
     });
     const footer = [
       '💬 Chat',
       result.providerName || result.providerId || providerId,
-      result.model,
+      served,
       ...(fallback ? ['fallback'] : []),
       `${(durationMs / 1000).toFixed(1)}s`,
     ].join(' · ');
-    console.log(`[chat] done channel=${channelId} provider=${result.providerId} model=${result.model} fallback=${fallback} durationMs=${durationMs}`);
+    console.log(`[chat] done channel=${channelId} provider=${result.providerId} model=${result.model} served=${served} fallback=${fallback} durationMs=${durationMs}`);
     await message.reply(clip(`${result.text}\n\n${footer}`));
   }
 
@@ -953,7 +962,7 @@ export class DiscordControlPlane {
   #chatActualText(channelId) {
     const actual = this.chatActual.get(channelId);
     if (!actual) return null;
-    return `${actual.providerName || actual.providerId} · ${actual.model}${actual.fallback ? ' · fallback' : ''}`;
+    return `${actual.providerName || actual.providerId} · ${actual.served || actual.model}${actual.fallback ? ' · fallback' : ''}`;
   }
 
   #chatHealthText(channelId) {
