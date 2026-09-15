@@ -1,10 +1,21 @@
 # Agent instructions
 
-Primary execution spec: `docs/JARVIS_V4_TASK.md`.
+This repository is the source of truth. Chat is a control plane, not a place to duplicate taskbooks, project history, logs or handoff narratives.
+
+Read in this order before normal development work:
+1. `AGENTS.md`
+2. `docs/CURRENT.md`
+3. `docs/AI_HANDOFF.md`
+4. `docs/tasks/CURRENT.md`
+5. the active task referenced there
+6. only the minimum code/docs needed for that task
+
+Workflow rules: `docs/DEVELOPMENT_WORKFLOW.md`.
 Architecture: `docs/JARVIS_V4_ARCHITECTURE.md`.
 Real-machine evidence and known gotchas: `docs/WINDOWS_SMOKE.md`.
 
-Principles:
+## Core principles
+
 - Do not rewrite from scratch; inspect and extend the existing implementation.
 - Jarvis is the stable Discord AI terminal. Models/providers/Agent CLIs are replaceable backends.
 - Default user mode is **Chat**. Chat must not start an Agent.
@@ -16,10 +27,35 @@ Principles:
 - Keep Agent and model selections independent.
 - AUTO routing must prefer healthy FREE/SUBSCRIPTION routes and must not silently spend on METERED/unknown billing.
 - Run real tests. Code inspection is not acceptance.
-- Keep chat reports short; persist detailed debugging/results in this repository.
 - Never commit secrets.
 
-## Current state
+## Token/context discipline
+
+- Full task specifications belong in repository files, not repeated in chat.
+- Do not create a second long plan after an approved active task already exists unless a real contradiction/blocker is found.
+- Do not rescan the whole repository by default. Start from current state, active task, `git diff`, targeted search and relevant files.
+- Do not dump full logs into model context. Reduce first to failed command, exit code, primary error/stack and relevant tail/context.
+- Prefer deterministic tests/exit codes over prose judgment.
+- Do not narrate successful steps that tests already prove.
+- Before rerunning a long task after timeout/interruption, inspect process/job/session state first.
+- Keep stable rules in `AGENTS.md`; keep temporary requirements in task files.
+- Update `docs/CURRENT.md` and `docs/AI_HANDOFF.md` before handing work to another model or stopping at a meaningful boundary.
+- Detailed debugging/results belong in repository docs/logs, not in chat.
+
+## Worker final response contract
+
+Unless explicitly asked for detail, finish with only:
+
+```text
+PASS | FAIL
+commit: <sha or none>
+tests: <summary>
+blocker: <none or one-line blocker>
+```
+
+Do not provide a chronological implementation diary.
+
+## Current implementation baseline
 
 Base V3 already provides:
 - WorkBuddy free backend support
@@ -40,7 +76,7 @@ V4 foundation adds:
 - `src/chat-runtime.mjs` — direct API Chat compatibility/special-provider route
 - Chat-specific persistent state fields in `StateStore` / `SessionManager`
 
-V4 integration task additionally requires:
+V4 integration additionally requires:
 - LiteLLM local gateway for standard providers
 - local-only listener
 - validated/pinned stable LiteLLM version
