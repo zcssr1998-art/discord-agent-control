@@ -73,6 +73,14 @@ export class TaskProgress {
     this.permissionLabel = '🛡️ 标准';
     this.model = model;
     this.costUsd = costUsd;
+    // Pending appended requirements for the active Work chain (P2.1).
+    this.followUps = 0;
+  }
+
+  /** Number of queued follow-up requirements waiting behind the active turn. */
+  setFollowUps(count) {
+    this.followUps = Math.max(0, Number(count) || 0);
+    return this;
   }
 
   markStalled(idleMs) {
@@ -207,6 +215,10 @@ export class TaskProgress {
       lines.push(`🛠️ 工具调用：${total}`);
     }
 
+    if (this.followUps > 0) {
+      lines.push(`📥 追加需求：${this.followUps} 条待执行`);
+    }
+
     if (this.note && !this.approval) {
       lines.push(`💬 ${shorten(this.note, 120)}`);
     }
@@ -228,8 +240,10 @@ export class ThrottledEditor {
     this.writes = 0;
   }
 
-  submit(text) {
-    this.pending = text;
+  // `components` is optional and only used by the Work progress card so its
+  // active controls survive progress edits. Plain callers keep passing text only.
+  submit(text, components = undefined) {
+    this.pending = { text, components };
     const elapsed = this.now() - this.lastAt;
     if (elapsed >= this.intervalMs) return this.#flush();
     if (!this.timer) {
@@ -240,16 +254,16 @@ export class ThrottledEditor {
 
   async #flush() {
     if (this.pending == null) return;
-    const text = this.pending;
+    const { text, components } = this.pending;
     this.pending = null;
     this.lastAt = this.now();
     this.writes += 1;
-    try { await this.write(text); } catch { /* message may have been deleted */ }
+    try { await this.write(text, components); } catch { /* message may have been deleted */ }
   }
 
-  async flushNow(text) {
+  async flushNow(text, components = undefined) {
     if (this.timer) { this.clearTimer(this.timer); this.timer = null; }
-    if (text != null) this.pending = text;
+    if (text != null) this.pending = { text, components };
     this.lastAt = 0;
     await this.#flush();
   }

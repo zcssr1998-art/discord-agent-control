@@ -2,74 +2,71 @@
 
 Keep this file short and overwrite/update it at every meaningful handoff. Do not paste old chat transcripts here.
 
-## Current task
-
-Jarvis V4 P1: workspace lock/queue, Work-thread isolation, minimum settings UX.
-
 ## Branch
 
-`jarvis-v4-p1-workflow` (do not merge `main`).
+`jarvis-v4-p2-control-context` (PR #4, Draft; do not merge yet).
+
+## Active specs
+
+- `docs/JARVIS_V4_P2_TASK.md` — P2 implementation complete; human Discord smoke not closed.
+- `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — P2.1 implementation complete; human Discord smoke not closed.
 
 ## Last known good state
 
-P1A/P1B/P1C implemented, tested and smoke-verified, including the real Discord
-guild network smoke (queue across two channels + thread Work/session
-continuation). `npm test` 195/0, `npm run check` 76/0, `npm run smoke:p1` 20/20
-with real Claude Code agents. Evidence: `docs/V4_P1_SMOKE.md`. P0/P0.5 is merged
-on `main` and remains the rollback point.
+P0/P0.5 + P1 are merged on `main`.
 
-## Architecture decisions (P1)
+P2 + P2.1 on this branch are implemented and machine-verified:
 
-- `WorkspaceScheduler` owns one-active-Work-task-per-canonical-workspace + FIFO
-  queue; it is Work-orchestration state, not LiteLLM/provider state.
-- Canonical key: resolve → realpath → strip trailing separators → lower-case on
-  Windows. The queue is in-memory on purpose (no SQLite/Redis).
-- `runTask` acquires the workspace before `getRunner`; a queued item never creates
-  a runner. Release happens in the scheduler's `finally` on every exit path.
-- Work threads: `work <task>` in a thread-capable guild channel creates one
-  permanent Work thread; parent stays Chat; thread-create failure starts nothing.
-- `!settings` reuses the existing SessionManager/PermissionManager mutations; it
-  never starts a runner and never calls ChatRuntime.
+- `npm test` 244/0 (P2.1 adds `tests/v4-p2-native.test.mjs`, 18 tests incl. the ACK lifecycle)
+- `npm run check` 85/0
+- `npm run smoke:p2` 11/11
+- real LiteLLM Chat context recall PASS
+- real vision PASS
+- real Agent file task from P2 panel-created Work thread PASS
 
-## Done
+Human Discord: `!panel` was confirmed handled locally by the live bridge. Final combined P2/P2.1 owner smoke is not closed.
 
-- `src/workspace-scheduler.mjs` + `tests/workspace-scheduler.test.mjs`
-- scheduler wired into `src/discord-ui.mjs` (`runTask`, `!stop`, `!status`) and
-  `src/index.mjs`
-- Work threads in `discord-ui.mjs`; `FakeDiscord` gained thread/channel support
-- `!settings` panel + interaction handlers
-- `scripts/p1-e2e.mjs` (`npm run smoke:p1`) — real Agent queue/thread/cancel smoke
+## P2.1 implementation note
 
-## Pending
+- `src/commands.mjs`: application-command payloads + idempotent registration (no hard-coded IDs).
+- `src/discord-ui.mjs`: chat-input command handler; `workctl:append|stop:<runId>` card controls; `workappend:<runId>` modal; one shared `#stopChannel` (also clears follow-ups); `#appendFollowUp` + `#drainFollowUps` re-enter `runTask`/`WorkspaceScheduler`; natural text in an active Work context queues the same follow-up.
+- Interaction ACK lifecycle: `#acknowledge` (deferReply/deferUpdate) runs before any slow work; `showModal` cases ACK via the modal before that; `#edit`/`#ephemeral` respect deferred/replied and never double-reply; `#interactionContext` uses the same path. This fixed the real `/work` "该应用程序未响应" smoke failure.
+- `src/progress.mjs`: `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep buttons.
+- Behaviour change: the legacy test `a second task is refused while one is running` now asserts P2.1 follow-up queuing (intentional).
+- Registration defaults to global; `DISCORD_COMMANDS_GUILD_ID` optionally enables instant guild-scoped propagation (never hard-coded). `DISCORD_AUTO_REGISTER_COMMANDS=0` disables.
 
-- P2: attachments, chat history, `/new` `/compact`
-- WorkBuddy backend is currently quota-exhausted (429); unrelated to P1
+## Architecture constraints
 
-## Blocker
+- reuse existing P2 panel/model/settings/status/help renderers
+- reuse existing New Work path for `/work`
+- one shared stop path for text command, panel, slash command, and progress card
+- no parallel config/state system
+- no mid-process stdin injection
+- no market-data/P3 work in this branch
+- preserve P0/P1/P2 routing, history, attachments, permissions, queue and Work-thread invariants
 
-None. All P1 real-Discord checks passed.
+## Minimal files first
 
-## Next action
-
-P1 is complete; leave the P1 PR unmerged for final review, then start P2.
+- `src/discord-ui.mjs`
+- `src/commands.mjs`
+- `src/progress.mjs`
+- `tests/v4-p2-native.test.mjs`
+- `tests/helpers/fake-discord.mjs`
 
 ## Verification
 
 ```text
 npm test
 npm run check
-npm run smoke:p1
+npm run smoke:p2
 ```
 
-Real Discord smoke evidence (queue + thread/session) is in
-`docs/V4_P1_SMOKE.md` section 6. Note: write `data/state.json` without a BOM
-(`StateStore.load` now strips one, but PowerShell `Set-Content -Encoding UTF8`
-still adds it).
+Human Discord evidence goes into `docs/V4_P2_SMOKE.md` §9.
 
-## Minimal relevant files
+## Blocker
 
-- `src/workspace-scheduler.mjs`
-- `src/discord-ui.mjs`
-- `src/i18n.mjs`
-- `scripts/p1-e2e.mjs`
-- `tests/v4-p1-*.test.mjs`, `tests/workspace-scheduler.test.mjs`
+None known. Human P2/P2.1 smoke is the only open item (owner-run).
+
+## Delivery
+
+Update `CURRENT`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_SMOKE.md`; commit + push to `jarvis-v4-p2-control-context`. Final worker reply stays short.

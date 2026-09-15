@@ -73,8 +73,23 @@ export function loadConfig() {
     // AUTO must never silently spend on METERED/unknown-billing providers. This
     // only enables those as a *last* AUTO candidate; a manual pin still works.
     allowMeteredChatFallback: bool('ALLOW_METERED_CHAT_FALLBACK', false),
+    // Optional image-capable route for AUTO image turns. Without it, an AUTO
+    // image turn fails clearly instead of being sent to a text-only alias.
+    chatVisionProviderId: process.env.CHAT_VISION_PROVIDER_ID || null,
+    chatVisionModel: process.env.CHAT_VISION_MODEL || null,
     // Wall-clock cap on one direct Chat request.
     chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
+
+    // --- native Discord application commands (P2.1) -----------------------
+    // Register the /-commands idempotently at startup (best effort).
+    autoRegisterCommands: bool('DISCORD_AUTO_REGISTER_COMMANDS', true),
+    // Optional guild-scoped registration for instant propagation during
+    // development; null keeps production registration global. Never hard-coded.
+    commandsGuildId: process.env.DISCORD_COMMANDS_GUILD_ID || null,
+
+    // --- interactive Work follow-ups (P2.1) -------------------------------
+    // Pending appended requirements per active Work chain.
+    maxWorkFollowUps: int('MAX_WORK_FOLLOWUPS', 10),
 
     // --- runaway protection ----------------------------------------------
     // Hard wall-clock cap on one task. Hitting it kills the agent process.
