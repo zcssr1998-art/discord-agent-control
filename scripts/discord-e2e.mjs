@@ -210,7 +210,8 @@ async function main() {
     const taskStartedAt = Date.now();
     const status = await fake.sendAsUser({
       content: [
-        'Work in this repository. Do exactly this, using tools:',
+        'work',
+        'In this repository, do exactly this, using tools:',
         '1. Create `src/health.mjs` exporting `export function health() { return { status: "ok" }; }`',
         '2. Create `test/health.test.mjs` using node:test asserting health().status === "ok".',
         '3. Run `npm test` and make sure it passes.',

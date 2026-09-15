@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { ApprovalManager } from './approval-manager.mjs';
 import { createHookServer, ensureHookSecret } from './hook-server.mjs';
+import { ensureGlobalHook } from './global-hook.mjs';
 import { StateStore } from './state.mjs';
 import { RunLogger } from './logger.mjs';
 import { RunLimits } from './limits.mjs';
@@ -21,6 +22,9 @@ import { CredentialStore } from './credential-store.mjs';
 import { ProviderManager } from './provider-manager.mjs';
 import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
+import { ChatRuntime } from './chat-runtime.mjs';
+import { ProviderHealthRegistry } from './provider-health.mjs';
+import { loadLiteLLMConfig, checkLiteLLMHealth, readOpenCodeGoKey } from './litellm.mjs';
 import { redactSecrets } from './secrets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +41,15 @@ async function main() {
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
   const permissions = new PermissionManager();
   const secret = ensureHookSecret();
+  // Repair a stale global hook (a hook installed from a different checkout
+  // reads a different data/hook-secret and 401s every tool call). The hook
+  // script itself also prefers the secret the bridge injects into the agent
+  // child, so this is defense in depth, not the only guard.
+  if (config.autoInstallHook) {
+    const hook = ensureGlobalHook({ root });
+    const changed = hook.results.filter((r) => r.changed).map((r) => r.target);
+    console.log(`[hook] global hook ${hook.installed ? 'ready' : 'unavailable'}${changed.length ? ` (updated: ${changed.join(', ')})` : ''}`);
+  }
   const logger = new RunLogger(config.logDir || path.join(root, 'logs'));
   const limits = new RunLimits({
     maxConsecutiveFailures: config.maxConsecutiveFailures,
@@ -119,13 +132,69 @@ async function main() {
   const executors = new ExecutorManager({
     workbuddyCommand: config.claudeCommand,
     workbuddyEnv: childEnv,
-    bridgeEnv: { APPROVAL_HOST: config.approvalHost, APPROVAL_PORT: String(config.approvalPort) },
+    bridgeEnv: {
+      APPROVAL_HOST: config.approvalHost,
+      APPROVAL_PORT: String(config.approvalPort),
+      // The hook client prefers this over its local data/hook-secret so a
+      // globally installed hook can never use a stale secret.
+      DISCORD_BRIDGE_SECRET: secret,
+    },
   });
   await executors.discover();
   for (const executor of executors.list()) {
     console.log(`[executor] ${executor.id}=${executor.status}${executor.version ? ` version=${executor.version}` : ''}`);
   }
   const models = new ModelManager(providers);
+
+  // ---- LiteLLM gateway -----------------------------------------------------
+  // Primary standard model gateway. It is one OpenAI-compatible endpoint on
+  // 127.0.0.1; Jarvis keeps mode/session/permission/billing policy and only
+  // delegates provider normalization, retry/fallback and cost metadata here.
+  // A missing/unhealthy gateway must never strand Chat: candidates without a
+  // reachable model list are simply skipped and OpenCode Go direct takes over.
+  const litellmConfig = loadLiteLLMConfig(process.env, { root });
+  let gatewayStatus = { ok: false, detail: 'disabled' };
+  if (litellmConfig.enabled) {
+    if (litellmConfig.masterKey) credentials.set('provider:litellm', litellmConfig.masterKey);
+    providers.registerLitellm({ baseUrl: litellmConfig.baseUrl, billingType: litellmConfig.billingType });
+    gatewayStatus = await checkLiteLLMHealth({
+      healthUrl: litellmConfig.healthUrl, masterKey: litellmConfig.masterKey, timeoutMs: litellmConfig.timeoutMs,
+    });
+    console.log(`[litellm] baseUrl=${litellmConfig.baseUrl} billing=${litellmConfig.billingType} health=${gatewayStatus.ok ? 'UP' : 'DOWN'} (${gatewayStatus.detail})`);
+  } else {
+    console.log('[litellm] disabled by configuration; Chat uses direct providers only');
+  }
+  const gatewayHealth = litellmConfig.enabled
+    ? () => checkLiteLLMHealth({
+      healthUrl: litellmConfig.healthUrl, masterKey: litellmConfig.masterKey, timeoutMs: litellmConfig.timeoutMs,
+    })
+    : null;
+
+  // Direct OpenCode Go escape hatch. LiteLLM is primary, but a validated direct
+  // route must still serve a configured subscription model if the gateway is
+  // down. The key is only read, never printed.
+  const opencodeGo = providers.get('opencode-go');
+  if (opencodeGo && !providers.hasCredential(opencodeGo)) {
+    const key = readOpenCodeGoKey();
+    if (key) {
+      credentials.set('provider:opencode-go', key);
+      console.log('[chat] seeded OpenCode Go direct credential from the local OpenCode auth store');
+    }
+  }
+
+  // ---- chat runtime --------------------------------------------------------
+  // Ordinary messages go here and only here: a direct model API call with its own
+  // health/cooldown state. It deliberately reuses the same ProviderManager and
+  // CredentialStore as the Agent path so there is a single provider database and
+  // a single secret store. It never starts an Agent, a workspace scan or a hook.
+  const chatHealth = new ProviderHealthRegistry();
+  const chatRuntime = new ChatRuntime({
+    providerManager: providers,
+    credentialStore: credentials,
+    health: chatHealth,
+    timeoutMs: config.chatTimeoutMs,
+    allowMeteredFallback: config.allowMeteredChatFallback,
+  });
 
   // Preflight: prove the free backend answers before accepting any work.
   console.log(`[backend] probing executor "${config.claudeCommand}" ...`);
@@ -189,7 +258,9 @@ async function main() {
     providerManager: providers,
     modelManager: models,
     executorManager: executors,
-    extraEnv: childEnv,
+    chatRuntime,
+    gatewayHealth,
+    extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });
 
@@ -207,6 +278,7 @@ async function main() {
   console.log(`[bridge] Model: ${backendState.backend?.model ?? 'unknown'}`);
   console.log(`[bridge] Billing route: ${backendState.billingRoute}`);
   console.log(`[bridge] Paid fallback: ${config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`[chat] mode=CHAT(default) route=AUTO meteredFallback=${config.allowMeteredChatFallback ? 'ENABLED' : 'DISABLED'} timeoutMs=${config.chatTimeoutMs}`);
   console.log(`[discord] control plane ready | log dir=${config.logDir || path.join(root, 'logs')} default cwd=${config.defaultCwd}`);
 
   const shutdown = async (signal) => {

@@ -98,7 +98,11 @@ export const PERM_SHORT = {
 export function helpText() {
   return [
     '**指令列表**',
-    '`!status` — 查看当前状态（项目 / 权限 / 模型 / 会话）',
+    '`chat` / `/chat` / `!chat` — 切回 Chat 模式（直接调用模型 API，不启动 Agent）',
+    '`work` / `/work` / `!work` — 切换到 Work 模式（使用 Agent）',
+    '`chat <问题>` / `work <任务>` — 一步切换并立即执行',
+    '`!chatmodel [auto | <provider-id> <model-id>]` — 查看或设置 Chat 模型路由',
+    '`!status` — 查看当前状态（模式 / Chat / Work / 权限 / 会话）',
     '`!config` — 打开 Agent 统一配置',
     '`!executor [id]` — 查看或切换执行器',
     '`!providers` / `!provider [id]` — 查看或切换 Provider',
@@ -113,7 +117,7 @@ export function helpText() {
     '`!handoff` — 生成交接信息',
     '`!help` — 显示此帮助',
     '',
-    '**普通消息** = 发送给 Agent 作为任务',
+    '**默认 Chat**：普通消息 = 直接问模型。切到 Work 后，普通消息 = Agent 任务。',
   ].join('\n');
 }
 
@@ -137,10 +141,22 @@ export function readyText({ executor, provider, protocol, backend, model, billin
 export function formatStatus({
   executor, provider, protocol, adapter, backend, model, billingRoute, billingType, paidFallback,
   cwd, sessionId, state, idleSec, pendingApprovals, permissionLabel, blocked,
+  mode, chatRoute, chatActual, chatHealth, gateway,
 }) {
   const lines = [
-    '🤖 **Agent 状态**',
+    '🤖 **Jarvis 状态**',
     '',
+    `🧭 模式：${mode === 'work' ? '🛠 Work' : '💬 Chat'}`,
+    ...(gateway ? [`🌐 LiteLLM：${gateway.ok ? '🟢' : `🔴 · ${gateway.detail || 'down'}`}`] : []),
+    ...(chatRoute ? [
+      '',
+      '💬 **CHAT**',
+      `路由：${chatRoute}`,
+      ...(chatActual ? [`实际：${chatActual}`] : []),
+      ...(chatHealth ? [`健康：${chatHealth}`] : []),
+      '',
+      '🛠 **WORK / Agent**',
+    ] : []),
     `📁 当前项目：\`${cwd}\``,
     `🟢 状态：${state}`,
     `🔐 权限：${permissionLabel}`,

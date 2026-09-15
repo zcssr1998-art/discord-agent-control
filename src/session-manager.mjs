@@ -10,6 +10,9 @@ export class SessionManager {
 
   get(channelId) {
     return {
+      mode: 'chat',
+      chatProviderId: 'auto',
+      chatModel: null,
       cwd: this.defaultCwd,
       executorId: 'workbuddy',
       providerId: 'workbuddy-free',
@@ -22,6 +25,15 @@ export class SessionManager {
   snapshot(channelId) {
     const value = this.get(channelId);
     return { ...value, executorSessionId: value.sessionId, permission: this.permissions.getLevel(channelId) };
+  }
+
+  setMode(channelId, mode) {
+    if (!['chat', 'work'].includes(mode)) throw Object.assign(new Error('invalid mode'), { code: 'INVALID_MODE' });
+    return this.state.patchChannel(channelId, { mode }, this.defaultCwd);
+  }
+
+  setChatSelection(channelId, { providerId = 'auto', model = null } = {}) {
+    return this.state.patchChannel(channelId, { chatProviderId: providerId, chatModel: model }, this.defaultCwd);
   }
 
   bindExecutorSession(channelId, executorSessionId) {
@@ -45,14 +57,20 @@ export class SessionManager {
 
   async invalidateProvider(providerId) {
     const channels = Object.entries(this.state.data.channels ?? {})
-      .filter(([, value]) => value.providerId === providerId)
+      .filter(([, value]) => value.providerId === providerId || value.chatProviderId === providerId)
       .map(([channelId]) => channelId);
     if (channels.some((channelId) => this.isRunning(channelId))) {
       throw Object.assign(new Error('task is running'), { code: 'RUNNING' });
     }
     const changed = [];
     for (const channelId of channels) {
-      await this.change(channelId, { providerId: null, model: null }, 'provider removed');
+      const current = this.get(channelId);
+      const patch = {};
+      if (current.providerId === providerId) Object.assign(patch, { providerId: null, model: null });
+      if (current.chatProviderId === providerId) Object.assign(patch, { chatProviderId: 'auto', chatModel: null });
+      // Only an Agent-provider removal needs to discard the Agent session and permissions.
+      if (current.providerId === providerId) await this.change(channelId, patch, 'provider removed');
+      else this.state.patchChannel(channelId, patch, this.defaultCwd);
       changed.push(channelId);
     }
     return changed;

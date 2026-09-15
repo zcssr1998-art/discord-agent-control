@@ -4,5 +4,6 @@ data/state.json
 data/hook-secret
 data/credentials.json
 data/providers.json
+data/litellm/
 logs/
 *.log

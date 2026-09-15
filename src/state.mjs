@@ -1,6 +1,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export function defaultChannelState(defaultCwd) {
+  return {
+    mode: 'chat',
+    chatProviderId: 'auto',
+    chatModel: null,
+    cwd: defaultCwd,
+    executorId: 'workbuddy',
+    providerId: 'workbuddy-free',
+    model: null,
+    sessionId: null,
+  };
+}
+
 export class StateStore {
   constructor(file) {
     this.file = file;
@@ -8,7 +21,11 @@ export class StateStore {
     this.load();
   }
   load() {
-    try { this.data = JSON.parse(fs.readFileSync(this.file, 'utf8')); }
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      this.data = parsed && typeof parsed === 'object' ? parsed : { channels: {} };
+      if (!this.data.channels || typeof this.data.channels !== 'object') this.data.channels = {};
+    }
     catch { this.data = { channels: {} }; }
   }
   save() {
@@ -16,9 +33,7 @@ export class StateStore {
     fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
   }
   getChannel(channelId, defaultCwd) {
-    return this.data.channels[channelId] || {
-      cwd: defaultCwd, executorId: 'workbuddy', providerId: 'workbuddy-free', model: null, sessionId: null,
-    };
+    return { ...defaultChannelState(defaultCwd), ...(this.data.channels[channelId] || {}) };
   }
   patchChannel(channelId, patch, defaultCwd) {
     const current = this.getChannel(channelId, defaultCwd);

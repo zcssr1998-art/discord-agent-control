@@ -50,6 +50,9 @@ export function loadConfig() {
     approvalHost: process.env.APPROVAL_HOST || '127.0.0.1',
     approvalPort: int('APPROVAL_PORT', 37911),
     approvalTimeoutMs: int('APPROVAL_TIMEOUT_MS', 540000),
+    // Keep the user-level agent hook pointing at this checkout on every start.
+    // Disable with DISCORD_AUTO_HOOK=0 (e.g. test harnesses).
+    autoInstallHook: bool('DISCORD_AUTO_HOOK', true),
     autoAllowWorkspaceWrites: bool('AUTO_ALLOW_WORKSPACE_WRITES', true),
     autoAllowTestCommands: bool('AUTO_ALLOW_TEST_COMMANDS', true),
     // `--include-partial-messages` mostly emits thinking-token noise; off by default.
@@ -65,6 +68,13 @@ export function loadConfig() {
     // on anything else unless paid fallback is explicitly enabled.
     agentBackend: process.env.AGENT_BACKEND || 'workbuddy-free-dsf',
     allowPaidFallback: bool('ALLOW_PAID_FALLBACK', false),
+
+    // --- chat (direct model API) -----------------------------------------
+    // AUTO must never silently spend on METERED/unknown-billing providers. This
+    // only enables those as a *last* AUTO candidate; a manual pin still works.
+    allowMeteredChatFallback: bool('ALLOW_METERED_CHAT_FALLBACK', false),
+    // Wall-clock cap on one direct Chat request.
+    chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
 
     // --- runaway protection ----------------------------------------------
     // Hard wall-clock cap on one task. Hitting it kills the agent process.

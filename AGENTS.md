@@ -1,73 +1,113 @@
-# Agent instructions
+# Agent instructions — Jarvis
 
-Primary execution spec: `docs/GEMINI_3_8_TASK.md`.
+This repository inherits the cross-project AI workflow from:
+
+`https://github.com/zcssr1998-art/AI-Development-Rules/blob/main/GLOBAL_AI_RULES.md`
+
+This file contains **Jarvis-specific** rules only. Rule precedence:
+
+`explicit current user instruction > this AGENTS.md > GLOBAL_AI_RULES.md > agent defaults`
+
+## New-session read order
+
+1. `AGENTS.md`
+2. global `GLOBAL_AI_RULES.md`
+3. `docs/CURRENT.md`
+4. `docs/AI_HANDOFF.md`
+5. `docs/tasks/CURRENT.md`
+6. active task referenced there
+7. current branch / HEAD / `git status` / relevant diff
+8. only the code/docs needed for that task
+
+Project workflow overlay: `docs/DEVELOPMENT_WORKFLOW.md`.
+Architecture: `docs/JARVIS_V4_ARCHITECTURE.md`.
 Real-machine evidence and known gotchas: `docs/WINDOWS_SMOKE.md`.
 
-Principles:
+Do not paste the global rulebook or a repo-resident taskbook into chat again.
+
+## Core product principles
+
 - Do not rewrite from scratch; inspect and extend the existing implementation.
-- Default executor is the user's existing DeepSeek-backed Claude Code.
-- Codex is optional fallback only after the DeepSeek V1 works.
-- Reuse the user's existing Claude/DeepSeek environment; do not create a second provider configuration unless required by an observed incompatibility.
-- Run real tests. The task is not done until the Windows Discord -> Claude Code -> tool execution -> phone approval -> result loop is proven on a disposable repo.
-- Keep chat reports short; persist detailed debugging/results in this repository.
-- Never commit secrets.
+- Jarvis is the stable Discord AI terminal. Models/providers/Agent CLIs are replaceable backends.
+- Default user mode is **Chat**. Chat must not start an Agent.
+- **Work** is explicit and uses an Agent runtime.
+- **LiteLLM is the primary standard model gateway in V4** for provider normalization/routing/cost metadata where compatibility is proven.
+- LiteLLM is not the Agent/orchestration layer. Jarvis still owns mode, sessions, workspace, permissions, queue and cancellation.
+- OpenCode Go is a special provider: verify LiteLLM compatibility on the real Windows/account setup before routing it through LiteLLM. Preserve the working direct adapter if necessary.
+- Keep Agent and model selections independent.
+- AUTO routing must prefer healthy FREE/SUBSCRIPTION routes and must not silently spend on METERED/unknown billing.
+- Run real tests. Code inspection is not acceptance.
 
-## Current state (V2 — WorkBuddy free backend)
+## Jarvis state / handoff files
 
-The bridge now runs on the **WorkBuddy free DeepSeek Flash** backend with paid
-fallback disabled. Read `docs/WORKBUDDY_BACKEND.md` before changing anything about
-the backend: it records what was measured, why the agent shell is the WorkBuddy
-agent CLI, and why wrapping that CLI behind a model-shaped adapter would be worse.
+Jarvis currently uses these project-specific state files:
 
-- `src/backend.mjs` — backend identity and the paid-fallback guard.
-  `system/init.apiKeySource` reported by the agent is the source of truth;
-  `stripPaidCredentials()` removes metered variables from the child environment;
-  `assertBackendAllowed()` fails closed. `resolveWorkbuddyCli()` locates the
-  bundled CLI and `resolveExecutorCommand()` expands the `workbuddy` keyword.
-- `src/limits.mjs` — runaway protection: task wall-clock cap, consecutive-failure
-  cap, restart cap.
-- `src/discord-proxy.mjs` — Discord needs **two** proxies: `undici`'s global
-  dispatcher for REST and a wrapped `ws` constructor for the gateway. This must be
-  imported before `discord.js` is evaluated. Do not "simplify" it to one.
-- `src/discord-errors.mjs` — turns Discord's opaque failures (blocked network,
-  disabled privileged intent) into actionable messages.
-- `src/win-env.mjs` — recovers `ANTHROPIC_*` routing from the Windows user
-  environment. Only used when `ALLOW_PAID_FALLBACK=true`.
-- `src/claude-runner.mjs` — persistent `stream-json` agent process. Windows spawn
-  rules live in the exported `buildSpawnPlan()`; the `.js` entry of the WorkBuddy
-  CLI is launched through `process.execPath` because the extensionless launcher
-  cannot be executed by `cmd.exe`.
-- `src/policy.mjs`, `src/hook-server.mjs`, `src/approval-manager.mjs`,
-  `src/progress.mjs` — unchanged in spirit; the approval gate is still the
-  `PreToolUse` hook, which the WorkBuddy CLI implements with the same schema.
-- `scripts/verify-workbuddy.mjs` (`npm run verify:workbuddy`) — proves the free
-  backend, real tool calls, blocked credentials and no fallback.
+- `docs/CURRENT.md` — compact project/milestone state.
+- `docs/AI_HANDOFF.md` — model handoff where it adds information not already in `CURRENT.md`.
+- `docs/tasks/CURRENT.md` — pointer to the active detailed task.
 
-Verification commands:
+Do not make these files repeat the same facts. If one becomes redundant, consolidate rather than maintaining duplicate state.
+
+## Current implementation baseline
+
+Base V3 already provides:
+- WorkBuddy free backend support
+- OpenCode Go provider/model discovery
+- OpenCode Go transport detection
+- local Anthropic -> OpenAI Chat compatibility adapter for Claude-compatible Agent runners
+- ProviderManager / ModelManager / CredentialStore
+- ExecutorManager
+- persistent Agent runner/session state
+- permission tiers and approval hook
+- real `!stop` process-tree kill
+- watchdog and runaway protection
+- Discord proxy support on Windows
+
+V4 foundation adds:
+- `src/mode-router.mjs` — deterministic local Chat/Work controls
+- `src/provider-health.mjs` — circuit breaker/cooldowns
+- `src/chat-runtime.mjs` — direct API Chat compatibility/special-provider route
+- Chat-specific persistent state fields in `StateStore` / `SessionManager`
+
+V4 integration additionally requires:
+- LiteLLM local gateway for standard providers
+- local-only listener
+- validated/pinned stable LiteLLM version
+- supervisor lifecycle integration
+- health/status integration
+- real OpenCode Go compatibility probe before attempting to force it through LiteLLM
+
+## Verification commands
 
 ```text
-npm test              # unit + integration tests
-npm run check         # syntax check of every module
-npm run verify:workbuddy  # free backend + real tool calls + no paid fallback
-npm run smoke:local   # real agent end-to-end on a throwaway repo
-npm run smoke:discord # real control plane, fake Discord transport
-npm run verify:hook   # the installed global hook fires, and stays inert otherwise
+npm test
+npm run check
+npm run verify:workbuddy
+npm run verify:opencode-go
+npm run verify:claude-opencode-chat
+npm run smoke:local
+npm run smoke:discord
+npm run verify:hook
 npm run doctor:discord
 ```
 
+## Windows / runtime traps that already cost time once
 
-## Traps that already cost time once
+- **Never use `spawnSync` while a server in the same process has to answer the child.** It blocks the event loop. Use async `spawn`.
+- **`shell: true` on Windows means Node quotes nothing.** Quote executable and every argument by hand; see `buildSpawnPlan` / `quoteWindowsArg`.
+- **Never write `~/.claude/settings.json` with a BOM.** PowerShell 5.1 can silently break hook loading.
+- **A smoke test that depends on the model choosing a destructive command is flaky.** Use an observable safe local side effect or drive the hook client directly.
+- Do not simplify Discord networking to one proxy path. The existing gateway and REST proxy handling is deliberate.
+- Do not regress fail-closed backend/credential isolation.
+- Do not add Postgres/Redis/Kubernetes just because LiteLLM supports them; this is a personal local deployment.
+- Do not run two independent full routing engines that fight each other: LiteLLM owns normal provider routing; Jarvis owns policy and special-provider escape hatches.
 
-- **Never use `spawnSync` while a server in the same process has to answer the
-  child.** It blocks the event loop, so the hook client can never get a response
-  and the run hangs until it is killed. Use async `spawn`. This has bitten twice.
-- **`shell: true` on Windows means Node quotes nothing.** Both the executable and
-  every argument must be quoted by hand — see `buildSpawnPlan` / `quoteWindowsArg`.
-  A prompt with spaces otherwise arrives truncated to its first word.
-- **Never write `~/.claude/settings.json` with a BOM.** PowerShell 5.1's
-  `Set-Content -Encoding UTF8` adds one, which makes the file invalid JSON and
-  silently stops Claude Code from loading the hook. Use
-  `[System.IO.File]::WriteAllText` with a BOM-less `UTF8Encoding`.
-- **A smoke test that depends on the model choosing to run a destructive command
-  is flaky.** The agent inspects the repo and declines. Use a gated command with an
-  observable local side effect, or drive the hook client directly.
+## Reporting additions
+
+Follow the global concise-reporting rule. For Jarvis include only material project evidence, such as:
+
+- actual Chat provider/model and latency when relevant;
+- fallback result when routing changed;
+- Work/Agent smoke status;
+- Windows/Discord real-machine verification;
+- blocker if real smoke could not be completed.

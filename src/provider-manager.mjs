@@ -31,6 +31,18 @@ const OPENCODE_GO = {
 };
 
 /**
+ * LiteLLM is the primary standard model gateway. It is only registered when the
+ * user has configured it, so a machine without the gateway does not get a
+ * phantom AUTO candidate that always fails.
+ */
+const LITELLM = {
+  id: 'litellm', displayName: 'LiteLLM Gateway', protocol: PROTOCOL.OPENAI,
+  baseUrl: 'http://127.0.0.1:4000/v1', billingType: 'SUBSCRIPTION',
+  credentialRef: 'provider:litellm', models: [], modelsFetchedAt: null,
+  source: 'built-in-special', removable: false,
+};
+
+/**
  * Transport is a property of the *model*, not the provider: OpenCode Go serves
  * different model families over different protocols. The families below come
  * from the official endpoint table at
@@ -231,6 +243,18 @@ export class ProviderManager {
     let stored = [];
     try { stored = JSON.parse(fs.readFileSync(file, 'utf8'))?.providers ?? []; }
     catch { /* first run or a corrupt user file: built-ins remain available */ }
+    // Cache for built-in providers that are registered lazily (e.g. LiteLLM).
+    // Without this, a restart with the gateway down loses the alias list and
+    // AUTO would silently skip the primary route instead of attempting and then
+    // falling back with attribution.
+    this.cachedBuiltins = new Map();
+    for (const profile of stored) {
+      if (!profile?.id || !String(profile.source).startsWith('built-in')) continue;
+      this.cachedBuiltins.set(profile.id, {
+        models: Array.isArray(profile.models) ? profile.models : [],
+        modelsFetchedAt: profile.modelsFetchedAt ?? null,
+      });
+    }
     for (const profile of stored) {
       if (!profile?.id || String(profile.source).startsWith('built-in')) continue;
       this.profiles.set(profile.id, profile);
@@ -252,6 +276,27 @@ export class ProviderManager {
   get(id) { return this.profiles.get(id) ?? null; }
 
   hasCredential(profile) { return !profile?.credentialRef || this.credentialStore.has(profile.credentialRef); }
+
+  /**
+   * Register the LiteLLM gateway as a first-class OpenAI-compatible provider.
+   * Reuses the last successful alias cache when one exists. The gateway is only
+   * added to AUTO candidates when its billing type is FREE/SUBSCRIPTION.
+   */
+  registerLitellm({ baseUrl, billingType = 'SUBSCRIPTION' } = {}) {
+    if (!baseUrl) throw Object.assign(new Error('litellm base url is required'), { code: 'INVALID_URL' });
+    const existing = this.get(LITELLM.id);
+    const cached = this.cachedBuiltins?.get(LITELLM.id) ?? null;
+    const models = existing?.models?.length ? existing.models : (cached?.models ?? []);
+    const profile = {
+      ...LITELLM,
+      baseUrl: normalizeBaseUrl(baseUrl),
+      billingType: String(billingType || 'SUBSCRIPTION').toUpperCase(),
+      models,
+      modelsFetchedAt: existing?.modelsFetchedAt ?? cached?.modelsFetchedAt ?? null,
+    };
+    this.profiles.set(profile.id, profile);
+    return profile;
+  }
 
   noteWorkbuddyModel(model) {
     if (!model) return;

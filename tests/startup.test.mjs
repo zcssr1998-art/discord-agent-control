@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ensureHookSecret } from '../src/hook-server.mjs';
 
 // The real entry point (`node src/index.mjs`) is the one code path that cannot be
 // exercised by the in-process tests, and it is the path the user actually runs.
@@ -15,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 // message instead of a raw stack trace.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SECRET = fs.readFileSync(path.join(ROOT, 'data', 'hook-secret'), 'utf8').trim();
+// A fresh clone has no data/ directory (it is git-ignored), so make the shared
+// secret deterministic instead of assuming a previous bridge run created it.
+const SECRET = ensureHookSecret();
 
 function freePort() {
   return new Promise((resolve) => {
@@ -40,6 +43,8 @@ function bootBridge(env) {
       CLAUDE_COMMAND: path.join(ROOT, 'tests', 'fake-claude.mjs'),
       AGENT_BACKEND: 'workbuddy-free-dsf',
       ALLOW_PAID_FALLBACK: 'false',
+      // Do not touch the real user-level agent settings from a test.
+      DISCORD_AUTO_HOOK: '0',
       // A metered credential that must never survive into the agent process or
       // appear anywhere in the logs.
       ANTHROPIC_AUTH_TOKEN: 'sk-test-must-be-blocked',
