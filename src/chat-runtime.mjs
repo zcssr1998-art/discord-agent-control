@@ -80,6 +80,27 @@ function usableBilling(profile, allowMeteredFallback) {
   return Boolean(allowMeteredFallback);
 }
 
+/**
+ * Provider preference for AUTO. Lower is better:
+ *   0 LiteLLM gateway (primary standard route)
+ *   1 OpenCode Go direct (special/escape hatch)
+ *   2 other FREE, 3 other SUBSCRIPTION, 4 metered/unknown
+ */
+function providerRank(profile) {
+  if (profile?.id === 'litellm') return 0;
+  if (profile?.id === 'opencode-go') return 1;
+  if (profile?.billingType === 'FREE') return 2;
+  if (profile?.billingType === 'SUBSCRIPTION') return 3;
+  return 4;
+}
+
+function modelOnlyRank(profile, model, patterns) {
+  // A provider with no model information (unreachable gateway) is treated as
+  // its top preference so a skipped primary still counts as a downgrade.
+  if (!model) return providerRank(profile) * 1000 + 0;
+  return providerRank(profile) * 1000 + rankModel(model.id, patterns);
+}
+
 export class ChatRuntime {
   constructor({
     providerManager,
@@ -100,45 +121,51 @@ export class ChatRuntime {
   }
 
   async candidates({ providerId = 'auto', model = null } = {}) {
+    return (await this.#resolveCandidates({ providerId, model })).candidates;
+  }
+
+  async #resolveCandidates({ providerId = 'auto', model = null }) {
     const profiles = providerId && providerId !== 'auto'
       ? [this.providers.get(providerId)].filter(Boolean)
       : this.providers.list()
         .filter((profile) => profile.protocol !== PROTOCOL.WORKBUDDY)
         .filter((profile) => this.providers.hasCredential(profile))
         .filter((profile) => usableBilling(profile, this.allowMeteredFallback))
-        .sort((a, b) => {
-          // LiteLLM is the primary standard gateway; OpenCode Go is the special
-          // direct route kept as a safety net (and for providers LiteLLM cannot
-          // represent). Free providers come next, then subscription.
-          const score = (p) => p.id === 'litellm' ? 0
-            : p.id === 'opencode-go' ? 1
-              : p.billingType === 'FREE' ? 2
-                : p.billingType === 'SUBSCRIPTION' ? 3 : 4;
-          return score(a) - score(b);
-        });
+        .sort((a, b) => providerRank(a) - providerRank(b));
 
     const output = [];
+    const skipped = [];
     for (const profile of profiles) {
       if (!profile || profile.protocol === PROTOCOL.WORKBUDDY || !this.providers.hasCredential(profile)) continue;
       let models = Array.isArray(profile.models) ? profile.models : [];
       if (!models.length) {
         try { models = (await this.providers.listModels(profile.id)).models || []; }
-        catch { continue; }
+        catch {
+          // An unreachable gateway has no alias list; record it so a reply served
+          // by a lower route is still attributed as a fallback.
+          skipped.push({ providerId: profile.id, model: null, reason: 'unavailable', rank: modelOnlyRank(profile, null, this.preferredModelPatterns) });
+          continue;
+        }
       }
       const selected = model
         ? models.filter((item) => item.id === model || item.displayName === model)
         : [...models].sort((a, b) => rankModel(a.id, this.preferredModelPatterns) - rankModel(b.id, this.preferredModelPatterns));
-      for (const item of selected) {
+      // The gateway owns its own fallback behind the primary AUTO alias
+      // (chat-fast). Other aliases are manual pins only, so AUTO must not fan
+      // out across them and hammer a dead gateway.
+      const chosen = !model && providerId === 'auto' && profile.id === 'litellm' ? selected.slice(0, 1) : selected;
+      for (const item of chosen) {
         if (this.health.canTry(profile.id, item.id)) output.push({ profile, model: item });
+        else skipped.push({ providerId: profile.id, model: item.id, reason: 'cooldown', rank: modelOnlyRank(profile, item, this.preferredModelPatterns) });
       }
     }
-    return output;
+    return { candidates: output, skipped };
   }
 
   async send({ prompt, providerId = 'auto', model = null, system = null } = {}) {
     const text = String(prompt ?? '').trim();
     if (!text) throw Object.assign(new Error('chat prompt is empty'), { code: 'EMPTY_PROMPT' });
-    const candidates = await this.candidates({ providerId, model });
+    const { candidates, skipped } = await this.#resolveCandidates({ providerId, model });
     if (!candidates.length) throw Object.assign(new Error('no healthy chat provider/model is available'), { code: 'NO_CHAT_PROVIDER' });
 
     const attempts = [];
@@ -147,6 +174,12 @@ export class ChatRuntime {
       try {
         const result = await this.#request({ ...candidate, prompt: text, system });
         this.health.noteSuccess(candidate.profile.id, candidate.model.id);
+        // A reply is a fallback when a failed attempt happened in this turn OR
+        // when a more-preferred route was skipped (unreachable gateway or its
+        // cooldown). Without the second case, a direct answer while the primary
+        // gateway is down would look like a normal route.
+        const servedRank = modelOnlyRank(candidate.profile, candidate.model, this.preferredModelPatterns);
+        const downgraded = skipped.some((entry) => entry.rank < servedRank);
         return {
           ...result,
           providerId: candidate.profile.id,
@@ -154,6 +187,8 @@ export class ChatRuntime {
           model: candidate.model.id,
           durationMs: Date.now() - startedAt,
           attempts,
+          skipped,
+          fallback: attempts.length > 0 || downgraded,
         };
       } catch (error) {
         const failure = this.health.noteFailure(candidate.profile.id, candidate.model.id, error);

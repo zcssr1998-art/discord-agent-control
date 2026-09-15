@@ -919,7 +919,9 @@ export class DiscordControlPlane {
     }
 
     const durationMs = Date.now() - startedAt;
-    const fallback = Array.isArray(result.attempts) && result.attempts.length > 0;
+    const fallback = typeof result.fallback === 'boolean'
+      ? result.fallback
+      : (Array.isArray(result.attempts) && result.attempts.length > 0);
     const served = result.upstreamModel && result.upstreamModel !== result.model
       ? `${result.model} → ${result.upstreamModel}`
       : result.model;

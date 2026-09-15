@@ -243,6 +243,18 @@ export class ProviderManager {
     let stored = [];
     try { stored = JSON.parse(fs.readFileSync(file, 'utf8'))?.providers ?? []; }
     catch { /* first run or a corrupt user file: built-ins remain available */ }
+    // Cache for built-in providers that are registered lazily (e.g. LiteLLM).
+    // Without this, a restart with the gateway down loses the alias list and
+    // AUTO would silently skip the primary route instead of attempting and then
+    // falling back with attribution.
+    this.cachedBuiltins = new Map();
+    for (const profile of stored) {
+      if (!profile?.id || !String(profile.source).startsWith('built-in')) continue;
+      this.cachedBuiltins.set(profile.id, {
+        models: Array.isArray(profile.models) ? profile.models : [],
+        modelsFetchedAt: profile.modelsFetchedAt ?? null,
+      });
+    }
     for (const profile of stored) {
       if (!profile?.id || String(profile.source).startsWith('built-in')) continue;
       this.profiles.set(profile.id, profile);
@@ -273,12 +285,14 @@ export class ProviderManager {
   registerLitellm({ baseUrl, billingType = 'SUBSCRIPTION' } = {}) {
     if (!baseUrl) throw Object.assign(new Error('litellm base url is required'), { code: 'INVALID_URL' });
     const existing = this.get(LITELLM.id);
+    const cached = this.cachedBuiltins?.get(LITELLM.id) ?? null;
+    const models = existing?.models?.length ? existing.models : (cached?.models ?? []);
     const profile = {
       ...LITELLM,
       baseUrl: normalizeBaseUrl(baseUrl),
       billingType: String(billingType || 'SUBSCRIPTION').toUpperCase(),
-      models: existing?.models ?? [],
-      modelsFetchedAt: existing?.modelsFetchedAt ?? null,
+      models,
+      modelsFetchedAt: existing?.modelsFetchedAt ?? cached?.modelsFetchedAt ?? null,
     };
     this.profiles.set(profile.id, profile);
     return profile;

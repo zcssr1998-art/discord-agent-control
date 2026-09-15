@@ -26,6 +26,12 @@ const OPENCODE_GO = {
   ],
 };
 
+const LITELLM = {
+  id: 'litellm', displayName: 'LiteLLM Gateway', protocol: PROTOCOL.OPENAI,
+  baseUrl: 'http://127.0.0.1:4000/v1', billingType: 'SUBSCRIPTION', credentialRef: 'provider:litellm',
+  models: [{ id: 'chat-fast', displayName: 'chat-fast' }],
+};
+
 function fakeProviders(profiles = [OPENCODE_GO]) {
   return {
     list: () => profiles,
@@ -254,4 +260,26 @@ test('a LiteLLM health failure is reported in status and never crashes the contr
   assert.match(lastText(fake), /LiteLLM：🔴/);
   await fake.sendAsUser({ content: '你好' });
   assert.match(lastText(fake), /你好，我是 Jarvis。/);
+});
+
+test('a cooled primary gateway still shows fallback in the footer instead of a normal route', async () => {
+  const seen = [];
+  const { fake, plane } = makePlane({
+    profiles: [LITELLM, OPENCODE_GO],
+    fetchImpl: async (url, options) => {
+      seen.push(JSON.parse(options.body).model);
+      if (url.startsWith('http://127.0.0.1:4000')) throw Object.assign(new Error('fetch failed'), { code: 'UNREACHABLE' });
+      return jsonResponse(200, { choices: [{ message: { content: 'FALLBACK_OK' } }] });
+    },
+  });
+  await plane.start();
+
+  await fake.sendAsUser({ content: '你好' });
+  assert.deepEqual(seen, ['chat-fast', 'deepseek-v4.1-flash']);
+  assert.match(lastText(fake), /💬 Chat · OpenCode Go · deepseek-v4\.1-flash · fallback · /);
+
+  seen.length = 0;
+  await fake.sendAsUser({ content: '再来一次' });
+  assert.deepEqual(seen, ['deepseek-v4.1-flash'], 'the cooled gateway must not be retried');
+  assert.match(lastText(fake), /fallback · /, 'a cooled-down primary is still a fallback, not a normal route');
 });

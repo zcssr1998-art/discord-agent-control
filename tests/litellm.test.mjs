@@ -21,7 +21,11 @@ function jsonResponse(status, body, headers = {}) {
 const LITELLM_PROFILE = {
   id: 'litellm', displayName: 'LiteLLM Gateway', protocol: PROTOCOL.OPENAI,
   baseUrl: 'http://127.0.0.1:4000/v1', billingType: 'SUBSCRIPTION', credentialRef: 'provider:litellm',
-  models: [{ id: 'chat-fast', displayName: 'chat-fast' }],
+  models: [
+    { id: 'chat-fast', displayName: 'chat-fast' },
+    { id: 'chat-smart', displayName: 'chat-smart' },
+    { id: 'chat-fast-glm', displayName: 'chat-fast-glm' },
+  ],
 };
 
 const OPENCODE_GO = {
@@ -96,7 +100,17 @@ test('a LiteLLM outage does not strand Chat: OpenCode Go direct takes over', asy
   assert.equal(result.model, 'deepseek-v4.1-flash');
   assert.equal(result.attempts.length, 1);
   assert.equal(result.attempts[0].code, 'UNREACHABLE');
+  assert.equal(result.fallback, true);
   assert.deepEqual(seen, ['chat-fast', 'deepseek-v4.1-flash']);
+
+  // A second turn must not hammer the dead gateway, but it is still a fallback:
+  // the preferred route was skipped because it is in cooldown.
+  seen.length = 0;
+  const second = await runtime.send({ prompt: '再来一次' });
+  assert.deepEqual(seen, ['deepseek-v4.1-flash'], 'the cooled gateway must not be retried');
+  assert.equal(second.attempts.length, 0);
+  assert.equal(second.fallback, true, 'a cooled-down primary is still a fallback, not a normal route');
+  assert.ok(second.skipped.some((entry) => entry.providerId === 'litellm' && entry.reason === 'cooldown'));
 });
 
 test('safe billing policy keeps a METERED gateway out of AUTO', async () => {
@@ -122,4 +136,22 @@ test('registerLitellm adds one OpenAI-compatible local provider', () => {
   assert.equal(profile.billingType, 'SUBSCRIPTION');
   assert.ok(providers.list().some((item) => item.id === 'litellm'));
   assert.equal(profile.removable, false);
+});
+
+test('a restarted ProviderManager reloads the LiteLLM alias cache (fallback attribution survives restart)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-litellm-cache-'));
+  const file = path.join(dir, 'providers.json');
+  fs.writeFileSync(file, JSON.stringify({
+    providers: [{
+      id: 'litellm', source: 'built-in-special', baseUrl: 'http://127.0.0.1:4000/v1',
+      billingType: 'SUBSCRIPTION', credentialRef: 'provider:litellm',
+      models: [{ id: 'chat-fast', displayName: 'chat-fast' }],
+      modelsFetchedAt: '2026-09-15T00:00:00.000Z',
+    }],
+  }));
+  const credentials = new CredentialStore(path.join(dir, 'credentials.json'));
+  const providers = new ProviderManager({ file, credentialStore: credentials });
+  providers.registerLitellm({ baseUrl: 'http://127.0.0.1:4000/v1', billingType: 'SUBSCRIPTION' });
+  assert.deepEqual(providers.get('litellm').models.map((m) => m.id), ['chat-fast']);
+  assert.equal(providers.get('litellm').modelsFetchedAt, '2026-09-15T00:00:00.000Z');
 });

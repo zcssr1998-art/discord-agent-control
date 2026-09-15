@@ -156,17 +156,145 @@ throwaway entry point (no Discord, no real task):
 The gateway was started, reported healthy, and was stopped again on supervisor
 exit. `scripts/start-windows.ps1` starts the gateway before the bridge as well.
 
-## 9. Discord end-to-end smoke
+## 9. Real Discord end-to-end smoke — PASS
 
-Pending: requires `DISCORD_TOKEN` + `DISCORD_OWNER_ID` for the owner's bot,
-which are not present on this machine (no `.env`). The sections below must be
-run against the live bot:
+Setup for this run:
 
-- **A. Chat** — send `你好`; confirm a direct answer, no Agent child process for
-  the turn, and record the real latency and route.
-- **B. Fallback** — force the first safe route unavailable; the next safe route
-  answers and the failed route is cooled down.
-- **C. Work** — `work`, run a disposable-repo task with real read/write/command,
-  confirm permissions and `!stop`.
-- **D. Return** — `chat`, then an ordinary question returns to the direct Chat
-  path.
+```text
+bot            Jarvis.#8605
+owner          time6737 (resolved by doctor:discord)
+gateway        LiteLLM 1.101.0 on http://127.0.0.1:4000 (health 200 "I'm alive!")
+bridge         node src/index.mjs, chat mode = AUTO
+channel        owner DM 1549026681224826962
+Work defaults  executor=claude, provider=opencode-go, model=deepseek-v4.1-flash, cwd=D:\dac-smoke
+```
+
+A stale V2/V3 bridge held the hook port and was stopped; a global hook from an
+older checkout was auto-repaired (see section 10.2).
+
+### A. Chat primary route (LiteLLM UP)
+
+`你好`:
+
+```text
+[chat] done channel=... provider=litellm model=chat-fast
+       served=chat-fast → opencode-go/deepseek-v4.1-flash fallback=false durationMs=1729
+```
+
+Direct model answer, **1.7 s**, no Agent child process. (This is the ~55 s /
+Agent-path bug eliminated.)
+
+### B. Work (real read/write, STANDARD permissions)
+
+```text
+work 在 D:\dac-smoke 创建 v4-work.txt，写入 V4_WORK_OK，读取确认后只回复 DONE
+[task] start channel=... cwd=D:\dac-smoke
+[task] done  channel=... state=DONE tools=2 durationMs=15325 tests=-
+```
+
+Verified on disk after the run: `D:\dac-smoke\v4-work.txt` = `V4_WORK_OK`.
+No approval prompt was needed for the in-workspace Write+Read (STANDARD
+auto-allow), which is the intended "don't interrupt normal work" behaviour.
+
+### C. `!stop` kills a real Agent process tree
+
+The bridge's descendant tree was sampled every 2 s (`logs/v4-smoke/child-timeline.log`).
+A real `claude.exe` (pid 25572) under `cmd.exe` (64136) was alive and, after
+`!stop`:
+
+```text
+[task] cancelled channel=... reason=stopped by owner (!stop)
+[21:24:39]  pid=64136 cmd.exe ... /  pid=25572 claude.exe ...
+[21:24:42]  (no bridge descendants)
+```
+
+The whole tree disappeared within one sample; the channel was usable again.
+
+### D. Work -> Chat, and ordinary Chat starts no Agent
+
+After `chat`, ordinary messages produced `[chat] done` lines and the monitor
+showed `(no bridge descendants)` for every sample — no `getRunner`, no Claude
+Code, no hook, no Work task.
+
+### E. Gateway outage -> direct fallback, with cooldown
+
+LiteLLM was stopped (port 4000 closed, health unreachable) and the channel was
+confirmed `mode=chat`. Real Discord replies:
+
+```text
+[chat] done provider=opencode-go model=deepseek-v4.1-flash fallback=true durationMs=17010
+[chat] done provider=opencode-go model=deepseek-v4.1-flash fallback=true durationMs=13459
+```
+
+Footer observed on the phone: `💬 Chat · OpenCode Go · deepseek-v4.1-flash · fallback · 13.5s`.
+
+Cooldown proof (second turn must not hammer the dead gateway, and must still be
+attributed as a fallback) from the production `ChatRuntime` against the down
+gateway:
+
+```text
+FIRST  providerId=opencode-go model=deepseek-v4.1-flash
+       attempts=[{litellm, chat-fast, UNREACHABLE, cooldownMs=30000}] skipped=[] fallback=true
+SECOND providerId=opencode-go model=deepseek-v4.1-flash
+       attempts=[] skipped=[{litellm, chat-fast, reason=cooldown, rank=0}] fallback=true
+```
+
+### F. Recovery
+
+LiteLLM restarted (`/health/liveliness` -> 200, pid 64496) and the production
+`ChatRuntime` answered through it again:
+
+```text
+providerId=litellm model=chat-fast upstreamModel=opencode-go/deepseek-v4.1-flash attempts=[]
+```
+
+## 10. Bugs found by the real Discord smoke (fixed)
+
+### 10.1 Direct OpenCode Go `openai-chat` auth
+
+`ChatRuntime` used `x-api-key` for every OpenCode Go transport. The real account
+accepts `x-api-key` only on `/v1/messages`; the `openai-chat`/`openai-responses`
+endpoints need `Authorization: Bearer`. Before the fix every direct DeepSeek/GLM
+model returned `INVALID_CREDENTIAL` (401). Fixed and covered by
+`tests/chat-runtime.test.mjs`.
+
+### 10.2 Stale global approval hook -> HTTP 401 fail-closed on every tool
+
+Root cause: the user-level hook in `~/.claude/settings.json` was installed from a
+different checkout (`...\WorkBuddy AI\2026-09-14-16-33-53\repo\...`). The hook
+client resolved its secret from a file relative to its own location, so it sent
+that checkout's stale `data/hook-secret` while the running bridge used its own.
+Every Write/Read/Glob/Bash was answered `HTTP 401` and denied.
+
+Fixes (defense in depth):
+
+- the bridge injects `DISCORD_BRIDGE_SECRET` into the agent child; the hook
+  client prefers it and only falls back to the file (`scripts/approval-hook.mjs`);
+- on startup the bridge repoints `~/.claude` and `~/.codebuddy` `PreToolUse`
+  hooks at this checkout, BOM-less, preserving other hooks and idempotently
+  (`src/global-hook.mjs`, `DISCORD_AUTO_HOOK=0` to disable).
+
+Deterministic verification:
+
+```text
+correct secret -> HTTP 200 decision=allow
+wrong secret   -> HTTP 401
+tests/approval-secret.test.mjs -> 4/4
+```
+
+### 10.3 Fallback attribution was hidden during cooldown
+
+When the primary `chat-fast` was in cooldown, `ChatRuntime` skipped it entirely,
+so `attempts=[]` and the direct reply looked like a normal route. Fixed:
+`send()` now also reports `skipped` and computes `fallback` when a
+more-preferred route was skipped, so the footer shows `fallback` even while the
+gateway is cooling down (without retrying it). Covered by
+`tests/litellm.test.mjs` and `tests/v4-chat-flow.test.mjs`.
+
+## 11. Final automated state
+
+```text
+npm test      -> 166 passed / 0 failed
+npm run check -> checked 70 file(s), 0 failed
+```
+
