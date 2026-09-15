@@ -33,7 +33,16 @@ const root = path.resolve(__dirname, '..');
 
 async function main() {
   const config = loadConfig();
-  const state = new StateStore(path.join(root, 'data', 'state.json'));
+  const stateFile = path.join(root, 'data', 'state.json');
+  const state = new StateStore(stateFile);
+  // Log the effective per-channel routing on startup so the live bridge state is
+  // verifiable from logs instead of assumed from the file on disk.
+  const knownChannels = Object.keys(state.data.channels ?? {});
+  console.log(`[state] file=${stateFile} configuredChannel(s)=${knownChannels.length}`);
+  for (const channelId of knownChannels) {
+    const channel = state.getChannel(channelId, config.defaultCwd);
+    console.log(`[state] channel=${channelId} mode=${channel.mode} executor=${channel.executorId} provider=${channel.providerId} model=${channel.model ?? 'none'} cwd=${channel.cwd}${channel.workThread ? ` workThread=parent:${channel.parentChannelId}` : ''}`);
+  }
   const credentials = new CredentialStore(path.join(root, 'data', 'credentials.json'));
   const providers = new ProviderManager({
     file: path.join(root, 'data', 'providers.json'),
