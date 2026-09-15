@@ -864,6 +864,7 @@ export class DiscordControlPlane {
       // workspace queue and leave the active owner untouched.
       const queued = this.scheduler?.cancelQueued(message.channelId);
       if (queued) {
+        console.log(`[queue] cancel channel=${message.channelId} workspace=${queued.key} position=${queued.position}`);
         this.queuedNotices.delete(message.channelId);
         await message.reply(`⛔ 已取消排队中的任务（原队列位置 ${queued.position}）。活动任务不受影响。`);
         return;
@@ -1241,7 +1242,8 @@ export class DiscordControlPlane {
       label: message.guildId ? `<#${channelId}>` : 'DM',
       run: () => this.#runTaskNow(message, prompt),
       onQueued: ({ position, active }) => this.#notifyQueued(message, workspace, position, active),
-      onStart: async () => {
+      onStart: async ({ key }) => {
+        console.log(`[queue] start channel=${channelId} workspace=${key}`);
         const notice = this.queuedNotices.get(channelId);
         if (!notice) return;
         this.queuedNotices.delete(channelId);
@@ -1253,6 +1255,7 @@ export class DiscordControlPlane {
 
   async #notifyQueued(message, workspace, position, active) {
     const activeLabel = active?.channelId ? `<#${active.channelId}>` : '其他任务';
+    console.log(`[queue] queued channel=${message.channelId} workspace=${workspace} position=${position} active=${active?.channelId ?? 'none'}`);
     try {
       const sent = await message.reply([
         `⏳ Workspace busy: ${workspace}`,
