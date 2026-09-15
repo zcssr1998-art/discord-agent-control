@@ -16,7 +16,9 @@ export class StateStore {
     fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
   }
   getChannel(channelId, defaultCwd) {
-    return this.data.channels[channelId] || { cwd: defaultCwd, sessionId: null };
+    return this.data.channels[channelId] || {
+      cwd: defaultCwd, executorId: 'workbuddy', providerId: 'workbuddy-free', model: null, sessionId: null,
+    };
   }
   patchChannel(channelId, patch, defaultCwd) {
     const current = this.getChannel(channelId, defaultCwd);

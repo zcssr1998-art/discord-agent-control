@@ -13,10 +13,15 @@ import { RunLimits } from './limits.mjs';
 import { resolveRoutingEnv, describeRouting, redactForLog, resolveDiscordProxy } from './win-env.mjs';
 import { configureDiscordProxy } from './discord-proxy.mjs';
 import { explainDiscordLoginError } from './discord-errors.mjs';
-import { stripPaidCredentials, probeBackend, classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
+import { stripPaidCredentials, probeBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
 import { DiscordControlPlane } from './discord-ui.mjs';
 import { killAllChildrenSync } from './kill-tree.mjs';
 import { PermissionManager } from './permission-manager.mjs';
+import { CredentialStore } from './credential-store.mjs';
+import { ProviderManager } from './provider-manager.mjs';
+import { ModelManager } from './model-manager.mjs';
+import { ExecutorManager } from './executor-manager.mjs';
+import { redactSecrets } from './secrets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -24,6 +29,11 @@ const root = path.resolve(__dirname, '..');
 async function main() {
   const config = loadConfig();
   const state = new StateStore(path.join(root, 'data', 'state.json'));
+  const credentials = new CredentialStore(path.join(root, 'data', 'credentials.json'));
+  const providers = new ProviderManager({
+    file: path.join(root, 'data', 'providers.json'),
+    credentialStore: credentials,
+  });
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
   const permissions = new PermissionManager();
   const secret = ensureHookSecret();
@@ -48,7 +58,7 @@ async function main() {
   const fatalShutdown = async (label, error) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    const detail = error?.stack || String(error?.message || error);
+    const detail = redactSecrets(error?.stack || String(error?.message || error));
     console.error(`[${label}] ${detail}`);
 
     // Best-effort owner notification before we tear everything down.
@@ -106,25 +116,42 @@ async function main() {
   console.log(`[backend] expected=${config.agentBackend} paidFallback=${config.allowPaidFallback ? 'ENABLED' : 'disabled'}`);
   console.log(`[backend] blocked credential vars: ${envUnset.length ? envUnset.join(', ') : '(none)'}`);
 
+  const executors = new ExecutorManager({
+    workbuddyCommand: config.claudeCommand,
+    workbuddyEnv: childEnv,
+    bridgeEnv: { APPROVAL_HOST: config.approvalHost, APPROVAL_PORT: String(config.approvalPort) },
+  });
+  await executors.discover();
+  for (const executor of executors.list()) {
+    console.log(`[executor] ${executor.id}=${executor.status}${executor.version ? ` version=${executor.version}` : ''}`);
+  }
+  const models = new ModelManager(providers);
+
   // Preflight: prove the free backend answers before accepting any work.
   console.log(`[backend] probing executor "${config.claudeCommand}" ...`);
+  const workbuddyProbeEnv = executors.buildEnvironment('workbuddy', providers.get('workbuddy-free'), null, null);
   const probe = await probeBackend({
     command: config.claudeCommand,
     cwd: config.defaultCwd,
-    extraEnv: childEnv,
-    envUnset,
+    extraEnv: workbuddyProbeEnv.env,
+    envUnset: workbuddyProbeEnv.envUnset,
+    inheritEnv: false,
     timeoutMs: config.taskTimeoutMs,
   });
   const verdict = assertBackendAllowed(probe.backend, { allowPaidFallback: config.allowPaidFallback, expected: config.agentBackend });
+  const probeDetail = `${probe.text || ''} ${probe.error || ''}`;
+  const workbuddyStatus = probe.ok && verdict.ok ? 'PASS'
+    : /quota|额度|余额|insufficient|\b402\b|\b429\b/i.test(probeDetail) ? 'BLOCKED_BY_QUOTA' : 'FAIL';
+  providers.setWorkbuddyHealth(workbuddyStatus, probe.error || probe.text || verdict.reason);
   console.log(`[backend] probe ok=${probe.ok} ${probe.error ? `error=${probe.error}` : ''}`);
   console.log(`[backend] observed: ${probe.backend?.label ?? 'unknown'} model=${probe.backend?.model ?? 'unknown'}`);
-  if (!verdict.ok) {
-    console.error('[backend] ERROR: WorkBuddy free backend unavailable or wrong backend.');
-    console.error(`[backend] ${verdict.reason}`);
-    console.error('[backend] No paid fallback attempted.');
-    process.exit(2);
+  if (workbuddyStatus !== 'PASS') {
+    console.warn(`[backend] WorkBuddy status=${workbuddyStatus}; the shared control plane will remain available for other configured providers.`);
+    console.warn('[backend] No provider fallback attempted.');
+  } else {
+    console.log('[backend] WorkBuddy Free DSF confirmed. Paid fallback: DISABLED.');
   }
-  console.log('[backend] WorkBuddy Free DSF confirmed. Paid fallback: DISABLED.');
+  providers.noteWorkbuddyModel(probe.backend?.model);
 
   // ---- discord -------------------------------------------------------------
   const proxy = await resolveDiscordProxy(config.discordProxy);
@@ -147,6 +174,7 @@ async function main() {
     allowPaidFallback: config.allowPaidFallback,
     billingRoute: billingRoute(probe.backend),
     executor: config.claudeCommand,
+    workbuddyStatus,
   };
 
   discord = new DiscordControlPlane({
@@ -157,6 +185,10 @@ async function main() {
     logger,
     limits,
     backendState,
+    credentialStore: credentials,
+    providerManager: providers,
+    modelManager: models,
+    executorManager: executors,
     extraEnv: childEnv,
     envUnset,
   });
@@ -193,6 +225,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`[fatal] ${error?.message || error}`);
+  console.error(`[fatal] ${redactSecrets(error?.message || error)}`);
   process.exitCode = 1;
 });

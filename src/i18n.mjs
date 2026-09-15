@@ -4,6 +4,7 @@
  * 不影响程序运行的用户可见内容尽量中文。
  * 文件路径 / Shell 命令 / 代码 / 模型 ID / Git SHA / API 字段 / 错误 code 保持原样。
  */
+import { redactSecrets } from './secrets.mjs';
 
 /** 任务状态标签。 */
 export const STATE_LABEL = {
@@ -98,6 +99,12 @@ export function helpText() {
   return [
     '**指令列表**',
     '`!status` — 查看当前状态（项目 / 权限 / 模型 / 会话）',
+    '`!config` — 打开 Agent 统一配置',
+    '`!executor [id]` — 查看或切换执行器',
+    '`!providers` / `!provider [id]` — 查看或切换 Provider',
+    '`!models` / `!model [model-id]` — 查看或切换模型',
+    '`!api` — 在私聊中添加兼容 API',
+    '`!health` — 检查当前执行器、Provider、模型与 Session',
     '`!perm` 或 `!permission` — 查看或切换权限档位',
     '`!perm [strict|standard|relaxed|full]` — 直接切换权限',
     '`!stop` — 停止当前运行中的 Agent',
@@ -111,11 +118,12 @@ export function helpText() {
 }
 
 /** 启动通知。 */
-export function readyText({ backend, model, billingRoute, paidFallback, defaultCwd, permissionLabel }) {
+export function readyText({ executor, provider, protocol, backend, model, billingRoute, paidFallback, defaultCwd, permissionLabel }) {
   return [
     '✅ **Bridge 已就绪**',
-    `执行器：Claude Code compatible shell`,
-    `后端：${backend ?? 'unknown'}`,
+    `执行器：${executor ?? 'WorkBuddy'}`,
+    `${provider ? 'Provider' : '后端'}：${provider ?? backend ?? 'unknown'}`,
+    `协议：${protocol ?? 'workbuddy'}`,
     `模型：${model ?? 'unknown'}`,
     `计费线路：${billingRoute ?? 'unknown'}`,
     `付费回退：${paidFallback ? '已启用' : '已禁用'}`,
@@ -127,7 +135,7 @@ export function readyText({ backend, model, billingRoute, paidFallback, defaultC
 
 /** 格式化 !status 输出。 */
 export function formatStatus({
-  executor, backend, model, billingRoute, paidFallback, apiKeySource,
+  executor, provider, protocol, backend, model, billingRoute, billingType, paidFallback,
   cwd, sessionId, state, idleSec, pendingApprovals, permissionLabel, blocked,
 }) {
   const lines = [
@@ -136,14 +144,14 @@ export function formatStatus({
     `📁 当前项目：\`${cwd}\``,
     `🟢 状态：${state}`,
     `🔐 权限：${permissionLabel}`,
-    `🤖 模型：${model ?? 'unknown'}`,
-    `⚙️ 执行器：${executor ?? 'unknown'}`,
-    `🌐 后端：${backend ?? 'unknown'}`,
-    `🧾 计费线路：${billingRoute ?? 'unknown'}`,
-    `💰 付费回退：${paidFallback ? '已启用' : '已禁用'}`,
-    `🧬 apiKeySource：${apiKeySource ?? 'unknown'}`,
-    `🧠 会话：\`${sessionId || '新会话'}\``,
+    `🛠️ 执行器：${executor ?? 'unknown'}`,
+    `🌐 ${provider ? '提供商' : '后端'}：${provider ?? backend ?? 'unknown'}`,
+    `🔌 协议：${protocol ?? 'unknown'}`,
+    `🧠 模型：${model ?? '未选择'}`,
+    `💰 ${provider ? '计费' : '计费线路'}：${billingType ?? billingRoute ?? '未知'}`,
+    `🧠 Session / 会话：\`${sessionId || '新会话'}\``,
   ];
+  if (provider == null && paidFallback != null) lines.push(`💰 付费回退：${paidFallback ? '已启用' : '已禁用'}`);
   if (idleSec != null) lines.push(`⏱️ 最后事件：${idleSec}秒前`);
   lines.push(`🔐 待审批：${pendingApprovals}`);
   if (blocked) lines.push(`⚠️ ${blocked}`);
@@ -157,20 +165,4 @@ export function shorten(text, maxLen = 120) {
   return s.slice(0, Math.max(0, maxLen - 1)) + '…';
 }
 
-/** 基本脱敏：隐藏敏感 token/key/secret。 */
-export function redact(text) {
-  let s = String(text ?? '');
-  const patterns = [
-    /[Bb]earer\s+[A-Za-z0-9_\-\.]{20,}/g,
-    /[Aa]uthorization[\s:=]+[^\s&|;]{10,}/g,
-    /[Aa]pi[_-]?[Kk]ey[\s:=]+[^\s&|;]{10,}/g,
-    /[Ss]ecret[\s:=]+[^\s&|;]{10,}/g,
-    /[Tt]oken[\s:=]+[^\s&|;]{10,}/g,
-    /[Cc]ookie[\s:=]+[^\s&|;]{10,}/g,
-    /MT[A-Za-z0-9]{20,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g, // Discord token-ish
-  ];
-  for (const re of patterns) {
-    s = s.replace(re, (m) => m.slice(0, 8) + '…[REDACTED]');
-  }
-  return s;
-}
+export const redact = redactSecrets;

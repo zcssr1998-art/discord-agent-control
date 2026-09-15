@@ -28,6 +28,6 @@
 
 `EventPresenter` 只消费现有 runner 事件并更新一条 Discord 状态消息；没有模型调用，额外模型 Token 固定为 0。命令、工具输入和错误在展示前经过本地脱敏并截断，原始 `thinking_tokens` / reasoning 不进入 Discord。
 
-## V3（仅记录，未实现）
+## V3 共用边界
 
-未来控制层按 `PermissionManager / EventPresenter / SessionManager / ModelManager / 中文 UI` 组织，下接 Executor，再分离 Provider 与 Model。本轮没有实现多 Executor、Provider 或 Model 路由。
+V3 的 WorkBuddy 与 Claude Code Adapter 仍把 `PreToolUse` 送入同一个 `PermissionManager`；Provider 只决定模型线路和隔离环境，不拥有独立审批规则。`SessionManager` 在 Executor、Provider、Model 或 cwd 变化时结束旧进程、撤销该 session 的待审批与 session allow，并恢复 STANDARD。OpenCode / Codex Adapter 未就绪，因此不会伪装成已经接入权限系统。

@@ -74,9 +74,11 @@ export class ClaudeRunner {
     command,
     cwd,
     sessionId = null,
+    model = null,
     includePartialMessages = false,
     extraEnv = {},
     envUnset = [],
+    inheritEnv = true,
     onEvent = () => {},
     onExit = () => {},
     onLog = null,
@@ -84,9 +86,11 @@ export class ClaudeRunner {
     this.command = command;
     this.cwd = cwd;
     this.sessionId = sessionId;
+    this.model = model;
     this.includePartialMessages = includePartialMessages;
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
+    this.inheritEnv = inheritEnv;
     this.apiKeySource = null;
     this.restarts = 0;
     this.onEvent = onEvent;
@@ -95,7 +99,6 @@ export class ClaudeRunner {
     this.child = null;
     this.pending = [];
     this.current = null;
-    this.model = null;
     this.lastError = null;
     // Liveness clock for the control-plane watchdog: any byte the agent sends
     // (stdout event or stderr line) refreshes it. A task that stops producing
@@ -123,6 +126,7 @@ export class ClaudeRunner {
     // Partial-message events are mostly `thinking_tokens` noise; the bridge only
     // needs complete assistant turns plus the final result, so this is opt-in.
     if (this.includePartialMessages) args.push('--include-partial-messages');
+    if (this.model) args.push('--model', this.model);
     if (this.sessionId) args.push('--resume', this.sessionId);
     return args;
   }
@@ -134,7 +138,7 @@ export class ClaudeRunner {
     // Build the child environment explicitly: merge the caller's additions, then
     // remove everything the caller asked to block. Blocking matters — with paid
     // fallback disabled the child must not even be able to see a metered API key.
-    const env = { ...process.env, ...this.extraEnv, DISCORD_BRIDGE_ACTIVE: '1' };
+    const env = { ...(this.inheritEnv ? process.env : {}), ...this.extraEnv, DISCORD_BRIDGE_ACTIVE: '1' };
     for (const name of this.envUnset) delete env[name];
 
     this.child = spawn(plan.file, plan.args, {

@@ -92,6 +92,21 @@ test('blocked credential variables are removed from the child environment', asyn
   assert.equal(env.DISCORD_BRIDGE_ACTIVE, '1', 'the hook still needs to know it is a bridge session');
 });
 
+test('isolated child environments contain only the selected provider credential', async (t) => {
+  const probe = path.join(__dirname, 'fake-env-probe.mjs');
+  const runner = new ClaudeRunner({
+    command: probe,
+    cwd: path.resolve(__dirname, '..'),
+    inheritEnv: false,
+    extraEnv: { ANTHROPIC_API_KEY: 'selected-provider-only', ANTHROPIC_BASE_URL: 'https://selected.example/v1' },
+  });
+  t.after(() => runner.stop());
+  const env = JSON.parse((await runner.send('probe')).text);
+  assert.equal(env.ANTHROPIC_API_KEY, 'selected-provider-only');
+  assert.equal(env.OPENAI_API_KEY, undefined);
+  assert.equal(env.DISCORD_BRIDGE_ACTIVE, '1');
+});
+
 // ---------------------------------------------------------------------------
 // Regression: the real outage of 2026-09-14.
 //

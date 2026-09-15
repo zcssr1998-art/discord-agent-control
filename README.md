@@ -3,6 +3,16 @@
 Windows-first Discord control plane for a local Claude Code style agent, running
 on the **WorkBuddy free DeepSeek Flash backend** with paid fallback disabled.
 
+V3 keeps that route intact and adds a shared Executor / Provider / Model control
+plane. Generic OpenAI-compatible and Anthropic-compatible APIs can be added from
+an OWNER DM with `!api`; credentials stay in a gitignored local store. See
+`docs/ARCHITECTURE_V3.md`.
+
+WorkBuddy health is one Provider health signal, not a global startup gate. If
+its probe fails or quota is exhausted, the Discord control plane still starts so
+an explicitly selected compatible Provider can be used; it never falls back
+automatically.
+
 ```text
 iPhone Discord
   -> Windows bridge (discord-agent-control)
@@ -69,6 +79,12 @@ Paid fallback: disabled
 | --- | --- |
 | _any text_ | run it as a task in the bound project |
 | `!status` | executor / backend / model / billing route / cwd / session / busy-idle |
+| `!config` | unified Executor / Provider / Model / Permission view |
+| `!executor [id]` | discover or switch local Agent executors |
+| `!providers` / `!provider [id]` | list or switch providers |
+| `!models` / `!model [id]` | list, page, validate or switch models |
+| `!api` | add a compatible API from an OWNER DM |
+| `!health` | validate the current Executor / Provider / Model / Session |
 | `!perm` / `!permission` | 查看四档权限菜单 |
 | `!perm strict\|standard\|relaxed\|full` | 切换权限；FULL 需要二次确认 |
 | `!cwd <absolute path>` | bind this Discord channel to a project (clears the session) |
@@ -114,6 +130,7 @@ npm run check         # syntax check of every module
 npm run smoke:local   # real Claude Code end-to-end on a throwaway repo (no Discord needed)
 npm run smoke:discord # same, plus the real Discord control plane with a fake transport
 npm run verify:hook   # the installed global hook really fires (and is inert otherwise)
+npm run verify:opencode-go # real Claude Code -> OpenCode Go -> real tool calls (disposable repo)
 ```
 
 `npm run smoke:local` drives the real Claude Code CLI through the real bridge
@@ -138,6 +155,12 @@ run). Run `scripts/install-global-hook.ps1` first.
 ```text
 src/
   index.mjs            entry point: routing check + hook server + Discord
+  executor-manager.mjs local CLI discovery, compatibility and isolated spawn env
+  provider-manager.mjs generic protocol detection, profiles and model discovery
+  model-manager.mjs    model list / validation selection
+  session-manager.mjs  Executor / Provider / Model / cwd session lifecycle
+  credential-store.mjs gitignored local credential persistence
+  secrets.mjs          shared secret registration, masking and redaction
   config.mjs           env configuration
   claude-runner.mjs    persistent Claude Code stream-json process
   discord-ui.mjs       Discord control plane, commands, approval buttons

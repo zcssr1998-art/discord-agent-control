@@ -1,5 +1,11 @@
 import { TaskProgress } from './progress.mjs';
 
+export const EVENT_KIND = Object.freeze({
+  ANALYZE: 'ANALYZE', SEARCH: 'SEARCH', READ: 'READ', WRITE: 'WRITE', EDIT: 'EDIT',
+  SHELL: 'SHELL', TEST: 'TEST', GIT: 'GIT', NETWORK: 'NETWORK', APPROVAL: 'APPROVAL',
+  DONE: 'DONE', FAILED: 'FAILED', CANCELLED: 'CANCELLED', TIMEOUT: 'TIMEOUT',
+});
+
 /** Maps existing runner events to local Chinese progress. It never calls a model. */
 export class EventPresenter extends TaskProgress {
   constructor(options) {

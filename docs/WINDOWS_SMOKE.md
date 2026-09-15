@@ -1,5 +1,20 @@
 # Windows smoke test — real-machine evidence
 
+## V3 verification — 2026-09-15
+
+V3 automated baseline before real-machine smoke:
+
+| Check | Result |
+| --- | --- |
+| Existing V2 tests before changes | 100 passed / 0 failed |
+| V3 + V2 tests | 115 passed / 0 failed |
+| Syntax check | 52 files / 0 failed |
+| Executor discovery | WorkBuddy 2.137.1 PASS; Claude Code 2.1.270 PASS; OpenCode NOT_INSTALLED; Codex 0.154.0 ADAPTER_NOT_READY |
+| Fake Discord `!api` | PASS: OWNER flow, key-message delete call, provider creation, models, switch, task side effect |
+| Credential isolation | PASS: spawned probe saw selected Anthropic credential and no OpenAI credential |
+
+Real WorkBuddy, Discord, hook and secret-scan results are appended after the final commands complete. No credential value is recorded here.
+
 > **Incident appendix — 2026-09-14 P0 outage and fix**
 >
 > On 2026-09-14 at ~21:50 the bridge died silently during the "桌面背景" task.
@@ -638,3 +653,119 @@ npm run doctor:discord   # needs .env
 
 The disposable repo used by each smoke test is left on disk and its path is
 printed at the end of the run so the result can be inspected by hand.
+
+## 12. V3 验证（2026-09-15）
+
+### 自动化与本机发现
+
+```text
+npm test      -> 115 passed / 0 failed
+npm run check -> checked 52 file(s), 0 failed
+
+WorkBuddy 2.137.1       PASS (installed adapter)
+Claude Code 2.1.270     PASS
+OpenCode                NOT_INSTALLED
+Codex 0.154.0           ADAPTER_NOT_READY
+```
+
+Fake Discord 覆盖 OWNER 私聊 `!api`、Key 消息删除、Provider 创建、动态模型、模型选择、状态展示、真实文件副作用以及 Provider/profile/log/state 无完整 Key。Provider tests 覆盖 OpenAI / Anthropic 协议探测、错误 URL/Key、无 models endpoint 的真实 Model ID 验证、45 分钟缓存与 stale fallback、Provider 删除和 credential isolation。
+
+### 真实 Discord 边界
+
+`npm run doctor:discord -- --send-test-dm` 实测登录 `Agent Control#8605`、解析 OWNER，并成功发送测试 DM。可控的 Discord Web 仅显示登录页，没有现成用户会话，因此无法代表 OWNER 发出 `!executor` / `!api`；也没有获得授权用于从本机环境读取并转发某个现有 API Key。真实用户入站与真实 Key 消息删除不得伪造为 PASS。
+
+### 当前 WorkBuddy 运行结果
+
+2026-09-15 重跑时，WorkBuddy gateway 在工具调用前返回 `HTTP 403`, provider code `11140`, message `request illegal`。这不是可可靠判定的 quota 响应，因此记录为 `FAIL`，不误报 `BLOCKED_BY_QUOTA`：
+
+```text
+npm run verify:workbuddy -> 9/13 checks passed
+npm run smoke:local      -> 15/21 checks passed
+npm run smoke:discord    -> 9/15 checks passed
+npm run verify:hook      -> 4/7 checks passed
+```
+
+失败项都依赖本次 WorkBuddy 模型先产生 tool call；独立的真实 hook-client allow-once / allow-session / deny / session 隔离继续通过。V3 入口已验证在该 Provider 失败时仍启动 hook 与 Discord 控制面，并明确记录 `WorkBuddy status=FAIL`、`No provider fallback attempted`。
+
+### 验收结论
+
+- V3 Manager、Generic Provider、Fake Discord onboarding 与 V2 自动回归通过。
+- Bot 的真实 Discord 出站 DM 通过。
+- WorkBuddy 实时工具调用被当前 403 阻断。
+- 真实 OWNER 入站 `!api` 与真实 Key 删除仍未完成，因此整体真实 Discord E2E 为 FAIL。
+
+## 13. V3 — OpenCode Go 接入（2026-09-15 接续）
+
+### 13.1 自动化
+
+```text
+npm test      -> 121 passed / 0 failed
+npm run check -> checked 53 file(s), 0 failed
+```
+
+新增测试覆盖：37 个真实模型的 transport 族规则（含 `unknown`）、内置 Provider 的动态模型发现与持久化缓存（不含 Key）、按模型协议的 Executor 兼容矩阵、OpenCode Go 子进程的 `x-api-key`（且无 Bearer）与凭据隔离、`unknown` transport 的拒绝，以及 Fake Discord 的 `!provider opencode-go` / `!models` / `!model` 流程。
+
+### 13.2 真实 OpenCode Go provider
+
+```text
+GET https://opencode.ai/zen/go/v1/models -> HTTP 200, data.length = 37
+transport 分布: anthropic-messages 9 · openai-chat 22 · openai-responses 5 · unknown 1
+响应字段: id / object / created / owned_by（无协议字段，故 transport 由官方 endpoint 表推导）
+```
+
+`GET /v1/models` 无需鉴权即返回 200；`POST /v1/messages` 只接受 `x-api-key`，用 `Authorization: Bearer` 返回 `401 Missing API key`，缺少 session 头返回 `400 MissingSessionID`。Claude Code 的原生 session 头可满足该要求。
+
+### 13.3 真实 Claude Code + OpenCode Go E2E
+
+`npm run verify:opencode-go` -> **17/17**，在一次性 git 仓库中通过真实 Claude Code CLI 与真实 OpenCode Go 运行：
+
+```text
+model reported by CLI: minimax-m3
+apiKeySource: ANTHROPIC_API_KEY          （即 OpenCode Go，不是 WorkBuddy backend）
+tools: Write, Read, Bash
+approval prompts: (none — PermissionManager STANDARD 自动放行)
+final: DONE
+opencode-go-test.txt        -> 存在，内容 OPENCODE_GO_OK
+git status --short          -> ?? opencode-go-test.txt
+```
+
+### 13.4 WorkBuddy 当前状态（非 V3 失败）
+
+本机 WorkBuddy gateway 仍在工具调用前返回 `HTTP 403 provider 11140 request illegal`，因此依赖 WorkBuddy 产出 tool call 的 smoke 部分失败，标记 **BLOCKED_BY_WORKBUDDY_QUOTA/FAIL**：
+
+```text
+npm run verify:hook  -> 4/7   （真实 hook 客户端 allow/deny/session 隔离仍通过；依赖 WorkBuddy 工具调用的 3 项失败）
+npm run smoke:discord -> 8/15 （控制面、hook、隔离、低噪声、transcript 通过；WorkBuddy 0 tool call 导致 D3/D4/D7/D9/D11/D12/D13b 失败）
+```
+
+### 13.5 桥启动在 WorkBuddy 失败时仍可用
+
+真实启动 `node src/index.mjs` 记录：
+
+```text
+[backend] WorkBuddy status=FAIL; the shared control plane will remain available for other configured providers.
+[backend] No provider fallback attempted.
+[executor] claude=PASS version=2.1.270 (Claude Code)
+[discord] control plane ready | ... default cwd=D:\deepseeek
+```
+
+即 WorkBuddy 不可用不阻止 Bridge、OpenCode Go Provider、Generic Provider、Discord UI 上线，也不会自动回退到其它 Provider。
+
+### 13.6 真实 Discord 输入验收（用户操作）
+
+Bridge 已在线。OWNER 在自己的 Discord 客户端发送：
+
+```text
+!executor claude
+!provider opencode-go
+!models
+!model minimax-m3
+!status
+在当前测试目录创建 opencode-discord-test.txt，内容为 OPENCODE_DISCORD_OK，然后读取确认后回复 DONE
+```
+
+期望：`!models` 显示每个模型的 `anthropic-messages / openai-chat / openai-responses` 与是否兼容 Claude Code；`!status` 的协议为 `anthropic-messages`、计费为 `订阅`；任务产生真实 Write/Read tool call 并以 `✅ 已完成` 结束。
+
+### 13.7 Git 与 Secret
+
+提交前执行 `git status --short` / `git diff` 与工作树 secret 扫描；`data/credentials.json`、`data/providers.json`、`.env`、hook secret 均由 `.gitignore` 排除且未进入 Git。

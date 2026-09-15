@@ -124,8 +124,11 @@ export class FakeDiscord {
       content,
       channelId,
       guildId,
+      channel: this.channel,
       author: { id: authorId, bot: false },
+      deleted: false,
       replies: [],
+      async delete() { this.deleted = true; },
       async reply(payload) {
         const body = typeof payload === 'string' ? { content: payload } : payload;
         const msg = new FakeMessage({

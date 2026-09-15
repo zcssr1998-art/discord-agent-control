@@ -2,5 +2,7 @@ node_modules/
 .env
 data/state.json
 data/hook-secret
+data/credentials.json
+data/providers.json
 logs/
 *.log

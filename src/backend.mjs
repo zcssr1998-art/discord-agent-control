@@ -163,7 +163,7 @@ export function resolveExecutorCommand(raw = process.env.CLAUDE_COMMAND, opts = 
  * loud, immediate failure instead of a mysterious hang several minutes into a
  * task.
  */
-export async function probeBackend({ command, cwd, extraEnv = {}, envUnset = [], timeoutMs = 180000, prompt = 'Reply with exactly: OK' }) {
+export async function probeBackend({ command, cwd, extraEnv = {}, envUnset = [], inheritEnv = true, timeoutMs = 180000, prompt = 'Reply with exactly: OK' }) {
   const { ClaudeRunner } = await import('./claude-runner.mjs');
   const { withTimeout } = await import('./limits.mjs');
 
@@ -173,6 +173,7 @@ export async function probeBackend({ command, cwd, extraEnv = {}, envUnset = [],
     cwd,
     extraEnv,
     envUnset,
+    inheritEnv,
     onEvent: (event) => { if (event.type === 'init') init = event; },
   });
 

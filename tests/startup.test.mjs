@@ -118,6 +118,16 @@ test('a bad Discord token fails with an actionable message, not a raw stack', as
   assert.ok(!/^\s+at .*\(/m.test(out), 'no raw stack trace should be dumped at the user');
 });
 
+test('WorkBuddy quota does not take the shared V3 control plane offline', async (t) => {
+  const port = await freePort();
+  const bridge = bootBridge({ APPROVAL_PORT: String(port), WORKBUDDY_FAKE_BACKEND_ERROR: 'quota exceeded' });
+  t.after(() => { try { bridge.child.kill(); } catch { /* already gone */ } });
+
+  assert.ok(await waitForLine(bridge.output, /\[hook\] listening/), bridge.output());
+  assert.match(bridge.output(), /WorkBuddy status=BLOCKED_BY_QUOTA/);
+  assert.match(bridge.output(), /No provider fallback attempted/);
+});
+
 test('missing credentials are rejected before anything is started', async (t) => {
   const bridge = bootBridge({ DISCORD_TOKEN: '', DISCORD_OWNER_ID: '' });
   t.after(() => { try { bridge.child.kill(); } catch { /* already gone */ } });

@@ -12,7 +12,8 @@
     "smoke:discord": "node scripts/discord-e2e.mjs",
     "verify:hook": "node scripts/verify-global-hook.mjs",
     "doctor:discord": "node scripts/discord-doctor.mjs",
-    "verify:workbuddy": "node scripts/verify-workbuddy.mjs"
+    "verify:workbuddy": "node scripts/verify-workbuddy.mjs",
+    "verify:opencode-go": "node scripts/opencode-go-e2e.mjs"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
