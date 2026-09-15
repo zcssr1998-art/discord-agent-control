@@ -2,14 +2,22 @@
 
 Current execution specification:
 
-`docs/JARVIS_V4_TASK.md`
+`docs/JARVIS_V4_P1_TASK.md`
 
-Status: P0 (Chat/Work split) and P0.5 (LiteLLM) acceptance is complete and
-smoke-verified. Remaining work is P1 (Work threads, workspace lock/queue,
-settings UX) and P2 (attachments, chat history).
+Status: P0/P0.5 is merged and verified. P1 is now active on `jarvis-v4-p1-workflow`.
+
+Execution order:
+
+1. P1A workspace lock/queue
+2. P1B Work threads
+3. P1C compact settings UX
+4. real smoke/evidence and final review
 
 Worker instructions:
+
 - read `AGENTS.md`, `docs/CURRENT.md`, `docs/AI_HANDOFF.md`, then the task above
 - do not rewrite the task into a second long plan unless a material contradiction/blocker is found
-- implement, test, update handoff/state, commit and push
-- final chat response must follow the short worker response contract in `docs/DEVELOPMENT_WORKFLOW.md`
+- use targeted tests while coding; run full `npm test` + `npm run check` at milestones
+- preserve P0/P0.5 behavior and do not redesign LiteLLM/Chat routing
+- update state/handoff/evidence, commit and push to `jarvis-v4-p1-workflow`
+- final chat response must follow the short Worker response contract
