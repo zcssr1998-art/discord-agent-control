@@ -115,3 +115,46 @@ The two real Discord contexts (a human tapping buttons and sending attachments i
 13. Send a file to a disposable Work task and confirm the Agent reads the downloaded local file.
 
 Do not mark this section PASS without real output from the owner.
+
+## 9. P2.1 — native commands + interactive Work controls
+
+Deterministic regression:
+
+```text
+npm test      -> 240 passed / 0 failed
+npm run check -> 85 file(s), 0 failed
+npm run smoke:p2 -> 11/11 passed
+```
+
+New suite `tests/v4-p2-native.test.mjs` (14 tests) covers:
+
+- command definitions include `/panel /work /model /settings /permission /status /stop /new /compact /help` and embed no owner/guild snowflake;
+- application-command registration is idempotent (second sync performs no REST write);
+- `/panel /model /settings /permission /status /help` reuse the local renderers and call neither Agent nor ChatRuntime;
+- `/work` reuses the New Work thread path (guild parent -> one Work thread, parent stays Chat); `/work` with no task opens the modal;
+- active and queued Work cards expose `➕ 追加需求` + `⛔ Stop`;
+- a stale card (old run id) cannot stop a newer run and answers `该任务已结束`;
+- card Stop == `!stop` for active and queued work and clears pending follow-ups;
+- the append modal queues a follow-up for the same Agent session; follow-ups drain FIFO with no concurrent turn;
+- normal text in an active Work context queues through the same backend; parent guild Chat stays Chat;
+- a same-workspace queued channel is not starved by a follow-up loop (lock released/reacquired);
+- the follow-up queue cap is enforced;
+- a follow-up attachment is downloaded exactly once and passed as a local path.
+
+Behaviour-change note: the legacy test `a second task is refused while one is running`
+was updated to the P2.1 semantics — while a Work chain is active, a second message is
+now queued as a follow-up instead of refused (the other 239 tests are unchanged).
+
+P2.1 human Discord smoke: **PENDING_OWNER_DISCORD_SMOKE** (minimal, owner-run):
+
+1. confirm Jarvis application commands appear via `/` / App Launcher;
+2. run `/panel` and `/settings`;
+3. run `/work` and create one disposable long-enough task;
+4. while active, confirm the progress card shows `➕ 追加需求` and `⛔ Stop`;
+5. click `➕ 追加需求`, submit `最终再创建 followup.txt，内容 FOLLOWUP_OK`;
+6. also type one normal follow-up message in the Work thread; confirm it queues rather than starts concurrently;
+7. confirm queued follow-ups execute in order in the same Work session;
+8. start another disposable long task and stop it with the card Stop button; the process tree must die and no queued follow-up may start afterwards;
+9. verify an old completed card button cannot affect a newer run.
+
+Do not mark the human section PASS without real Discord output from the owner.

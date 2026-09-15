@@ -218,8 +218,10 @@ export class FakeDiscord {
     let updated = null;
     let modal = null;
     const interaction = {
+      id: `ic-${++this.nextId}`,
       isButton: () => true,
       isModalSubmit: () => false,
+      isChatInputCommand: () => false,
       customId,
       user: { id: userId },
       message: target,
@@ -255,8 +257,10 @@ export class FakeDiscord {
     let replied = null;
     const followedUp = [];
     const interaction = {
+      id: `im-${++this.nextId}`,
       isButton: () => false,
       isModalSubmit: () => true,
+      isChatInputCommand: () => false,
       customId,
       user: { id: userId },
       message: null,
@@ -275,6 +279,54 @@ export class FakeDiscord {
     };
     await handler(interaction);
     return { interaction, replied, followedUp };
+  }
+
+  /**
+   * Simulate the owner invoking a native application command. The reply is
+   * posted into the channel so tests can read it like any other message.
+   */
+  async command(name, { options = {}, userId = this.ownerId, channelId = this.channelId, guildId = null } = {}) {
+    const handler = this.handlers.get('interactionCreate');
+    if (!handler) throw new Error('control plane has not been started');
+    const self = this;
+    const channel = this.channelsById.get(channelId) ?? this.channel;
+    let replied = null;
+    let deferred = false;
+    let modal = null;
+    const interaction = {
+      id: `icmd-${++this.nextId}`,
+      isButton: () => false,
+      isModalSubmit: () => false,
+      isChatInputCommand: () => true,
+      isRepliable: () => true,
+      commandName: name,
+      user: { id: userId },
+      message: null,
+      channelId,
+      guildId,
+      channel,
+      deferred,
+      options: {
+        getString: (key) => (options[key] == null ? null : String(options[key])),
+        getInteger: (key) => (options[key] == null ? null : Number(options[key])),
+        getBoolean: (key) => (options[key] == null ? null : Boolean(options[key])),
+      },
+      async reply(payload) {
+        replied = typeof payload === 'string' ? { content: payload } : payload;
+        const sent = await channel.send(replied);
+        return sent;
+      },
+      async deferReply() { deferred = true; this.deferred = true; },
+      async editReply(payload) {
+        replied = typeof payload === 'string' ? { content: payload } : payload;
+        return channel.send(replied);
+      },
+      async followUp(payload) { return channel.send(payload); },
+      async showModal(builder) { modal = builder; self.lastModal = builder; },
+      async update(payload) { replied = payload; },
+    };
+    await handler(interaction);
+    return { interaction, replied, deferred, modal };
   }
 
   /** The newest message that carries an approval button for the given action. */

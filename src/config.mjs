@@ -80,6 +80,17 @@ export function loadConfig() {
     // Wall-clock cap on one direct Chat request.
     chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
 
+    // --- native Discord application commands (P2.1) -----------------------
+    // Register the /-commands idempotently at startup (best effort).
+    autoRegisterCommands: bool('DISCORD_AUTO_REGISTER_COMMANDS', true),
+    // Optional guild-scoped registration for instant propagation during
+    // development; null keeps production registration global. Never hard-coded.
+    commandsGuildId: process.env.DISCORD_COMMANDS_GUILD_ID || null,
+
+    // --- interactive Work follow-ups (P2.1) -------------------------------
+    // Pending appended requirements per active Work chain.
+    maxWorkFollowUps: int('MAX_WORK_FOLLOWUPS', 10),
+
     // --- runaway protection ----------------------------------------------
     // Hard wall-clock cap on one task. Hitting it kills the agent process.
     taskTimeoutMs: int('TASK_TIMEOUT_MS', 900000),

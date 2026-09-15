@@ -10,7 +10,7 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 Jarvis V4 P2 + P2.1 — persistent control panel, Chat context/attachments, native Discord commands, and interactive Work controls.
 
-Status: P2 implementation + machine-side smoke are complete on this branch; P2 human Discord smoke was in progress when the owner requested P2.1 UX additions. PR #4 remains Draft and must not merge until combined P2/P2.1 human smoke + final review pass.
+Status: P2 + P2.1 are implemented and machine-verified on this branch. PR #4 remains Draft and must not merge until the combined P2/P2.1 human Discord smoke + final review pass.
 
 ## Stable baseline
 
@@ -29,12 +29,12 @@ Preserve these invariants:
 - permission/approval/session safety remains intact
 
 P1 evidence: `docs/V4_P1_SMOKE.md`.
-P2 evidence so far: `npm test` 226/0, `npm run check` 83/0, `npm run smoke:p2` 11/11. Evidence: `docs/V4_P2_SMOKE.md`.
+P2 + P2.1 evidence: `npm test` 240/0, `npm run check` 85/0, `npm run smoke:p2` 11/11. Evidence: `docs/V4_P2_SMOKE.md` (§9 for P2.1).
 
 ## Active specs
 
 1. `docs/JARVIS_V4_P2_TASK.md` — implemented; owner human Discord smoke not yet closed.
-2. `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — **current implementation task**.
+2. `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — implemented; owner human Discord smoke not yet closed.
 
 The former P1.1 panel task is superseded; do not implement it separately.
 
@@ -52,21 +52,27 @@ The former P1.1 panel task is superseded; do not implement it separately.
 ## Key architecture decisions
 
 - no second settings/model/work/stop implementation; slash commands and card controls delegate to existing handlers
-- no second state store; add only minimal in-memory per-run follow-up state unless persistence is proven necessary
+- no second state store; P2.1 uses minimal in-memory per-run/per-chain follow-up state
 - follow-up queue is distinct from workspace scheduling, but every follow-up must reacquire the workspace through `WorkspaceScheduler` for FIFO fairness
 - progress-card controls bind to a per-run identifier, not only channel ID
 - Discord cards have no permanent inline text field; use a Modal for the button path, plus ordinary Work-thread text as the fastest path
 - no adapter-specific mid-process stdin injection
 
+## P2.1 implementation map
+
+- `src/commands.mjs` — application-command definitions + idempotent registration (no hard-coded IDs)
+- `src/discord-ui.mjs` — `onInteraction` handles chat-input commands, `workctl:append|stop:<runId>` card controls, `workappend:<runId>` modal; shared `#stopChannel`; `#appendFollowUp` / `#drainFollowUps`; `#launchWork` reused by text/panel/slash
+- `src/progress.mjs` — `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep controls
+- `src/config.mjs` — `DISCORD_AUTO_REGISTER_COMMANDS`, optional `DISCORD_COMMANDS_GUILD_ID`, `MAX_WORK_FOLLOWUPS`
+
 ## Next action
 
-Implement `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md`, run targeted tests then full regression, update `docs/V4_P2_SMOKE.md`, and perform one combined human Discord smoke. Do not redo already-proven P2 internals unless a regression is found.
+Owner runs the combined minimal P2/P2.1 human Discord smoke (`docs/V4_P2_SMOKE.md` §8–§9), then final PR #4 review. Do not redo already-proven P2 internals.
 
 ## Minimal relevant files
 
 - `src/discord-ui.mjs`
+- `src/commands.mjs`
 - `src/progress.mjs`
-- `src/session-manager.mjs`
-- `src/workspace-scheduler.mjs`
+- `tests/v4-p2-native.test.mjs`
 - `tests/helpers/fake-discord.mjs`
-- current P2 UI/history/attachment tests

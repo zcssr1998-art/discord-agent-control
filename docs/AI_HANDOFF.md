@@ -8,37 +8,31 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Active specs
 
-- `docs/JARVIS_V4_P2_TASK.md` — P2 implementation complete; human Discord smoke was in progress.
-- `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — **current task**.
+- `docs/JARVIS_V4_P2_TASK.md` — P2 implementation complete; human Discord smoke not closed.
+- `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — P2.1 implementation complete; human Discord smoke not closed.
 
 ## Last known good state
 
 P0/P0.5 + P1 are merged on `main`.
 
-P2 on this branch is implemented and machine-verified:
+P2 + P2.1 on this branch are implemented and machine-verified:
 
-- `npm test` 226/0
-- `npm run check` 83/0
+- `npm test` 240/0 (P2.1 adds `tests/v4-p2-native.test.mjs`, 14 tests)
+- `npm run check` 85/0
 - `npm run smoke:p2` 11/11
 - real LiteLLM Chat context recall PASS
 - real vision PASS
 - real Agent file task from P2 panel-created Work thread PASS
 
-Human Discord proved the live P2 `!panel` is now running; final P2 owner smoke is not yet closed.
+Human Discord: `!panel` was confirmed handled locally by the live bridge. Final combined P2/P2.1 owner smoke is not closed.
 
-## Current owner request (P2.1)
+## P2.1 implementation note
 
-Make Jarvis native/easy to control from Discord and make a running Work task interactive:
-
-1. register real application commands `/panel /work /model /settings /permission /status /stop /new /compact /help`
-2. active/queued Work progress cards show `➕ 追加需求` + `⛔ Stop`
-3. append button opens multiline Modal
-4. while Work is active, normal owner text in the Work thread / Work-mode DM/channel queues through the same follow-up backend
-5. follow-ups execute FIFO as later turns in the same Agent session; never start a concurrent Agent for the same active run
-6. every follow-up re-enters existing `runTask` + `WorkspaceScheduler` after current turn releases the lock, preserving workspace fairness
-7. guild parent normal text remains Chat
-8. Stop reuses exact existing stop semantics and also clears pending follow-ups
-9. stale progress-card controls bind to run ID and cannot affect a newer task
+- `src/commands.mjs`: application-command payloads + idempotent registration (no hard-coded IDs).
+- `src/discord-ui.mjs`: chat-input command handler; `workctl:append|stop:<runId>` card controls; `workappend:<runId>` modal; one shared `#stopChannel` (also clears follow-ups); `#appendFollowUp` + `#drainFollowUps` re-enter `runTask`/`WorkspaceScheduler`; natural text in an active Work context queues the same follow-up.
+- `src/progress.mjs`: `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep buttons.
+- Behaviour change: the legacy test `a second task is refused while one is running` now asserts P2.1 follow-up queuing (intentional).
+- Registration defaults to global; `DISCORD_COMMANDS_GUILD_ID` optionally enables instant guild-scoped propagation (never hard-coded). `DISCORD_AUTO_REGISTER_COMMANDS=0` disables.
 
 ## Architecture constraints
 
@@ -53,17 +47,12 @@ Make Jarvis native/easy to control from Discord and make a running Work task int
 ## Minimal files first
 
 - `src/discord-ui.mjs`
+- `src/commands.mjs`
 - `src/progress.mjs`
-- `src/session-manager.mjs`
-- `src/workspace-scheduler.mjs`
+- `tests/v4-p2-native.test.mjs`
 - `tests/helpers/fake-discord.mjs`
-- existing P2 tests
-
-Do not rescan the entire repository unless these are insufficient.
 
 ## Verification
-
-Targeted tests while coding, then:
 
 ```text
 npm test
@@ -71,11 +60,11 @@ npm run check
 npm run smoke:p2
 ```
 
-Add only a small focused smoke if needed for command registration/card component persistence. Human Discord evidence goes into `docs/V4_P2_SMOKE.md` as P2.1.
+Human Discord evidence goes into `docs/V4_P2_SMOKE.md` §9.
 
 ## Blocker
 
-None known. Do not redo P2 implementation; extend it.
+None known. Human P2/P2.1 smoke is the only open item (owner-run).
 
 ## Delivery
 

@@ -16,6 +16,7 @@ import {
 } from 'discord.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { ClaudeRunner } from './claude-runner.mjs';
 import { ThrottledEditor, STATE } from './progress.mjs';
 import { EventPresenter } from './event-presenter.mjs';
@@ -32,6 +33,7 @@ import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import {
   downloadWorkAttachments, buildWorkManifest, readChatAttachments, buildChatContent, buildChatHistoryText,
 } from './attachments.mjs';
+import { registerApplicationCommands, COMMAND_NAMES } from './commands.mjs';
 
 const DISCORD_LIMIT = 1900;
 
@@ -181,6 +183,19 @@ function panelModelRows() {
   ];
 }
 
+/**
+ * Active Work progress-card controls. The custom id carries the run id so a
+ * stale card from an earlier run can never stop/append to a newer task.
+ */
+function workControlRows(runId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`workctl:append:${runId}`).setLabel('➕ 追加需求').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`workctl:stop:${runId}`).setLabel('⛔ Stop').setStyle(ButtonStyle.Danger),
+    ),
+  ];
+}
+
 /** Choice rows that keep provider + model in the custom id (`prefix:provider:model`). */
 function providerModelRows(prefix, providerId, items, { current = null } = {}) {
   if (!items.length || items.length > 20) return null;
@@ -306,6 +321,12 @@ export class DiscordControlPlane {
     // can target the same cwd.
     this.scheduler = workspaceScheduler || new WorkspaceScheduler();
     this.queuedNotices = new Map();
+    // P2.1: interactive Work chains. A run tracks one active/queued turn; a
+    // chain tracks the per-channel follow-up queue that drains after each turn.
+    this.workRuns = new Map();
+    this.workChains = new Map();
+    this.maxWorkFollowUps = config.maxWorkFollowUps ?? 10;
+    this.followUpSeq = 0;
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
     this.autoLogin = autoLogin;
@@ -350,7 +371,27 @@ export class DiscordControlPlane {
     this.client.on('messageCreate', (m) => this.onMessage(m).catch((e) => console.error(`[discord] message handler: ${redact(e?.stack || e)}`)));
     this.client.on('interactionCreate', (i) => this.onInteraction(i).catch((e) => console.error(`[discord] interaction handler: ${redact(e?.stack || e)}`)));
     if (this.autoLogin) await this.client.login(this.config.discordToken);
+    if (this.autoLogin && this.config.autoRegisterCommands !== false) await this.registerCommands();
     if (this.config.notifyOnStart !== false) await this.notifyReady();
+  }
+
+  /**
+   * Register the native application commands. Idempotent and best-effort: a
+   * Discord REST hiccup must never stop the bridge from coming online.
+   */
+  async registerCommands() {
+    try {
+      const result = await registerApplicationCommands({
+        client: this.client,
+        guildId: this.config.commandsGuildId || null,
+        logger: console,
+      });
+      console.log(`[commands] registered=${COMMAND_NAMES.length} changed=${result.changed ?? 0}${result.skipped ? ' (skipped)' : ''}`);
+      return result;
+    } catch (error) {
+      console.warn(`[commands] registration failed: ${redact(error?.message || error)}`);
+      return { skipped: true, changed: 0, total: COMMAND_NAMES.length, error };
+    }
   }
 
   /**
@@ -1052,6 +1093,11 @@ export class DiscordControlPlane {
     // default and never enters the Agent path.
     const mode = this.sessionManager.get(message.channelId).mode;
     if (mode === MODE.WORK) {
+      // P2.1: while a Work chain is active in this explicit Work context, an
+      // ordinary owner message is a follow-up requirement, not a new task.
+      if (this.#hasActiveWork(message.channelId)) {
+        if (await this.#handleWorkFollowUp(message, text, attachments)) return;
+      }
       if (this.tasks.has(message.channelId) || this.runners.get(message.channelId)?.busy) {
         await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
         return;
@@ -1120,9 +1166,15 @@ export class DiscordControlPlane {
     await this.runChat(message, command.prompt, { attachments: this.#messageAttachments(message) });
   }
 
-  /** Local pre-flight for Work: refuse double-run and a blocked setup. */
+  /** Local pre-flight for Work: append follow-ups while active, else start. */
   async #startWorkInChannel(message, prompt, options = {}) {
     const channelId = message.channelId;
+    const attachments = options.attachments ?? this.#messageAttachments(message);
+    // An inline `work <task>` (or any Work launch) in an already-active Work
+    // context becomes a follow-up through the same queue as the card modal.
+    if (this.#hasActiveWork(channelId)) {
+      if (await this.#handleWorkFollowUp(message, prompt, attachments)) return;
+    }
     if (this.tasks.has(channelId) || this.runners.get(channelId)?.busy) {
       await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
       return;
@@ -1428,6 +1480,38 @@ export class DiscordControlPlane {
   }
 
   async #handleModalSubmit(interaction, parts) {
+    if (parts[0] === 'workappend') {
+      const runId = parts[1];
+      const run = this.workRuns.get(runId);
+      const chain = run ? this.workChains.get(run.channelId) : null;
+      if (!run || !chain || chain.activeRunId !== runId) {
+        await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+        return;
+      }
+      let requirement = '';
+      try { requirement = String(interaction.fields?.getTextInputValue?.('requirement') ?? '').trim(); } catch { requirement = ''; }
+      if (!requirement) {
+        await interaction.reply({ content: '❌ 补充要求为空。', ephemeral: true });
+        return;
+      }
+      const result = await this.#appendFollowUp({
+        channelId: run.channelId,
+        guildId: interaction.guildId ?? null,
+        channel: interaction.channel ?? chain.channel,
+        prompt: requirement,
+        dedupeKey: `modal:${interaction.id}`,
+      });
+      if (result.ok) {
+        await interaction.reply({ content: `✅ 已追加，当前任务结束后执行（队列 #${result.position}）。`, ephemeral: true });
+      } else if (result.reason === 'full') {
+        await interaction.reply({ content: `⛔ 追加队列已满（最多 ${this.maxWorkFollowUps} 条）。`, ephemeral: true });
+      } else if (result.reason === 'duplicate') {
+        await interaction.reply({ content: '已收到该追加需求。', ephemeral: true });
+      } else {
+        await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+      }
+      return;
+    }
     if (parts[0] !== 'workmodal') return;
     let task = '';
     try { task = String(interaction.fields?.getTextInputValue?.('task') ?? '').trim(); } catch { task = ''; }
@@ -1581,11 +1665,18 @@ export class DiscordControlPlane {
 
   /** One shared stop implementation so panel Stop and `!stop` cannot drift. */
   async #stopChannel(channelId) {
+    // Stop always clears the chain's pending follow-ups first, so nothing
+    // unexpectedly starts after the owner pressed Stop.
+    const clearedFollowUps = this.#clearFollowUps(channelId);
+    const followUpLine = clearedFollowUps ? [`已清空 ${clearedFollowUps} 条待执行的追加需求。`] : [];
     const queued = this.scheduler?.cancelQueued(channelId);
     if (queued) {
       console.log(`[queue] cancel channel=${channelId} workspace=${queued.key} position=${queued.position}`);
       this.queuedNotices.delete(channelId);
-      return `⛔ 已取消排队中的任务（原队列位置 ${queued.position}）。活动任务不受影响。`;
+      return [
+        `⛔ 已取消排队中的任务（原队列位置 ${queued.position}）。活动任务不受影响。`,
+        ...followUpLine,
+      ].join('\n');
     }
     const runner = this.runners.get(channelId);
     const task = this.tasks.get(channelId);
@@ -1604,8 +1695,204 @@ export class DiscordControlPlane {
         ? `⛔ 已停止 Agent 进程树（pid ${killed.pid}）。`
         : '⛔ 当前没有 Agent 进程；任务占用已释放。',
       `已取消 ${cancelled} 个待审批请求。`,
+      ...followUpLine,
       '可发送 `!status` 确认，或直接发送新任务。',
     ].join('\n');
+  }
+
+  // ---- P2.1 interactive Work chains ----------------------------------------
+
+  #chain(channelId) {
+    let chain = this.workChains.get(channelId);
+    if (!chain) {
+      chain = { channelId, activeRunId: null, followUps: [], dedupe: new Set(), channel: null, queuedNotice: null, queuedRunId: null };
+      this.workChains.set(channelId, chain);
+    }
+    return chain;
+  }
+
+  #beginRun(message) {
+    const channelId = message.channelId;
+    const run = { id: randomUUID(), channelId, state: 'queued', drainable: true, createdAt: Date.now() };
+    this.workRuns.set(run.id, run);
+    const chain = this.#chain(channelId);
+    chain.activeRunId = run.id;
+    if (message.channel) chain.channel = message.channel;
+    chain.dedupe.clear();
+    return run;
+  }
+
+  #endRun(run) {
+    if (!run) return;
+    run.state = 'ended';
+    this.workRuns.delete(run.id);
+    const chain = this.workChains.get(run.channelId);
+    if (chain?.activeRunId === run.id) chain.activeRunId = null;
+  }
+
+  #hasActiveWork(channelId) {
+    const chain = this.workChains.get(channelId);
+    return Boolean(chain?.activeRunId && this.workRuns.has(chain.activeRunId));
+  }
+
+  #clearFollowUps(channelId) {
+    const chain = this.workChains.get(channelId);
+    if (!chain) return 0;
+    const count = chain.followUps.length;
+    chain.followUps = [];
+    chain.dedupe.clear();
+    if (this.tasks.get(channelId)) this.#refreshWorkCard(channelId);
+    return count;
+  }
+
+  #appendModal(runId) {
+    return new ModalBuilder()
+      .setCustomId(`workappend:${runId}`)
+      .setTitle('追加需求')
+      .addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('requirement')
+          .setLabel('补充要求')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMaxLength(4000),
+      ));
+  }
+
+  /**
+   * The one follow-up queue shared by the modal button and normal active-Work
+   * text messages. Attachments are downloaded once here, before queuing.
+   */
+  async #appendFollowUp({ channelId, guildId = null, channel = null, prompt, attachments = null, dedupeKey = null }) {
+    const chain = this.workChains.get(channelId);
+    if (!chain || !this.#hasActiveWork(channelId)) return { ok: false, reason: 'not-active' };
+    if (dedupeKey) {
+      if (chain.dedupe.has(dedupeKey)) return { ok: false, reason: 'duplicate' };
+      chain.dedupe.add(dedupeKey);
+    }
+    if (chain.followUps.length >= this.maxWorkFollowUps) return { ok: false, reason: 'full' };
+
+    const list = attachments ?? [];
+    let prepared = String(prompt ?? '').trim() || '请查看并处理这些附件。';
+    if (list.length) {
+      try {
+        prepared = await this.#prepareWorkPrompt({ channelId, id: `followup-${++this.followUpSeq}` }, prepared, list);
+      } catch (error) {
+        console.warn(`[followup] attachment prepare failed: ${redact(error?.message || error)}`);
+      }
+    }
+    chain.followUps.push({ prompt: prepared, channelId, guildId, channel, createdAt: Date.now() });
+    chain.channel = channel || chain.channel;
+    this.#refreshWorkCard(channelId);
+    return { ok: true, position: chain.followUps.length };
+  }
+
+  #refreshWorkCard(channelId) {
+    const chain = this.workChains.get(channelId);
+    if (!chain) return;
+    const task = this.tasks.get(channelId);
+    if (task && task.runId === chain.activeRunId) {
+      task.progress.setFollowUps(chain.followUps.length);
+      task.schedule();
+      return;
+    }
+    const notice = chain.queuedNotice;
+    if (notice && chain.queuedRunId && this.workRuns.has(chain.queuedRunId)) {
+      const pending = chain.followUps.length;
+      const base = `⏳ 排队中 · 追加需求：${pending} 条待执行`;
+      notice.edit({ content: base, components: workControlRows(chain.queuedRunId) }).catch(() => {});
+    }
+  }
+
+  /**
+   * After a turn releases its workspace lock, start the next queued follow-up
+   * through the exact same `runTask` + `WorkspaceScheduler` path, so global
+   * FIFO fairness is preserved and no Agent runs concurrently.
+   */
+  #drainFollowUps(channelId, endedRun) {
+    const chain = this.workChains.get(channelId);
+    if (!chain) return;
+    if (endedRun && endedRun.drainable === false) {
+      if (chain.followUps.length) {
+        const remaining = chain.followUps.length;
+        chain.followUps = [];
+        const target = chain.channel;
+        target?.send?.(`⛔ 任务已结束，剩余 ${remaining} 条追加需求未执行。`).catch(() => {});
+        this.#refreshWorkCard(channelId);
+      }
+      return;
+    }
+    if (!chain.followUps.length) return;
+    const next = chain.followUps.shift();
+    const target = next.channel || chain.channel;
+    if (!target?.send) return;
+    const message = {
+      channelId,
+      guildId: next.guildId ?? null,
+      channel: target,
+      id: `followup-${++this.followUpSeq}`,
+      reply: (payload) => target.send(payload),
+    };
+    Promise.resolve()
+      .then(() => this.runTask(message, next.prompt, { attachments: [] }))
+      .catch((error) => console.warn(`[followup] drain failed: ${redact(error?.message || error)}`));
+  }
+
+  async #handleWorkFollowUp(message, text, attachments) {
+    const result = await this.#appendFollowUp({
+      channelId: message.channelId,
+      guildId: message.guildId,
+      channel: message.channel,
+      prompt: text,
+      attachments,
+    });
+    if (result.ok) {
+      await message.reply(`✅ 已追加，当前任务结束后执行（队列 #${result.position}）。`);
+      return true;
+    }
+    if (result.reason === 'full') {
+      await message.reply(`⛔ 追加队列已满（最多 ${this.maxWorkFollowUps} 条），请等待当前任务结束后再发送。`);
+      return true;
+    }
+    return false;
+  }
+
+  async #handleApplicationCommand(interaction) {
+    const channelId = interaction.channelId;
+    const name = interaction.commandName;
+    if (name === 'panel') { await interaction.reply(this.#controlPanel(channelId)); return; }
+    if (name === 'model') {
+      await interaction.reply({ content: '🧠 换模型', components: panelModelRows() });
+      return;
+    }
+    if (name === 'settings') { await interaction.reply(this.#settingsPanel(channelId)); return; }
+    if (name === 'permission') { await interaction.reply(this.#permissionMenu(channelId)); return; }
+    if (name === 'help') { await interaction.reply(this.#panelHelp()); return; }
+    if (name === 'status') {
+      await interaction.deferReply();
+      await interaction.editReply(await this.#panelStatus(channelId));
+      return;
+    }
+    if (name === 'new') { await interaction.reply({ content: clip(this.#newChat(channelId)) }); return; }
+    if (name === 'compact') {
+      await interaction.deferReply();
+      await interaction.editReply({ content: clip(await this.#compactChat(channelId)) });
+      return;
+    }
+    if (name === 'stop') {
+      await interaction.deferReply();
+      await interaction.editReply({ content: clip(await this.#stopChannel(channelId)) });
+      return;
+    }
+    if (name === 'work') {
+      const task = typeof interaction.options?.getString === 'function' ? interaction.options.getString('task') : null;
+      if (task && String(task).trim()) {
+        await this.#launchWork(this.#interactionContext(interaction), String(task).trim());
+      } else {
+        await interaction.showModal(this.#newWorkModal());
+      }
+      return;
+    }
   }
 
   /** Reuse the existing Work start paths for a modal/panel-initiated task. */
@@ -1689,44 +1976,59 @@ export class DiscordControlPlane {
       catch (error) { console.warn(`[attachments] work download failed: ${redact(error?.message || error)}`); }
     }
 
+    const run = this.#beginRun(message);
     const entry = this.scheduler.submit({
       workspace,
       channelId,
       label: message.guildId ? `<#${channelId}>` : 'DM',
-      run: () => this.#runTaskNow(message, taskPrompt),
-      onQueued: ({ position, active }) => this.#notifyQueued(message, workspace, position, active),
+      run: () => this.#runTaskNow(message, taskPrompt, run),
+      onQueued: ({ position, active }) => this.#notifyQueued(message, workspace, position, active, run),
       onStart: async ({ key }) => {
         console.log(`[queue] start channel=${channelId} workspace=${key}`);
+        run.state = 'running';
+        const chain = this.workChains.get(channelId);
+        if (chain) { chain.queuedNotice = null; chain.queuedRunId = null; }
         const notice = this.queuedNotices.get(channelId);
         if (!notice) return;
         this.queuedNotices.delete(channelId);
-        await notice.edit('▶️ 已获得工作区锁，任务开始执行。').catch(() => {});
+        await notice.edit({ content: '▶️ 已获得工作区锁，任务开始执行。', components: [] }).catch(() => {});
       },
     });
-    return entry.done;
+    await entry.done.catch(() => {});
+    this.#drainFollowUps(channelId, run);
   }
 
-  async #notifyQueued(message, workspace, position, active) {
+  async #notifyQueued(message, workspace, position, active, run = null) {
     const activeLabel = active?.channelId ? `<#${active.channelId}>` : '其他任务';
     console.log(`[queue] queued channel=${message.channelId} workspace=${workspace} position=${position} active=${active?.channelId ?? 'none'}`);
     try {
-      const sent = await message.reply([
-        `⏳ Workspace busy: ${workspace}`,
-        `Queue position: ${position}`,
-        `Active task: ${activeLabel}`,
-      ].join('\n'));
+      const payload = {
+        content: [
+          `⏳ Workspace busy: ${workspace}`,
+          `Queue position: ${position}`,
+          `Active task: ${activeLabel}`,
+        ].join('\n'),
+        ...(run ? { components: workControlRows(run.id) } : {}),
+      };
+      const sent = await message.reply(payload);
       this.queuedNotices.set(message.channelId, sent);
+      if (run) {
+        const chain = this.#chain(message.channelId);
+        chain.queuedNotice = sent;
+        chain.queuedRunId = run.id;
+      }
     } catch (error) {
       console.warn(`[queue] could not send the queue notice: ${redact(error?.message || error)}`);
     }
   }
 
-  async #runTaskNow(message, prompt) {
+  async #runTaskNow(message, prompt, run = null) {
     const channelId = message.channelId;
     const chState = this.sessionManager.get(channelId);
     let runner;
     try { runner = await this.getRunner(channelId); }
     catch (error) {
+      if (run) run.drainable = false;
       const text = ['INVALID_CREDENTIAL', 'PROVIDER_NOT_FOUND', 'WORKBUDDY_QUOTA', 'WORKBUDDY_UNAVAILABLE', 'INCOMPATIBLE'].includes(error.code)
         ? providerErrorMessage(error)
         : `❌ 无法启动 Agent：${redact(error.message || error)}`;
@@ -1739,14 +2041,23 @@ export class DiscordControlPlane {
       cwd: chState.cwd,
       model: chState.model || this.backendState?.backend?.model || 'unknown',
     }).setPermissionLabel(PERM_SHORT[level]);
-    const statusMessage = await message.reply(progress.render());
+    const chain = this.workChains.get(channelId);
+    if (run && chain && chain.activeRunId === run.id) progress.setFollowUps(chain.followUps.length);
+    // The active card keeps its controls across progress edits; a terminal
+    // update clears them so a finished card cannot control a newer run.
+    const activeComponents = () => {
+      if (!run || this.workRuns.get(run.id) !== run || run.state === 'ended') return null;
+      return workControlRows(run.id);
+    };
+    const statusMessage = await message.reply({ content: progress.render(), components: activeComponents() ?? [] });
     const editor = new ThrottledEditor({
       intervalMs: this.config.progressThrottleMs,
-      write: (content) => statusMessage.edit(clip(content)),
+      write: (content, components) => statusMessage.edit(components ? { content: clip(content), components } : clip(content)),
     });
     const runLog = this.logger?.open({ channelId, prompt }) ?? { path: null, log: () => {}, close: () => {} };
 
     const task = {
+      runId: run?.id ?? null,
       progress,
       editor,
       statusMessage,
@@ -1754,7 +2065,7 @@ export class DiscordControlPlane {
       cancelled: false,
       finished: false,
       watchdog: null,
-      schedule: () => editor.submit(progress.render()),
+      schedule: () => editor.submit(progress.render(), activeComponents()),
       finish: async () => {
         // Idempotent: `!stop` and the run's own `finally` can both land here.
         if (task.finished) return;
@@ -1763,9 +2074,11 @@ export class DiscordControlPlane {
         editor.dispose();
         runLog.close();
         this.tasks.delete(channelId);
+        this.#endRun(run);
       },
     };
     this.tasks.set(channelId, task);
+    if (run) run.state = 'running';
 
     if (runner.sessionId) {
       this.channelBySession.set(runner.sessionId, channelId);
@@ -1829,8 +2142,9 @@ export class DiscordControlPlane {
         '',
         clip(redact(result.text || '（无最终文本）'), 1200),
       ].filter((line) => line !== null).join('\n');
-      await editor.flushNow(body);
+      await editor.flushNow(body, []);
     } catch (error) {
+      if (run) run.drainable = false;
       const detail = redact(error?.message || error);
       // A run that ends because the owner stopped it, the wall-clock cap fired,
       // or the agent died mid-flight must land on a terminal state. Leaving it
@@ -1851,7 +2165,7 @@ export class DiscordControlPlane {
         const failures = this.limits?.noteFailure(channelId, error);
         console.log(`[task] failed channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
       }
-      await editor.flushNow(`${progress.render()}\n\n\`\`\`\n${clip(detail, 900)}\n\`\`\``);
+      await editor.flushNow(`${progress.render()}\n\n\`\`\`\n${clip(detail, 900)}\n\`\`\``, []);
     } finally {
       await task.finish();
     }
@@ -1903,11 +2217,16 @@ export class DiscordControlPlane {
   async onInteraction(interaction) {
     const isButton = typeof interaction.isButton === 'function' && interaction.isButton();
     const isModal = typeof interaction.isModalSubmit === 'function' && interaction.isModalSubmit();
-    if (!isButton && !isModal) return;
-    // Every panel/render/selection interaction is OWNER-only. Rendering and
-    // selection buttons never call ChatRuntime or start an Agent.
+    const isCommand = typeof interaction.isChatInputCommand === 'function' && interaction.isChatInputCommand();
+    if (!isButton && !isModal && !isCommand) return;
+    // Every panel/render/selection/command interaction is OWNER-only. Rendering
+    // and selection interactions never call ChatRuntime or start an Agent.
     if (interaction.user.id !== this.config.ownerId) {
       await interaction.reply({ content: '无权执行此操作。', ephemeral: true });
+      return;
+    }
+    if (isCommand) {
+      await this.#handleApplicationCommand(interaction);
       return;
     }
     const parts = String(interaction.customId).split(':');
@@ -1967,6 +2286,32 @@ export class DiscordControlPlane {
       }
       const result = await this.#selectModel(channelId, modelId);
       await interaction.update({ content: clip(result), components: [panelBackRow()] });
+      return;
+    }
+    if (prefix === 'workctl') {
+      // `id` is the action, `action` holds the run id (custom id has no more parts).
+      const runId = action;
+      const run = this.workRuns.get(runId);
+      const chain = run ? this.workChains.get(run.channelId) : null;
+      const live = Boolean(run && chain && chain.activeRunId === runId);
+      if (!live) {
+        await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+        return;
+      }
+      if (id === 'append') {
+        await interaction.showModal(this.#appendModal(runId));
+        return;
+      }
+      if (id === 'stop') {
+        const text = await this.#stopChannel(run.channelId);
+        // Clear the card controls, then report the outcome as a short
+        // ephemeral follow-up so the terminal progress repaint cannot hide it.
+        const base = interaction.message?.content ?? '';
+        await interaction.update({ content: base, components: [] }).catch(() => {});
+        await interaction.followUp({ content: clip(text), ephemeral: true }).catch(() => {});
+        return;
+      }
+      await interaction.reply({ content: '该任务已结束。', ephemeral: true });
       return;
     }
     if (prefix === 'set') {
