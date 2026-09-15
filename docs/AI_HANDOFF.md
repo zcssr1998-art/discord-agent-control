@@ -4,58 +4,68 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Current task
 
-Jarvis V4 P1: workspace lock/queue, Work-thread isolation, and minimum useful settings UX.
+Jarvis V4 P1: workspace lock/queue, Work-thread isolation, minimum settings UX.
 
 ## Branch
 
-`jarvis-v4-p1-workflow`
+`jarvis-v4-p1-workflow` (do not merge `main`).
 
 ## Last known good state
 
-P0/P0.5 is merged to `main` and is the stable rollback point. Final baseline evidence is in `docs/V4_SMOKE.md`.
+P1A/P1B/P1C implemented, tested and real-machine smoked. `npm test` 194/0,
+`npm run check` 76/0, `npm run smoke:p1` 20/20 with real Claude Code agents.
+Evidence: `docs/V4_P1_SMOKE.md`. P0/P0.5 is merged on `main` and remains the
+rollback point.
 
-P1 preparation already done:
+## Architecture decisions (P1)
 
-- new branch created from latest `main`
-- P1 requirements/acceptance written to `docs/JARVIS_V4_P1_TASK.md`
-- external pattern research checked against `atou42/agents-in-discord`; use concepts, do not vendor the project
-- `docs/CURRENT.md` advanced to P1
+- `WorkspaceScheduler` owns one-active-Work-task-per-canonical-workspace + FIFO
+  queue; it is Work-orchestration state, not LiteLLM/provider state.
+- Canonical key: resolve → realpath → strip trailing separators → lower-case on
+  Windows. The queue is in-memory on purpose (no SQLite/Redis).
+- `runTask` acquires the workspace before `getRunner`; a queued item never creates
+  a runner. Release happens in the scheduler's `finally` on every exit path.
+- Work threads: `work <task>` in a thread-capable guild channel creates one
+  permanent Work thread; parent stays Chat; thread-create failure starts nothing.
+- `!settings` reuses the existing SessionManager/PermissionManager mutations; it
+  never starts a runner and never calls ChatRuntime.
 
-## Architecture decisions already made
+## Done
 
-- safety priority: workspace serialization before thread/settings polish
-- one canonical workspace -> one active Jarvis Work task; same-workspace FIFO queue
-- different workspaces may run concurrently
-- queue is in-memory for P1; no SQLite/Redis/distributed scheduler
-- lock is Work-orchestration state, not LiteLLM/provider state
-- thread-capable guild parent: `work <task>` should create one permanent Work thread while parent stays Chat
-- Discord DM has no threads: preserve existing DM Work behavior
-- one thread/channel ID remains one Agent session key; do not add a second session DB
-- permanent Work thread cannot be flipped into Chat
-- `!settings` is a compact control panel over existing state mutation logic, not a second settings system
+- `src/workspace-scheduler.mjs` + `tests/workspace-scheduler.test.mjs`
+- scheduler wired into `src/discord-ui.mjs` (`runTask`, `!stop`, `!status`) and
+  `src/index.mjs`
+- Work threads in `discord-ui.mjs`; `FakeDiscord` gained thread/channel support
+- `!settings` panel + interaction handlers
+- `scripts/p1-e2e.mjs` (`npm run smoke:p1`) — real Agent queue/thread/cancel smoke
 
-## Next action
+## Pending
 
-Read `docs/JARVIS_V4_P1_TASK.md` and implement **P1A WorkspaceScheduler first**, with deterministic concurrency tests before Discord thread work.
-
-## Do not redo
-
-- Chat/Work split
-- LiteLLM integration/fallback
-- hook ownership/401 repair
-- real `!stop` process-tree kill
+- `PENDING_REAL_MULTI_CHANNEL_SMOKE` / `PENDING_REAL_GUILD_THREAD_SMOKE` (need the
+  human owner in real Discord; the bridge ignores bot messages by design)
+- P2: attachments, chat history, `/new` `/compact`
+- WorkBuddy backend is currently quota-exhausted (429); unrelated to P1
 
 ## Blocker
 
-None.
+None for P1 code. Real Discord network smoke is pending human interaction.
+
+## Next action
+
+Human runs the two real-Discord checks, then P2 or final P1 review.
 
 ## Verification
-
-During implementation use targeted tests, then at each milestone:
 
 ```text
 npm test
 npm run check
+npm run smoke:p1
 ```
 
-Detailed P1 real-smoke evidence should go to `docs/V4_P1_SMOKE.md`, not chat.
+## Minimal relevant files
+
+- `src/workspace-scheduler.mjs`
+- `src/discord-ui.mjs`
+- `src/i18n.mjs`
+- `scripts/p1-e2e.mjs`
+- `tests/v4-p1-*.test.mjs`, `tests/workspace-scheduler.test.mjs`

@@ -12,40 +12,45 @@ Jarvis V4 P1 — safe Work concurrency + Work-thread UX + compact settings UX.
 
 ## Stable baseline
 
-P0/P0.5 was merged to `main` via PR #2 and is the rollback point.
-
-Verified baseline:
-
-- default mode is Chat; ordinary messages never start an Agent
-- deterministic `chat` / `work` controls
-- LiteLLM primary Chat gateway + OpenCode Go direct fallback
-- fallback/cooldown attribution
-- Work permissions/approval hook
-- real `!stop` process-tree kill
-- stale approval-hook 401 self-repair with explicit Jarvis ownership marker
-- `npm test` 166/0, `npm run check` 70/0 at the P0/P0.5 closeout
-- real evidence: `docs/V4_SMOKE.md`
-
-## Current task
-
-`docs/JARVIS_V4_P1_TASK.md`
-
-Priority:
-
-1. workspace lock/queue
-2. Work threads where Discord supports them
-3. minimum useful `!settings` UX
-
-Important reality constraint: Discord DMs do not support threads. DM Work must keep working; thread support is an enhancement for thread-capable guild channels.
+P0/P0.5 was merged to `main` via PR #2 and is the rollback point
+(`docs/V4_SMOKE.md`). Its invariants are preserved: default Chat, ordinary Chat
+never starts an Agent, LiteLLM primary + OpenCode Go direct fallback,
+fallback/cooldown attribution, manual pin never falls back, Work
+permissions/approval, real `!stop` process-tree kill, AUTO never spends METERED.
 
 ## Current status
 
-P1 branch and execution specification are prepared. No P1 production code is implemented yet.
+P1A/P1B/P1C are implemented and verified:
+
+- P1A `src/workspace-scheduler.mjs` — one active Jarvis Work task per canonical
+  workspace, FIFO queue, in-memory, release on every exit path, queued cancel.
+  `runTask` acquires the workspace before the Agent starts; `!status` shows
+  `idle / running / queued (#N)`; `!stop` on a queued channel removes only that
+  request.
+- P1B Work threads — thread-capable guild parent + `work <task>` creates one
+  permanent Work thread, parent stays Chat, one thread = one session, no nested
+  threads, DM Work unchanged, thread-create failure runs nothing.
+- P1C `!settings` — compact Chat + Work panel reusing the existing
+  SessionManager/PermissionManager mutations (no second config system), no
+  runner/LLM calls; Chat control omitted inside a permanent Work thread.
+
+## Current task
+
+`docs/JARVIS_V4_P1_TASK.md`. All P1 acceptance items are implemented.
 
 ## Next action
 
-Implement P1A WorkspaceScheduler and its deterministic tests first. Do not start with UI polish.
+Real-Discord verification of the two remaining network-only items
+(`PENDING_REAL_MULTI_CHANNEL_SMOKE`, `PENDING_REAL_GUILD_THREAD_SMOKE`), then P2
+(attachments, chat history, `/new` `/compact`). Do not merge `main`.
 
-## Acceptance
+## Verification
 
-See `docs/JARVIS_V4_P1_TASK.md`. Preserve all P0/P0.5 invariants and do not merge `main` until P1 review passes.
+```text
+npm test      -> 194 passed / 0 failed
+npm run check -> 76 file(s), 0 failed
+npm run smoke:p1 -> 20/20 real Agent checks (Claude Code + OpenCode Go)
+Real Chat via LiteLLM chat-fast -> opencode-go/deepseek-v4.1-flash, 2.2 s
+```
+
+Evidence: `docs/V4_P1_SMOKE.md`.
