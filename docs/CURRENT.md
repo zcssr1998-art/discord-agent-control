@@ -10,6 +10,8 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 Jarvis V4 P2 — persistent control panel + Work launcher + Chat history + New/Compact + attachments.
 
+Status: **implemented on this branch, not merged to `main`.** Deterministic suite and machine-side real smoke pass; the human real-Discord smoke is pending the owner (`docs/V4_P2_SMOKE.md` §8).
+
 ## Stable baseline
 
 P0/P0.5 and P1 are merged to `main` and are the rollback point.
@@ -28,9 +30,11 @@ Preserve these invariants:
 
 P1 real Discord smoke passed for cross-channel workspace queue and Work-thread session continuation. Evidence: `docs/V4_P1_SMOKE.md`.
 
+P2 machine-side evidence: `npm test` 226/0, `npm run check` 83/0, `npm run smoke:p2` 11/11 (real LiteLLM + OpenCode Go + real vision + real Agent). Evidence: `docs/V4_P2_SMOKE.md`.
+
 ## Current task
 
-`docs/JARVIS_V4_P2_TASK.md`
+`docs/JARVIS_V4_P2_TASK.md` — implemented. Remaining: owner-run human real-Discord smoke (`docs/V4_P2_SMOKE.md` §8).
 
 The earlier P1.1 control-panel task was folded into P2; do not implement it separately.
 
@@ -57,9 +61,15 @@ The earlier P1.1 control-panel task was folded into P2; do not implement it sepa
 
 ## Next action
 
-Worker implements P2 in order: P2A panel -> P2B history -> P2C New/Compact -> P2D attachments -> P2E real smoke/evidence.
+Owner runs the human real-Discord smoke in `docs/V4_P2_SMOKE.md` §8, then final review. Do not merge to `main` until that review.
 
-Do not merge to `main` until final review.
+## P2 implementation map
+
+- `src/discord-ui.mjs` — persistent `!panel`, New Work modal, Chat/Work model selectors, panel status/stop/help, `!new`/`/new`, `!compact`/`/compact`, history-aware Chat, attachment handling.
+- `src/chat-history.mjs` — bounded channel-scoped Chat history (`data/chat-history.json`, git-ignored).
+- `src/attachments.mjs` — safe Discord attachment download/read + inbox TTL cleanup (`data/inbox/`, git-ignored).
+- `src/chat-runtime.mjs` — message-array sends + neutral multimodal content mapping (OpenAI/Responses/Anthropic) + vision-route resolution.
+- `src/config.mjs` / `src/index.mjs` — `CHAT_VISION_PROVIDER_ID` / `CHAT_VISION_MODEL`, history/inbox wiring, startup inbox cleanup.
 
 ## Verification baseline
 

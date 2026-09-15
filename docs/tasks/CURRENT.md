@@ -4,7 +4,7 @@ Current execution specification:
 
 `docs/JARVIS_V4_P2_TASK.md`
 
-Status: not yet implemented. P0/P0.5/P1 are merged and verified on `main`; this branch starts the combined P2 milestone requested by the owner.
+Status: implemented on `jarvis-v4-p2-control-context`. P0/P0.5/P1 are merged and verified on `main`. P2 deterministic suite + machine-side real smoke pass (`docs/V4_P2_SMOKE.md`); the human real-Discord smoke is the only remaining item (owner-run). [VERIFIED 2026-09-16]
 
 Execution order:
 

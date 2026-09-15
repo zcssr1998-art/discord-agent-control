@@ -25,11 +25,12 @@ function buttonIds(components) {
 }
 
 class FakeMessage {
-  constructor({ content = '', components = [], channelId, kind, log, id }) {
+  constructor({ content = '', components = [], channelId, guildId = null, kind, log, id }) {
     this.id = id;
     this.content = content;
     this.components = components;
     this.channelId = channelId;
+    this.guildId = guildId;
     this.kind = kind;
     this.editHistory = [];
     this.#log = log;
@@ -65,6 +66,11 @@ class FakeMessage {
     this.#log.edits.push({ channelId: this.channelId, kind: this.kind, content: this.content });
     return this;
   }
+
+  /** Stand-in for Discord's pin API; the real bridge treats a failure as non-fatal. */
+  async pin() { this.pinned = true; return this; }
+
+  async unpin() { this.pinned = false; return this; }
 }
 
 export class FakeDiscord {
@@ -151,7 +157,7 @@ export class FakeDiscord {
     return channel;
   }
 
-  #messageFor({ content, channelId, guildId }) {
+  #messageFor({ content, channelId, guildId, attachments = [] }) {
     const self = this;
     const channel = this.channelsById.get(channelId) ?? this.channel;
     const message = {
@@ -159,6 +165,7 @@ export class FakeDiscord {
       content,
       channelId,
       guildId,
+      attachments,
       channel,
       author: { id: this.ownerId, bot: false },
       deleted: false,
@@ -171,7 +178,7 @@ export class FakeDiscord {
         const body = typeof payload === 'string' ? { content: payload } : payload;
         const msg = new FakeMessage({
           content: body.content, components: body.components,
-          channelId, kind: channel.isThread() ? 'thread' : 'channel', log: self, id: `rep-${++self.nextId}`,
+          channelId, guildId, kind: channel.isThread() ? 'thread' : 'channel', log: self, id: `rep-${++self.nextId}`,
         });
         this.replies.push(msg);
         self.messages.push(msg);
@@ -182,8 +189,8 @@ export class FakeDiscord {
   }
 
   /** Simulate the owner (or someone else) sending a message. */
-  async sendAsUser({ content, authorId = this.ownerId, channelId = this.channelId, guildId = null }) {
-    const message = this.#messageFor({ content, channelId, guildId });
+  async sendAsUser({ content, authorId = this.ownerId, channelId = this.channelId, guildId = null, attachments = [] }) {
+    const message = this.#messageFor({ content, channelId, guildId, attachments });
     message.author = { id: authorId, bot: false };
     const handler = this.handlers.get('messageCreate');
     if (!handler) throw new Error('control plane has not been started');
@@ -201,27 +208,73 @@ export class FakeDiscord {
     return this.threads.find((thread) => thread.parentId === parentId) ?? null;
   }
 
-  /** Simulate the owner tapping one of the approval buttons. */
+  /** Simulate the owner tapping one of the approval/panel buttons. */
   async clickButton(customId, { userId = this.ownerId } = {}) {
     const handler = this.handlers.get('interactionCreate');
     if (!handler) throw new Error('control plane has not been started');
+    const self = this;
     const target = this.messages.find((m) => m.buttonIds.includes(customId));
     if (!target) throw new Error(`no message carries button ${customId}`);
     let updated = null;
+    let modal = null;
     const interaction = {
       isButton: () => true,
+      isModalSubmit: () => false,
       customId,
       user: { id: userId },
       message: target,
+      channelId: target.channelId,
+      channel: this.channelsById.get(target.channelId) ?? null,
+      guildId: target.guildId ?? null,
       replied: null,
-      async reply(payload) { this.replied = payload; },
+      followedUp: [],
+      async showModal(builder) { modal = builder; self.lastModal = builder; },
+      async reply(payload) { this.replied = payload; return null; },
+      async followUp(payload) {
+        this.followedUp.push(payload);
+        const channel = self.channelsById.get(target.channelId) ?? self.channel;
+        return channel.send(payload);
+      },
       async update(payload) {
         updated = payload;
         await target.edit(payload);
       },
     };
     await handler(interaction);
-    return { interaction, updated };
+    return { interaction, updated, modal };
+  }
+
+  /**
+   * Simulate the owner submitting the `🛠 新建 Work` modal. `values` maps the
+   * modal input customId to its text value.
+   */
+  async submitModal(customId, { values = {}, userId = this.ownerId, channelId = this.channelId, guildId = null } = {}) {
+    const handler = this.handlers.get('interactionCreate');
+    if (!handler) throw new Error('control plane has not been started');
+    const channel = this.channelsById.get(channelId) ?? this.channel;
+    let replied = null;
+    const followedUp = [];
+    const interaction = {
+      isButton: () => false,
+      isModalSubmit: () => true,
+      customId,
+      user: { id: userId },
+      message: null,
+      channelId,
+      guildId,
+      channel,
+      fields: { getTextInputValue: (id) => values[id] ?? '' },
+      replied: null,
+      followedUp,
+      async reply(payload) { this.replied = payload; replied = payload; return null; },
+      async followUp(payload) {
+        followedUp.push(payload);
+        return channel.send(payload);
+      },
+      async update(payload) { replied = payload; },
+    };
+    await handler(interaction);
+    return { interaction, replied, followedUp };
   }
 
   /** The newest message that carries an approval button for the given action. */

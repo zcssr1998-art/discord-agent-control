@@ -73,6 +73,10 @@ export function loadConfig() {
     // AUTO must never silently spend on METERED/unknown-billing providers. This
     // only enables those as a *last* AUTO candidate; a manual pin still works.
     allowMeteredChatFallback: bool('ALLOW_METERED_CHAT_FALLBACK', false),
+    // Optional image-capable route for AUTO image turns. Without it, an AUTO
+    // image turn fails clearly instead of being sent to a text-only alias.
+    chatVisionProviderId: process.env.CHAT_VISION_PROVIDER_ID || null,
+    chatVisionModel: process.env.CHAT_VISION_MODEL || null,
     // Wall-clock cap on one direct Chat request.
     chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
 

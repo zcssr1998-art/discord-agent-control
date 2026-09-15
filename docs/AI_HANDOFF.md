@@ -31,6 +31,20 @@ Verified P1 baseline:
 
 Evidence: `docs/V4_P1_SMOKE.md`.
 
+## P2 status (this branch)
+
+Implemented: `!panel` control panel + New Work modal, Chat/Work model selectors, panel settings/permission/status/stop/help, bounded persistent Chat history, `!new`/`!compact`, Discord attachments (Work local inbox + Chat text/image with a real vision route).
+
+Verified on this machine:
+
+- `npm test` 226/0
+- `npm run check` 83/0
+- `npm run smoke:p2` 11/11 (real LiteLLM chat-fast, real chat context recall, real vision `deepseek-v4-flash-vision-exp` -> 红色, real Agent file task in a panel-created Work thread)
+
+Only remaining: owner-run human real-Discord smoke (`docs/V4_P2_SMOKE.md` §8). Evidence: `docs/V4_P2_SMOKE.md`.
+
+Key P2 files: `src/chat-history.mjs`, `src/attachments.mjs`, `src/discord-ui.mjs`, `src/chat-runtime.mjs`, `scripts/p2-e2e.mjs`.
+
 ## P2 architecture decisions
 
 - Persistent panel uses stable interaction IDs; no panel registry/database.
@@ -47,11 +61,11 @@ Evidence: `docs/V4_P1_SMOKE.md`.
 
 ## Execution order
 
-1. P2A persistent panel + Work launcher
-2. P2B ChatHistoryStore + history-aware ChatRuntime
-3. P2C New Chat + Compact
-4. P2D attachments
-5. P2E deterministic full suite + real Discord smoke/evidence
+1. P2A persistent panel + Work launcher — done
+2. P2B ChatHistoryStore + history-aware ChatRuntime — done
+3. P2C New Chat + Compact — done
+4. P2D attachments — done
+5. P2E deterministic full suite + machine-side real smoke — done; human real-Discord smoke pending owner
 
 ## Minimal relevant files to inspect first
 
@@ -68,7 +82,7 @@ Do not rescan the whole repository before these.
 
 ## Blocker
 
-None at task creation. Real image smoke may become `PENDING_REAL_VISION_SMOKE` if the connected account has no usable vision route; do not fake evidence.
+None technical. The human real-Discord smoke (`docs/V4_P2_SMOKE.md` §8) is `PENDING_OWNER_DISCORD_SMOKE` because the bridge cannot act as the human owner. A real vision route exists (`opencode-go / deepseek-v4-flash-vision-exp`) and passed the machine-side image smoke.
 
 ## Delivery
 
