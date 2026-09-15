@@ -7,8 +7,9 @@
  * thing under test is our control plane, not Discord itself.
  *
  * The only real-Discord assumptions it mirrors are the ones the bridge relies on:
- * a channel you can send into, a DM to the owner, message edits, and button
- * interactions carrying a customId.
+ * a channel you can send into, a DM to the owner, message edits, button
+ * interactions carrying a customId, and — for the Work-thread path — a guild
+ * text channel that can create one thread.
  */
 
 function buttonIds(components) {
@@ -67,7 +68,7 @@ class FakeMessage {
 }
 
 export class FakeDiscord {
-  constructor({ ownerId = 'owner-1', channelId = 'chan-1' } = {}) {
+  constructor({ ownerId = 'owner-1', channelId = 'chan-1', threadCapable = false, threadFailure = false } = {}) {
     this.ownerId = ownerId;
     this.channelId = channelId;
     this.messages = [];
@@ -76,6 +77,10 @@ export class FakeDiscord {
     this.loginCalled = false;
     this.nextId = 0;
     this.ownerDmCount = 0;
+    this.threadCapable = threadCapable;
+    this.threadFailure = threadFailure;
+    this.threads = [];
+    this.channelsById = new Map();
 
     const self = this;
     this.owner = {
@@ -93,57 +98,107 @@ export class FakeDiscord {
       },
     };
 
-    this.channel = {
-      id: channelId,
-      isTextBased: () => true,
-      async send(payload) {
-        const body = typeof payload === 'string' ? { content: payload } : payload;
-        const msg = new FakeMessage({
-          content: body.content, components: body.components,
-          channelId, kind: 'channel', log: self, id: `ch-${++self.nextId}`,
-        });
-        self.messages.push(msg);
-        return msg;
-      },
-    };
+    this.channel = this.#makeChannel({ id: channelId, threadCapable: threadCapable });
+    this.channelsById.set(channelId, this.channel);
 
     this.client = {
       user: { id: 'bot-1', tag: 'agent#0001' },
-      channels: { fetch: async (id) => (id === channelId ? self.channel : null) },
+      channels: { fetch: async (id) => self.channelsById.get(id) ?? null },
       users: { fetch: async (id) => (id === ownerId ? self.owner : null) },
       on: (event, handler) => self.handlers.set(event, handler),
       login: async () => { self.loginCalled = true; return 'bot-1'; },
     };
   }
 
-  /** Simulate the owner (or someone else) sending a message. */
-  async sendAsUser({ content, authorId = this.ownerId, channelId = this.channelId, guildId = null }) {
+  /** Register an extra channel (e.g. a second independent Work context). */
+  addChannel({ id, threadCapable = false }) {
+    const channel = this.#makeChannel({ id, threadCapable });
+    this.channelsById.set(id, channel);
+    return channel;
+  }
+
+  #makeChannel({ id, parentId = null, thread = false, threadCapable = false }) {
     const self = this;
+    const channel = {
+      id,
+      parentId,
+      isTextBased: () => true,
+      isThread: () => thread,
+      async send(payload) {
+        const body = typeof payload === 'string' ? { content: payload } : payload;
+        const msg = new FakeMessage({
+          content: body.content, components: body.components,
+          channelId: id, kind: thread ? 'thread' : 'channel', log: self, id: `ch-${++self.nextId}`,
+        });
+        self.messages.push(msg);
+        return msg;
+      },
+    };
+    if (threadCapable && !thread) {
+      channel.threads = { create: async ({ name }) => self.#createThread(id, name) };
+    }
+    return channel;
+  }
+
+  #createThread(parentId, name) {
+    if (this.threadFailure) {
+      throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
+    }
+    const channel = this.#makeChannel({ id: `thread-${++this.nextId}`, parentId, thread: true });
+    channel.name = name;
+    this.channelsById.set(channel.id, channel);
+    this.threads.push(channel);
+    return channel;
+  }
+
+  #messageFor({ content, channelId, guildId }) {
+    const self = this;
+    const channel = this.channelsById.get(channelId) ?? this.channel;
     const message = {
       id: `in-${++this.nextId}`,
       content,
       channelId,
       guildId,
-      channel: this.channel,
-      author: { id: authorId, bot: false },
+      channel,
+      author: { id: this.ownerId, bot: false },
       deleted: false,
       replies: [],
+      ...(this.threadCapable && !channel.isThread()
+        ? { startThread: async ({ name }) => self.#createThread(channelId, name) }
+        : {}),
       async delete() { this.deleted = true; },
       async reply(payload) {
         const body = typeof payload === 'string' ? { content: payload } : payload;
         const msg = new FakeMessage({
           content: body.content, components: body.components,
-          channelId, kind: 'channel', log: self, id: `rep-${++self.nextId}`,
+          channelId, kind: channel.isThread() ? 'thread' : 'channel', log: self, id: `rep-${++self.nextId}`,
         });
         this.replies.push(msg);
         self.messages.push(msg);
         return msg;
       },
     };
+    return message;
+  }
+
+  /** Simulate the owner (or someone else) sending a message. */
+  async sendAsUser({ content, authorId = this.ownerId, channelId = this.channelId, guildId = null }) {
+    const message = this.#messageFor({ content, channelId, guildId });
+    message.author = { id: authorId, bot: false };
     const handler = this.handlers.get('messageCreate');
     if (!handler) throw new Error('control plane has not been started');
     await handler(message);
     return message;
+  }
+
+  /** Messages sent to a specific channel/thread id. */
+  messagesIn(channelId) {
+    return this.messages.filter((m) => m.channelId === channelId);
+  }
+
+  /** The thread created from a parent channel, if any. */
+  threadFor(parentId) {
+    return this.threads.find((thread) => thread.parentId === parentId) ?? null;
   }
 
   /** Simulate the owner tapping one of the approval buttons. */

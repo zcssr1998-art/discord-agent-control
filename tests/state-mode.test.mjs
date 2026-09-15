@@ -25,6 +25,21 @@ test('new and legacy channels default to Chat + AUTO without destroying work set
   assert.equal(legacy.sessionId, 's1');
 });
 
+test('a UTF-8 BOM in the state file does not silently reset every channel to Chat', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-state-'));
+  const file = path.join(dir, 'state.json');
+  // Windows PowerShell `Set-Content -Encoding UTF8` writes a BOM; before the fix
+  // JSON.parse threw and the store fell back to empty state.
+  fs.writeFileSync(file, '\uFEFF' + JSON.stringify({
+    channels: { c1: { mode: 'work', executorId: 'claude', providerId: 'opencode-go', model: 'deepseek-v4.1-flash', cwd: 'D:/repo' } },
+  }));
+  const { sessions } = fakeSession(file);
+  const value = sessions.get('c1');
+  assert.equal(value.mode, 'work');
+  assert.equal(value.executorId, 'claude');
+  assert.equal(value.providerId, 'opencode-go');
+});
+
 test('mode and chat selection persist independently from Agent selection', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-state-'));
   const file = path.join(dir, 'state.json');

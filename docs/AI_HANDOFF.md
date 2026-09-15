@@ -4,71 +4,72 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Current task
 
-Jarvis V4 Chat/Work + LiteLLM integration. P0/P0.5 acceptance is complete and
-verified on the real machine. Next work is P1 (Work threads, workspace
-lock/queue, settings UX).
+Jarvis V4 P1: workspace lock/queue, Work-thread isolation, minimum settings UX.
 
 ## Branch
 
-`jarvis-v4-foundation` (Draft PR #2; do not merge `main` yet).
+`jarvis-v4-p1-workflow` (do not merge `main`).
 
-## Last known good repository state
+## Last known good state
 
-All V4 work is committed and pushed. `npm test` 166/0, `npm run check` 70/0.
-Real evidence in `docs/V4_SMOKE.md`.
+P1A/P1B/P1C implemented, tested and smoke-verified, including the real Discord
+guild network smoke (queue across two channels + thread Work/session
+continuation). `npm test` 195/0, `npm run check` 76/0, `npm run smoke:p1` 20/20
+with real Claude Code agents. Evidence: `docs/V4_P1_SMOKE.md`. P0/P0.5 is merged
+on `main` and remains the rollback point.
+
+## Architecture decisions (P1)
+
+- `WorkspaceScheduler` owns one-active-Work-task-per-canonical-workspace + FIFO
+  queue; it is Work-orchestration state, not LiteLLM/provider state.
+- Canonical key: resolve → realpath → strip trailing separators → lower-case on
+  Windows. The queue is in-memory on purpose (no SQLite/Redis).
+- `runTask` acquires the workspace before `getRunner`; a queued item never creates
+  a runner. Release happens in the scheduler's `finally` on every exit path.
+- Work threads: `work <task>` in a thread-capable guild channel creates one
+  permanent Work thread; parent stays Chat; thread-create failure starts nothing.
+- `!settings` reuses the existing SessionManager/PermissionManager mutations; it
+  never starts a runner and never calls ChatRuntime.
 
 ## Done
 
-- ChatRuntime wired into `src/index.mjs` and `DiscordControlPlane`; ordinary
-  messages route by mode (`chat` -> `runChat`, `work` -> `runTask`)
-- deterministic local mode commands incl. inline `work <task>` / `chat <q>`
-- `!chatmodel` and CHAT/WORK sections in `!status`
-- LiteLLM 1.101.0 installed in `data/litellm/venv`, pinned in
-  `scripts/litellm/VERSION`, loopback-only, supervised, health in status
-- OpenCode Go compatibility through LiteLLM proven with `x-opencode-session`;
-  DS -> GLM fallback proven; direct OpenCode Go kept as escape hatch
-- fallback + cooldown attribution fixed (cooled primary still shows `fallback`)
-- stale global approval-hook 401 fixed (env secret + startup self-repair)
-- real Windows/Discord smoke: Chat 1.7 s, Work DONE with real Write+Read,
-  `!stop` killed the real `claude.exe` tree, Chat never started an Agent
+- `src/workspace-scheduler.mjs` + `tests/workspace-scheduler.test.mjs`
+- scheduler wired into `src/discord-ui.mjs` (`runTask`, `!stop`, `!status`) and
+  `src/index.mjs`
+- Work threads in `discord-ui.mjs`; `FakeDiscord` gained thread/channel support
+- `!settings` panel + interaction handlers
+- `scripts/p1-e2e.mjs` (`npm run smoke:p1`) — real Agent queue/thread/cancel smoke
 
 ## Pending
 
-- P1: Work threads (`work <task>` creates a thread), workspace lock/queue,
-  settings/status UX
 - P2: attachments, chat history, `/new` `/compact`
-- optional `vision` alias (not added; unused)
+- WorkBuddy backend is currently quota-exhausted (429); unrelated to P1
 
 ## Blocker
 
-None.
+None. All P1 real-Discord checks passed.
 
 ## Next action
 
-Read `docs/tasks/CURRENT.md`, then implement P1 items from
-`docs/JARVIS_V4_TASK.md`. Keep LiteLLM as the standard gateway; do not route the
-Agent lifecycle through it.
+P1 is complete; leave the P1 PR unmerged for final review, then start P2.
 
 ## Verification
 
 ```text
 npm test
 npm run check
+npm run smoke:p1
 ```
 
-For real-machine checks: `scripts/start-windows.ps1` (starts LiteLLM + bridge),
-`npm run doctor:discord`, then the Discord smoke steps in `docs/V4_SMOKE.md`.
+Real Discord smoke evidence (queue + thread/session) is in
+`docs/V4_P1_SMOKE.md` section 6. Note: write `data/state.json` without a BOM
+(`StateStore.load` now strips one, but PowerShell `Set-Content -Encoding UTF8`
+still adds it).
 
 ## Minimal relevant files
 
-- `AGENTS.md`
-- `docs/CURRENT.md`
-- `docs/tasks/CURRENT.md`
-- `docs/JARVIS_V4_TASK.md`
-- `docs/V4_SMOKE.md`
+- `src/workspace-scheduler.mjs`
 - `src/discord-ui.mjs`
-- `src/chat-runtime.mjs`
-- `src/litellm.mjs`
-- `src/global-hook.mjs`
-- `src/provider-manager.mjs`
-- `scripts/start-litellm.ps1`, `scripts/start-supervisor.ps1`
+- `src/i18n.mjs`
+- `scripts/p1-e2e.mjs`
+- `tests/v4-p1-*.test.mjs`, `tests/workspace-scheduler.test.mjs`

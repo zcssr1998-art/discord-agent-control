@@ -141,7 +141,7 @@ export function readyText({ executor, provider, protocol, backend, model, billin
 export function formatStatus({
   executor, provider, protocol, adapter, backend, model, billingRoute, billingType, paidFallback,
   cwd, sessionId, state, idleSec, pendingApprovals, permissionLabel, blocked,
-  mode, chatRoute, chatActual, chatHealth, gateway,
+  mode, chatRoute, chatActual, chatHealth, gateway, workState, workWorkspace,
 }) {
   const lines = [
     '🤖 **Jarvis 状态**',
@@ -158,6 +158,7 @@ export function formatStatus({
       '🛠 **WORK / Agent**',
     ] : []),
     `📁 当前项目：\`${cwd}\``,
+    ...(workState ? [`🧰 Work 状态：${workState}${workWorkspace ? ` · \`${workWorkspace}\`` : ''}`] : []),
     `🟢 状态：${state}`,
     `🔐 权限：${permissionLabel}`,
     `🛠️ 执行器：${executor ?? 'unknown'}`,

@@ -4,57 +4,55 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 ## Branch
 
-`jarvis-v4-foundation`
+`jarvis-v4-p1-workflow`
 
 ## Milestone
 
-Jarvis V4 — default Chat + explicit Work + LiteLLM standard gateway.
+Jarvis V4 P1 — safe Work concurrency + Work-thread UX + compact settings UX.
+
+## Stable baseline
+
+P0/P0.5 was merged to `main` via PR #2 and is the rollback point
+(`docs/V4_SMOKE.md`). Its invariants are preserved: default Chat, ordinary Chat
+never starts an Agent, LiteLLM primary + OpenCode Go direct fallback,
+fallback/cooldown attribution, manual pin never falls back, Work
+permissions/approval, real `!stop` process-tree kill, AUTO never spends METERED.
 
 ## Current status
 
-V4 integration is implemented, tested and smoke-verified on the real
-Windows/Discord machine. It is on Draft PR #2; `main` is not merged.
+P1A/P1B/P1C are implemented and verified, including the real Discord network
+smoke (`docs/V4_P1_SMOKE.md` section 6): same-workspace queue across
+`#jarvis-p1-a` / `#jarvis-p1-b`, real thread Work + session continuation.
 
-Working:
-
-- default mode is Chat; ordinary messages go to `ChatRuntime` and never start an
-  Agent, hook, workspace scan or session
-- deterministic local `chat` / `work` commands and inline `work <task>` /
-  `chat <question>`
-- Chat AUTO prefers the LiteLLM alias `chat-fast`, then OpenCode Go direct, then
-  other FREE/SUBSCRIPTION routes; METERED needs `ALLOW_METERED_CHAT_FALLBACK=1`
-- per-route cooldown/circuit breaker; a failed route is not retried every message
-- fallback is attributed in the reply footer, including when the primary route
-  was skipped because it is cooling down
-- Work mode and the existing Agent path are unchanged: permissions, approval
-  hook, `!stop` process-tree kill, watchdog, credential isolation
-- LiteLLM 1.101.0 pinned, loopback-only on `127.0.0.1:4000`, supervised with the
-  bridge, health shown in `!status`
-- OpenCode Go proxied through LiteLLM is proven (per-deployment
-  `x-opencode-session`); DeepSeek -> GLM fallback proven
-- the bridge self-repairs the user-level approval hook and passes the hook
-  secret via the Agent child env (no stale-hook 401)
+- P1A `src/workspace-scheduler.mjs` — one active Jarvis Work task per canonical
+  workspace, FIFO queue, in-memory, release on every exit path, queued cancel.
+  `runTask` acquires the workspace before the Agent starts; `!status` shows
+  `idle / running / queued (#N)`; `!stop` on a queued channel removes only that
+  request.
+- P1B Work threads — thread-capable guild parent + `work <task>` creates one
+  permanent Work thread, parent stays Chat, one thread = one session, no nested
+  threads, DM Work unchanged, thread-create failure runs nothing.
+- P1C `!settings` — compact Chat + Work panel reusing the existing
+  SessionManager/PermissionManager mutations (no second config system), no
+  runner/LLM calls; Chat control omitted inside a permanent Work thread.
 
 ## Current task
 
-See `docs/tasks/CURRENT.md`. The P0/P0.5 acceptance targets in
-`docs/JARVIS_V4_TASK.md` are met.
+`docs/JARVIS_V4_P1_TASK.md`. All P1 acceptance items are implemented.
 
 ## Next action
 
-P1 work: Work threads, workspace lock/queue, richer settings/status UX. Then P2
-attachments and chat history.
+P1 acceptance is complete. P1 PR is ready for final review; next milestone is P2
+(attachments, chat history, `/new` `/compact`). Do not merge `main`.
 
 ## Verification
 
 ```text
-npm test      -> 166 passed / 0 failed
-npm run check -> 70 file(s), 0 failed
+npm test      -> 195 passed / 0 failed
+npm run check -> 76 file(s), 0 failed
+npm run smoke:p1 -> 20/20 real Agent checks (Claude Code + OpenCode Go)
+Real Discord: same-workspace queue PASS; thread real Work + continuation PASS
+Real Chat via LiteLLM chat-fast -> opencode-go/deepseek-v4.1-flash, 2.2 s
 ```
 
-Real-machine evidence: `docs/V4_SMOKE.md`.
-
-## Acceptance gate
-
-Do not merge the V4 PR until the real Windows/Discord Chat, fallback, Work and
-stop evidence is in place. That evidence now exists in `docs/V4_SMOKE.md`.
+Evidence: `docs/V4_P1_SMOKE.md`.

@@ -22,7 +22,11 @@ export class StateStore {
   }
   load() {
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      // A leading UTF-8 BOM (easy to produce from Windows PowerShell) makes
+      // JSON.parse throw, and a silent fallback to empty state is exactly how a
+      // configured channel can end up back on Chat defaults. Strip it explicitly.
+      const text = fs.readFileSync(this.file, 'utf8').replace(/^\uFEFF/, '');
+      const parsed = JSON.parse(text);
       this.data = parsed && typeof parsed === 'object' ? parsed : { channels: {} };
       if (!this.data.channels || typeof this.data.channels !== 'object') this.data.channels = {};
     }
