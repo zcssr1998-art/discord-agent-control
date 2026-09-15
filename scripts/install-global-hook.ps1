@@ -74,8 +74,11 @@ function Remove-OurHook($settings) {
   foreach ($group in @($settings.hooks.PreToolUse)) {
     $hooks = @()
     foreach ($hook in @($group.hooks)) {
+      # Only remove hooks we can prove are ours: the ownership flag, or the
+      # legacy status text. A foreign project's approval-hook.mjs is preserved.
       $cmd = [string]$hook.command
-      if ($cmd -notlike "*approval-hook.mjs*") { $hooks += $hook }
+      $isOurs = $cmd -like "*approval-hook.mjs*" -and ($cmd -like "*--jarvis*" -or [string]$hook.statusMessage -eq 'Waiting for Discord approval when required')
+      if (-not $isOurs) { $hooks += $hook }
     }
     if ($hooks.Count -gt 0) {
       $group.hooks = $hooks
@@ -106,7 +109,7 @@ foreach ($name in $targets) {
   $settings = Remove-OurHook $settings
 
   if (-not $Uninstall) {
-    $command = '"' + $NodeExe + '" "' + $HookScript + '"'
+    $command = '"' + $NodeExe + '" "' + $HookScript + '" --jarvis'
     if (-not $settings.PSObject.Properties['hooks']) {
       $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([pscustomobject]@{})
     }

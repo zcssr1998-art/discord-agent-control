@@ -10,8 +10,8 @@ from the environment or the local OpenCode auth store and are git-ignored.
 ## 1. Automated regression
 
 ```text
-npm test      -> 160 passed / 0 failed
-npm run check -> checked 68 file(s), 0 failed
+npm test      -> 166 passed / 0 failed
+npm run check -> checked 70 file(s), 0 failed
 ```
 
 New V4 coverage:
@@ -271,8 +271,11 @@ Fixes (defense in depth):
 - the bridge injects `DISCORD_BRIDGE_SECRET` into the agent child; the hook
   client prefers it and only falls back to the file (`scripts/approval-hook.mjs`);
 - on startup the bridge repoints `~/.claude` and `~/.codebuddy` `PreToolUse`
-  hooks at this checkout, BOM-less, preserving other hooks and idempotently
-  (`src/global-hook.mjs`, `DISCORD_AUTO_HOOK=0` to disable).
+  hooks at this checkout, BOM-less and idempotently (`src/global-hook.mjs`,
+  `DISCORD_AUTO_HOOK=0` to disable). Ownership is explicit: only a hook carrying
+  the `--jarvis` flag (or the legacy Jarvis status text for pre-flag installs) is
+  replaced, so another project that also ships an `approval-hook.mjs` is never
+  removed.
 
 Deterministic verification:
 
@@ -282,6 +285,9 @@ wrong secret   -> HTTP 401
 tests/approval-secret.test.mjs -> 4/4
 ```
 
+Real machine after the ownership change: `~/.claude/settings.json` carries
+`--jarvis` and this checkout's path, no BOM; correct secret 200 / wrong 401.
+
 ### 10.3 Fallback attribution was hidden during cooldown
 
 When the primary `chat-fast` was in cooldown, `ChatRuntime` skipped it entirely,
@@ -290,6 +296,13 @@ so `attempts=[]` and the direct reply looked like a normal route. Fixed:
 more-preferred route was skipped, so the footer shows `fallback` even while the
 gateway is cooling down (without retrying it). Covered by
 `tests/litellm.test.mjs` and `tests/v4-chat-flow.test.mjs`.
+
+### 10.4 Stale `!chatmodel auto` copy
+
+The success text still described the pre-LiteLLM order. It now states the real
+AUTO order: LiteLLM `chat-fast` first, then the OpenCode Go direct escape hatch,
+then other healthy FREE/SUBSCRIPTION routes. A test asserts the wording so it
+cannot drift again.
 
 ## 11. Final automated state
 

@@ -82,7 +82,7 @@ test('the executor injects DISCORD_BRIDGE_SECRET into the agent child environmen
   assert.equal(claude.APPROVAL_PORT, '37911');
 });
 
-test('ensureGlobalHook points the user hook at this checkout and preserves other hooks', (t) => {
+test('ensureGlobalHook replaces only our hook and preserves foreign approval hooks', (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-hook-home-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const claudeDir = path.join(home, '.claude');
@@ -91,7 +91,11 @@ test('ensureGlobalHook points the user hook at this checkout and preserves other
   fs.writeFileSync(settingsFile, JSON.stringify({
     hooks: {
       PreToolUse: [
-        { hooks: [{ type: 'command', command: 'node C:\\old\\repo\\scripts\\approval-hook.mjs' }] },
+        // Legacy Jarvis install from another checkout: same filename and our
+        // exact legacy status text -> must be repaired.
+        { hooks: [{ type: 'command', command: 'node C:\\old\\repo\\scripts\\approval-hook.mjs', statusMessage: 'Waiting for Discord approval when required' }] },
+        // A different project that also ships approval-hook.mjs -> must survive.
+        { hooks: [{ type: 'command', command: 'node C:\\other\\proj\\approval-hook.mjs', statusMessage: 'Other project hook' }] },
         { hooks: [{ type: 'command', command: 'node my-other-hook.mjs' }] },
       ],
     },
@@ -99,16 +103,18 @@ test('ensureGlobalHook points the user hook at this checkout and preserves other
 
   const result = ensureGlobalHook({ root: ROOT, nodeExe: 'C:\\node.exe', home, logger: { warn() {} } });
   assert.equal(result.installed, true);
-  assert.ok(result.changed, 'a stale hook must be repaired');
+  assert.ok(result.changed, 'a stale Jarvis hook must be repaired');
 
   const raw = fs.readFileSync(settingsFile, 'utf8');
   assert.notEqual(raw.charCodeAt(0), 0xFEFF, 'settings must be written without a BOM');
   const settings = JSON.parse(raw);
   const commands = settings.hooks.PreToolUse.flatMap((group) => group.hooks).map((hook) => hook.command);
+  const ours = path.join(ROOT, 'scripts', 'approval-hook.mjs');
+  assert.ok(commands.some((command) => command.includes('C:\\other\\proj\\approval-hook.mjs')), 'a foreign approval hook must be preserved');
   assert.ok(commands.some((command) => command.includes('my-other-hook.mjs')), 'foreign hooks must be preserved');
-  assert.equal(commands.filter((command) => command.includes('approval-hook.mjs')).length, 1);
-  assert.ok(commands.some((command) => command.includes(path.join(ROOT, 'scripts', 'approval-hook.mjs'))));
-  assert.ok(!commands.some((command) => command.includes('C:\\old\\repo')));
+  assert.ok(!commands.some((command) => command.includes('C:\\old\\repo')), 'the legacy Jarvis hook must be removed');
+  assert.equal(commands.filter((command) => command.includes(ours)).length, 1);
+  assert.ok(commands.some((command) => command.includes(ours) && command.includes('--jarvis')), 'our hook must carry the ownership flag');
 
   const second = ensureGlobalHook({ root: ROOT, nodeExe: 'C:\\node.exe', home, logger: { warn() {} } });
   assert.equal(second.changed, false, 'the repair must be idempotent');

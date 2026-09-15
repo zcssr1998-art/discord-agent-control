@@ -7,6 +7,9 @@ const SETTINGS = {
   codebuddy: ['.codebuddy', 'settings.json'],
 };
 const HOOK_MARKER = 'approval-hook.mjs';
+// Unique ownership marker appended to our hook command. It keeps unrelated
+// projects that also ship a file called approval-hook.mjs from being removed.
+const OWNER_FLAG = '--jarvis';
 const STATUS_MESSAGE = 'Waiting for Discord approval when required';
 
 function writeBomless(file, text) {
@@ -14,6 +17,19 @@ function writeBomless(file, text) {
   // Node writes UTF-8 without a BOM. A BOM makes the settings file invalid JSON
   // for strict parsers, which would silently disable the hook (see AGENTS.md).
   fs.writeFileSync(file, text, 'utf8');
+}
+
+/**
+ * Only hooks that are provably ours are ever replaced:
+ *   - current installs carry the `--jarvis` ownership flag, or
+ *   - legacy installs (before the flag existed) carry our exact status text.
+ * A foreign `approval-hook.mjs` with neither is preserved.
+ */
+function isJarvisHook(hook) {
+  const command = String(hook?.command || '');
+  if (!command.includes(HOOK_MARKER)) return false;
+  if (new RegExp(`\\s${OWNER_FLAG}(\\s|"|$)`).test(command)) return true;
+  return String(hook?.statusMessage || '') === STATUS_MESSAGE;
 }
 
 function upsertHook(settings, command) {
@@ -34,8 +50,9 @@ function upsertHook(settings, command) {
   const kept = [];
   for (const group of existing) {
     const hooks = Array.isArray(group?.hooks) ? group.hooks : [];
-    // Drop any previous copy of our hook so a moved checkout cannot remain.
-    const foreign = hooks.filter((hook) => !String(hook?.command || '').includes(HOOK_MARKER));
+    // Drop only hooks we own, so a moved checkout cannot remain and a foreign
+    // project's approval-hook.mjs is left untouched.
+    const foreign = hooks.filter((hook) => !isJarvisHook(hook));
     for (const hook of foreign) seen.add(String(hook?.command || ''));
     if (foreign.length) kept.push({ ...group, hooks: foreign });
   }
@@ -51,9 +68,9 @@ function upsertHook(settings, command) {
  * A stale global hook (installed from a different repository path) makes every
  * tool call fail closed with HTTP 401, which is what happened when the project
  * was re-cloned. The bridge calls this on startup so the hook path always tracks
- * the running checkout. Only entries pointing at `approval-hook.mjs` are
- * touched; any other hooks are preserved. Ordinary sessions stay unaffected
- * because the hook is inert without DISCORD_BRIDGE_ACTIVE=1.
+ * the running checkout. Only our own hook (ownership flag, or the legacy status
+ * text) is replaced; every other hook is preserved. Ordinary sessions stay
+ * unaffected because the hook is inert without DISCORD_BRIDGE_ACTIVE=1.
  */
 export function ensureGlobalHook({ root, nodeExe = process.execPath, home = os.homedir(), logger = console } = {}) {
   const hookScript = path.join(root, 'scripts', HOOK_MARKER);
@@ -62,7 +79,7 @@ export function ensureGlobalHook({ root, nodeExe = process.execPath, home = os.h
     logger?.warn?.('[hook] approval-hook.mjs not found; global hook not installed');
     return { hookScript, results, installed: false };
   }
-  const command = `"${nodeExe}" "${hookScript}"`;
+  const command = `"${nodeExe}" "${hookScript}" ${OWNER_FLAG}`;
 
   for (const [target, parts] of Object.entries(SETTINGS)) {
     const file = path.join(home, ...parts);

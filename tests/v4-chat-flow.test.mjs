@@ -229,6 +229,9 @@ test('a manual Chat pin never silently falls back', async () => {
 
   await fake.sendAsUser({ content: '!chatmodel auto' });
   assert.match(lastText(fake), /AUTO/);
+  assert.match(lastText(fake), /LiteLLM/);
+  assert.match(lastText(fake), /chat-fast/);
+  assert.ok(!/优先 OpenCode Go DeepSeek/.test(lastText(fake)), 'AUTO text must reflect the LiteLLM-first order');
   assert.equal(plane.sessionManager.get(fake.channelId).chatProviderId, 'auto');
 });
 

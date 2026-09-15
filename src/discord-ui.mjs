@@ -990,7 +990,7 @@ export class DiscordControlPlane {
     }
     if (argument.toLowerCase() === 'auto') {
       this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
-      return '✅ Chat 路由已设为 **AUTO**（优先 OpenCode Go DeepSeek Flash → GLM Flash → 其他健康免费/订阅模型）。';
+      return '✅ Chat 路由已设为 **AUTO**（优先 LiteLLM `chat-fast`；网关不可用时回退 OpenCode Go 直连，再到其他健康免费/订阅模型）。';
     }
     const [providerId, modelId] = argument.split(/\s+/);
     const provider = this.providerManager?.get(providerId);
