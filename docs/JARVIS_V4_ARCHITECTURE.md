@@ -10,12 +10,18 @@ The user experience must stay stable when OpenCode, WorkBuddy, Claude Code, Code
 Discord
   -> Jarvis Core
       -> Chat Runtime (default)
-          -> Provider Router -> direct model API
+          -> LiteLLM Gateway (primary for standard model APIs)
+              -> DeepSeek / GLM / MiniMax / Gemini / GPT / Claude / ...
+          -> special direct adapter only when a provider cannot be represented safely in LiteLLM
       -> Work Runtime (explicit)
           -> Agent Adapter -> OpenCode / Claude Code / Codex / WorkBuddy
+              -> model transport may use LiteLLM when the Agent supports a compatible API endpoint
 ```
 
-Critical invariant: ordinary chat must never pay the startup/tooling cost of an Agent runtime.
+Critical invariants:
+- ordinary chat must never pay the startup/tooling cost of an Agent runtime
+- LiteLLM is a model gateway, not the Agent/orchestration layer
+- Jarvis remains authoritative for Chat/Work mode, sessions, workspace, permissions, queue, cancellation and Agent lifecycle
 
 ## Existing code to preserve
 
@@ -29,86 +35,102 @@ Do not rewrite the repository. Preserve and extend the existing:
 - Discord proxy handling on Windows
 - current OpenCode Go transport detection and Anthropic -> OpenAI compatibility gateway
 
-## New foundation already added on `jarvis-v4-foundation`
+## V4 foundation already added
 
-- `src/mode-router.mjs`
-  - deterministic local `chat` / `work` parser
-  - no LLM routing call
-  - handles bot mentions
-- `src/provider-health.mjs`
-  - failure classification
-  - circuit breaker / cooldown / bounded exponential backoff
-- `src/chat-runtime.mjs`
-  - direct model API chat path
-  - OpenAI Chat / Anthropic Messages / OpenAI Responses
-  - OpenCode Go transport support
-  - AUTO fallback
-  - manual provider/model pin does not silently fall back
-  - AUTO excludes metered/unknown billing unless explicitly enabled
-- `StateStore` / `SessionManager`
-  - default mode = `chat`
-  - separate `chatProviderId` / `chatModel`
-  - existing Agent executor/provider/model/session preserved
+- `src/mode-router.mjs` — deterministic local `chat` / `work` parser; no LLM routing call
+- `src/provider-health.mjs` — failure classification, cooldown and circuit-breaker logic
+- `src/chat-runtime.mjs` — direct API Chat implementation retained as compatibility/special-provider path
+- `StateStore` / `SessionManager` — default mode = Chat; Chat selection separated from Work Agent selection
 
-## Reusable upstream design references
+The direct Node routing code remains useful for providers that LiteLLM cannot safely represent, but standard providers should go through LiteLLM so Jarvis does not reimplement provider normalization, retries, fallbacks, usage/cost accounting and model aliases.
 
-Do not copy whole projects blindly. Reuse proven patterns with the minimum necessary code.
+## LiteLLM role in V4
+
+LiteLLM is now a planned V4 component, not a future-only idea.
+
+Use the official LiteLLM Proxy/Gateway in the smallest possible deployment:
+- bind to `127.0.0.1` only
+- use a validated stable release and pin that version after smoke testing
+- no Postgres, Redis or multi-tenant infrastructure for the personal deployment unless a concrete later requirement needs it
+- provider secrets come from environment/secret storage, never committed YAML
+- Jarvis talks to one OpenAI-compatible local gateway for normal Chat routes
+
+Expose logical model aliases instead of provider-specific names in Jarvis, for example:
+
+```text
+chat-fast
+chat-smart
+vision
+work-fast
+work-smart
+```
+
+Suggested initial `chat-fast` policy:
+1. OpenCode Go DeepSeek 4.1 Flash, if LiteLLM compatibility is proven on the real account
+2. OpenCode Go GLM 5.3 Flash, if compatibility is proven
+3. other healthy FREE/SUBSCRIPTION routes
+
+OpenCode Go is special: the repository already measured per-model transports and `x-api-key` behavior. Do not assume LiteLLM compatibility. Probe DeepSeek/GLM through LiteLLM on the user's Windows machine. If the real call cannot preserve the required endpoint/auth semantics, keep OpenCode Go behind the existing direct adapter while all normal providers use LiteLLM. Do not break a working subscription route just to force architectural purity.
+
+LiteLLM may handle:
+- provider format normalization
+- retries and fallbacks
+- load balancing across deployments
+- rate-limit/cooldown behavior
+- cost/token/latency accounting where supported
+- model aliases
+
+Jarvis must still enforce:
+- no silent METERED/unknown-billing spend in AUTO
+- manual pin means no silent cross-provider/model fallback unless the user selected an AUTO alias
+- Chat/Work mode separation
+- actual provider/model attribution in Discord
+
+## Reusable upstream references
 
 ### `atou42/agents-in-discord`
-Use as the main interaction reference:
-- channel/thread -> provider session mapping
-- settings panel
-- provider/model/effort/workspace overrides
-- progress card instead of message spam
-- workspace serial lock / queue
-- real cancellation
+Use for thread/session mapping, settings, model/effort/workspace overrides, progress cards, workspace serial lock/queue and real cancellation.
 
 ### `simpolism/discord-agent-bridges`
-Use for:
-- persistent CLI session lifecycle
-- session continuity after bridge restart
-- stop/newsession/compact/fork/status style controls
-- bridge separation from the underlying CLI agent
+Use for persistent CLI session lifecycle and bridge separation from the underlying Agent.
 
 ### `jakestrouse00/opencode-discord-bot`
-Use for:
-- OpenCode session/channel follow-ups
-- OpenCode serve/session lifecycle
-- Discord <-> OpenCode control patterns
+Use for OpenCode session/channel follow-ups and OpenCode control patterns.
 
 ### `adam-paterson/codex-opencode-notifier`
-Use for:
-- one Discord thread per tool conversation
-- reply queue pattern between Discord and Codex/OpenCode
+Use for one Discord thread per tool conversation and reply queue patterns.
 
 ### `comeran/discord-codex-bridge`
-Use for:
-- project/channel binding
-- serial task execution
+Use for project/channel binding and serial task execution.
 
 ### `Openclaw-Metis/codex-discord-mcp`
-Use for:
-- resume-by-channel
-- attachment delivery
-- least-permissive sandbox defaults
+Use for resume-by-channel, attachments and least-permissive sandbox defaults.
 
 ### `BerriAI/litellm`
-Treat as an optional future gateway, not a V4 dependency by default.
-Its useful patterns are provider normalization, retry/fallback, cost tracking and routing. The current Node code already supports the concrete protocols needed for the first V4 milestone, so adding a Python proxy now would increase operational complexity without solving the immediate bottleneck.
+Use as the primary standard model gateway. Reuse its routing/fallback/cost/usage behavior instead of duplicating those subsystems in Jarvis.
 
 ## Runtime modes
 
 ### CHAT (default)
 
-Path:
+Preferred path:
 
 ```text
 Discord message
- -> local command parser
- -> ChatRuntime
- -> Provider health/circuit breaker
- -> direct model API
+ -> local deterministic parser
+ -> Chat Runtime
+ -> LiteLLM local gateway
+ -> provider/model
  -> response
+```
+
+Special compatibility path:
+
+```text
+Discord message
+ -> Chat Runtime
+ -> existing direct provider adapter
+ -> provider/model
 ```
 
 Rules:
@@ -116,69 +138,56 @@ Rules:
 - no workspace scan
 - no tool initialization
 - no approval hook
-- no agent session creation
+- no Agent session creation
 - AUTO is default
-- ordinary failures silently fall back when safe
-- actual model/provider is shown in a short footer
+- failed provider details are hidden if a safe fallback succeeds
+- reply footer shows actual provider/model and whether fallback occurred
 
 ### WORK (explicit)
 
-Enter by:
-- `work`
-- `/work`
-- `!work`
-- `work <task>`
-
-Path:
+Enter by `work`, `/work`, `!work`, or `work <task>`.
 
 ```text
-Discord work thread
+Discord Work thread
  -> Work Runtime
  -> Agent Adapter
  -> OpenCode / Claude Code / Codex / WorkBuddy
  -> tools / repo / shell
 ```
 
-Work fallback is conservative. Never switch an active Agent implementation in the middle of side effects. Model fallback is allowed only at a safe boundary or after a saved checkpoint/handoff.
+Do not put Agent lifecycle into LiteLLM. LiteLLM can supply a model endpoint to an Agent only when that Agent supports it. Never switch an active Agent implementation in the middle of side effects without a safe checkpoint/handoff.
 
 ## Session model
 
-Main channel should remain Chat-first.
+Main channels are Chat-first.
 
 Preferred Work UX:
-- `work <task>` in the main channel creates a Discord thread
-- the thread is permanently `mode=work`
-- thread stores workspace, agent, model, effort, permissions, queue state, provider session id
-- the parent channel remains Chat and can be used while Work runs
+- `work <task>` creates a Discord thread
+- the thread is permanently Work mode
+- thread stores workspace, Agent, model alias/model, effort, permissions, queue state and provider session id
+- parent channel remains Chat while Work runs
 
-Until thread creation is implemented, per-channel `mode` is acceptable as a transitional fallback.
+Per-channel mode is acceptable only as a transitional implementation before thread creation lands.
 
-## Provider policy
+## Provider and cost policy
 
-Default Chat route: `AUTO`.
+Default Chat route: `AUTO` / `chat-fast`.
 
-Initial preference for the user's current setup:
-1. OpenCode Go DeepSeek Flash
-2. OpenCode Go GLM Flash
-3. other FREE/SUBSCRIPTION healthy models
+AUTO may select only routes explicitly marked FREE or SUBSCRIPTION unless the user enables paid fallback.
 
-AUTO must not silently use METERED or unknown-billing providers. Manual selection may use them.
-
-Failure handling:
-- 401/403 -> disable/cooldown as credential problem
+Failure policy:
+- 401/403 -> credential problem; disable/cooldown route
 - 402/quota -> long cooldown
-- 429 -> short cooldown
-- 5xx -> short cooldown and fallback
-- timeout/network -> short cooldown and fallback
-- repeated failures -> bounded exponential cooldown
+- 429 -> retry/fallback and cooldown
+- 5xx -> short retry/fallback
+- timeout/network -> short retry/fallback
+- repeated failures -> bounded backoff
 
-If fallback succeeds, do not spam the channel with the failed backend error. Show only a compact footer such as `GLM · fallback from DeepSeek`.
+Prefer LiteLLM's proven router behavior for standard providers. Keep Jarvis's health registry as a gateway/special-route guard and for attribution, not as a second full provider router that fights LiteLLM.
 
 ## Work provider vs model
 
-Agent and model are independent selections.
-
-Examples:
+Agent and model are independent selections:
 
 ```text
 OpenCode + DeepSeek
@@ -203,60 +212,39 @@ Minimum controls:
 - `/compact`
 - `/settings`
 
-Prefer buttons/select menus for configuration and plain text for conversation.
+Prefer Discord buttons/select menus for configuration and plain text for conversation. Work progress updates one status card rather than flooding the channel.
 
-Work progress should update one status card rather than post a log stream.
+## Permissions, queue and persistence
 
-## Permissions
+Keep current permissions/approval code. Product presets may later be Safe / Auto / Full.
 
-Keep current permissions and approval code. Expose three product-level presets later:
-- Safe
-- Auto
-- Full
+One writable workspace must have at most one active Work task; other writes queue or report busy.
 
-Do not weaken OWNER checks, secret redaction, timeout, stop, or backend verification.
-
-## Queue / locking
-
-One writable workspace must have at most one active Work task.
-
-Other tasks targeting the same workspace:
-- queue, or
-- return a clear busy state
-
-Do not allow two independent Agents to concurrently edit the same workspace by default.
-
-## Persistence
-
-V4 milestone may continue using the existing JSON state file for compatibility.
-
-Move to SQLite only when the code needs:
-- task queue persistence
-- chat history
-- session indexing
-- usage history
-- multiple projects/workspaces
-
-Do not introduce Redis/Postgres/Kubernetes for this personal deployment.
+V4 may keep the existing JSON state for the first milestone. Move to SQLite when queue persistence, chat history, usage history or multiple projects make it useful. Do not introduce Redis/Postgres/Kubernetes for this personal deployment.
 
 ## Acceptance targets
 
-### Chat latency
-For a healthy fast provider and a trivial prompt such as `你好`:
-- routing overhead must be effectively local-only
-- no Agent is spawned
-- first useful response should be provider-limited, not tens of seconds of Jarvis overhead
+### Chat
+- `你好` never starts an Agent
+- routing overhead is local/gateway-only, not tens of seconds
+- LiteLLM path is used for standard compatible providers
+- LiteLLM failure does not strand Jarvis: a validated special/direct route may still serve configured FREE/SUBSCRIPTION models
+
+### LiteLLM
+- actual stable version pinned after real smoke test
+- local-only listener
+- health check visible in Jarvis status
+- logical aliases work
+- fallback and cost/usage metadata are verified with real requests
+- OpenCode Go DeepSeek/GLM compatibility is tested, not assumed
 
 ### Work
 - explicit Work entry only
-- existing tool execution and approval behavior remains functional
-- `!stop`/cancel still truly kills the child process tree
+- existing tool execution, approvals and process-tree cancellation remain functional
 
-### Reliability
-- quota/rate-limit on the first Chat model automatically moves to the next healthy subscription/free candidate
-- cooldown prevents hammering the failed model on every message
-- manual provider/model pin never silently routes elsewhere
-
-### Cost safety
-- AUTO does not silently use metered/unknown-billing APIs
-- detailed logs remain in repo/log files; Discord shows compact status
+### Reliability and cost safety
+- quota/rate-limit on the first AUTO route can move to the next safe route
+- cooldown prevents hammering a broken route
+- manual model/provider pin never silently routes elsewhere
+- AUTO never silently uses METERED/unknown-billing APIs
+- detailed logs remain in repo/log files; Discord shows compact status only
