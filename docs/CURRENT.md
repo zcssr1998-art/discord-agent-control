@@ -8,9 +8,9 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 ## Milestone
 
-Jarvis V4 P2 — persistent control panel + Work launcher + Chat history + New/Compact + attachments.
+Jarvis V4 P2 + P2.1 — persistent control panel, Chat context/attachments, native Discord commands, and interactive Work controls.
 
-Status: **implemented on this branch, not merged to `main`.** Deterministic suite and machine-side real smoke pass; the human real-Discord smoke is pending the owner (`docs/V4_P2_SMOKE.md` §8).
+Status: P2 implementation + machine-side smoke are complete on this branch; P2 human Discord smoke was in progress when the owner requested P2.1 UX additions. PR #4 remains Draft and must not merge until combined P2/P2.1 human smoke + final review pass.
 
 ## Stable baseline
 
@@ -25,59 +25,48 @@ Preserve these invariants:
 - guild `work <task>` creates a permanent Work thread; parent remains Chat
 - one canonical workspace has at most one active Jarvis Work task; same-workspace tasks FIFO
 - queued Work never starts an Agent before lock acquisition
-- real `!stop` kills active process trees / cancels queued work correctly
+- real stop kills active process trees / cancels queued work correctly
 - permission/approval/session safety remains intact
 
-P1 real Discord smoke passed for cross-channel workspace queue and Work-thread session continuation. Evidence: `docs/V4_P1_SMOKE.md`.
+P1 evidence: `docs/V4_P1_SMOKE.md`.
+P2 evidence so far: `npm test` 226/0, `npm run check` 83/0, `npm run smoke:p2` 11/11. Evidence: `docs/V4_P2_SMOKE.md`.
 
-P2 machine-side evidence: `npm test` 226/0, `npm run check` 83/0, `npm run smoke:p2` 11/11 (real LiteLLM + OpenCode Go + real vision + real Agent). Evidence: `docs/V4_P2_SMOKE.md`.
+## Active specs
 
-## Current task
+1. `docs/JARVIS_V4_P2_TASK.md` — implemented; owner human Discord smoke not yet closed.
+2. `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — **current implementation task**.
 
-`docs/JARVIS_V4_P2_TASK.md` — implemented. Remaining: owner-run human real-Discord smoke (`docs/V4_P2_SMOKE.md` §8).
+The former P1.1 panel task is superseded; do not implement it separately.
 
-The earlier P1.1 control-panel task was folded into P2; do not implement it separately.
+## P2.1 requested UX
 
-## P2 scope
-
-1. persistent `!panel` control panel
-2. `🛠 新建 Work` modal that reuses existing Work paths
-3. Chat/Work Provider -> model selectors
-4. Settings / Permission / Status / Stop / Usage Guide from the panel
-5. bounded persistent channel-scoped Chat history
-6. New Chat (`!new`, panel; `/new` where supported)
-7. Compact context (`!compact`, panel; `/compact` where supported)
-8. Discord attachments: Work files + Chat text/images with safe limits
+- Discord-native application commands: `/panel /work /model /settings /permission /status /stop /new /compact /help`
+- active/queued Work progress card buttons: `➕ 追加需求` + `⛔ Stop`
+- append button opens a multiline Modal
+- normal owner text in an active Work thread/Work-mode DM/channel also queues a follow-up requirement
+- follow-ups execute FIFO as later turns in the same Work session, through the existing `runTask` + `WorkspaceScheduler` path; no fragile stdin injection
+- parent guild channel stays Chat
+- Stop cancels active/queued work and clears pending follow-ups
+- stale task cards must never affect a newer run
 
 ## Key architecture decisions
 
-- no second settings/model/work implementation: panel delegates to existing managers and P1 Work paths
-- no SQLite/Redis; small local JSON/JSONL runtime state is enough
-- Chat history is separate from Work Agent sessions
-- failed Chat fallback attempts must not duplicate history
-- explicit Compact may call the Chat model; no surprise background summarization calls
-- Work attachments download once to a safe runtime inbox and are passed to Agent as local paths
-- Chat binary files are not silently ignored; unsupported files should be redirected to Work
+- no second settings/model/work/stop implementation; slash commands and card controls delegate to existing handlers
+- no second state store; add only minimal in-memory per-run follow-up state unless persistence is proven necessary
+- follow-up queue is distinct from workspace scheduling, but every follow-up must reacquire the workspace through `WorkspaceScheduler` for FIFO fairness
+- progress-card controls bind to a per-run identifier, not only channel ID
+- Discord cards have no permanent inline text field; use a Modal for the button path, plus ordinary Work-thread text as the fastest path
+- no adapter-specific mid-process stdin injection
 
 ## Next action
 
-Owner runs the human real-Discord smoke in `docs/V4_P2_SMOKE.md` §8, then final review. Do not merge to `main` until that review.
+Implement `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md`, run targeted tests then full regression, update `docs/V4_P2_SMOKE.md`, and perform one combined human Discord smoke. Do not redo already-proven P2 internals unless a regression is found.
 
-## P2 implementation map
+## Minimal relevant files
 
-- `src/discord-ui.mjs` — persistent `!panel`, New Work modal, Chat/Work model selectors, panel status/stop/help, `!new`/`/new`, `!compact`/`/compact`, history-aware Chat, attachment handling.
-- `src/chat-history.mjs` — bounded channel-scoped Chat history (`data/chat-history.json`, git-ignored).
-- `src/attachments.mjs` — safe Discord attachment download/read + inbox TTL cleanup (`data/inbox/`, git-ignored).
-- `src/chat-runtime.mjs` — message-array sends + neutral multimodal content mapping (OpenAI/Responses/Anthropic) + vision-route resolution.
-- `src/config.mjs` / `src/index.mjs` — `CHAT_VISION_PROVIDER_ID` / `CHAT_VISION_MODEL`, history/inbox wiring, startup inbox cleanup.
-
-## Verification baseline
-
-Before P2 changes, stable P1 baseline was:
-
-```text
-npm test      -> 195 passed / 0 failed
-npm run check -> 76 file(s), 0 failed
-npm run smoke:p1 -> 20/20
-Real Discord queue/thread smoke -> PASS
-```
+- `src/discord-ui.mjs`
+- `src/progress.mjs`
+- `src/session-manager.mjs`
+- `src/workspace-scheduler.mjs`
+- `tests/helpers/fake-discord.mjs`
+- current P2 UI/history/attachment tests
