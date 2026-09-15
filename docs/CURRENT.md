@@ -29,7 +29,7 @@ Preserve these invariants:
 - permission/approval/session safety remains intact
 
 P1 evidence: `docs/V4_P1_SMOKE.md`.
-P2 + P2.1 evidence: `npm test` 240/0, `npm run check` 85/0, `npm run smoke:p2` 11/11. Evidence: `docs/V4_P2_SMOKE.md` (§9 for P2.1).
+P2 + P2.1 evidence: `npm test` 244/0, `npm run check` 85/0, `npm run smoke:p2` 11/11. Evidence: `docs/V4_P2_SMOKE.md` (§9 for P2.1, incl. the interaction ACK fix).
 
 ## Active specs
 

@@ -74,7 +74,8 @@ class FakeMessage {
 }
 
 export class FakeDiscord {
-  constructor({ ownerId = 'owner-1', channelId = 'chan-1', threadCapable = false, threadFailure = false } = {}) {
+  constructor({ ownerId = 'owner-1', channelId = 'chan-1', threadCapable = false, threadFailure = false, threadDelayMs = 0 } = {}) {
+    this.threadDelayMs = threadDelayMs;
     this.ownerId = ownerId;
     this.channelId = channelId;
     this.messages = [];
@@ -146,10 +147,11 @@ export class FakeDiscord {
     return channel;
   }
 
-  #createThread(parentId, name) {
+  async #createThread(parentId, name) {
     if (this.threadFailure) {
       throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
     }
+    if (this.threadDelayMs) await new Promise((resolve) => setTimeout(resolve, this.threadDelayMs));
     const channel = this.#makeChannel({ id: `thread-${++this.nextId}`, parentId, thread: true });
     channel.name = name;
     this.channelsById.set(channel.id, channel);
@@ -228,20 +230,34 @@ export class FakeDiscord {
       channelId: target.channelId,
       channel: this.channelsById.get(target.channelId) ?? null,
       guildId: target.guildId ?? null,
+      deferred: false,
       replied: null,
       followedUp: [],
       async showModal(builder) { modal = builder; self.lastModal = builder; },
+      async deferUpdate() { this.deferred = true; },
+      async deferReply() { this.deferred = true; },
       async reply(payload) { this.replied = payload; return null; },
+      async editReply(payload) {
+        this.deferred = false;
+        this.replied = payload;
+        updated = payload;
+        await target.edit(payload);
+        return target;
+      },
       async followUp(payload) {
         this.followedUp.push(payload);
         const channel = self.channelsById.get(target.channelId) ?? self.channel;
-        return channel.send(payload);
+        const sent = await channel.send(payload);
+        if (!this.replied) this.replied = payload;
+        return sent;
       },
       async update(payload) {
         updated = payload;
+        this.replied = payload;
         await target.edit(payload);
       },
     };
+    this.lastInteraction = interaction;
     await handler(interaction);
     return { interaction, updated, modal };
   }
@@ -268,15 +284,27 @@ export class FakeDiscord {
       guildId,
       channel,
       fields: { getTextInputValue: (id) => values[id] ?? '' },
+      deferred: false,
       replied: null,
       followedUp,
+      async deferUpdate() { this.deferred = true; },
+      async deferReply() { this.deferred = true; },
       async reply(payload) { this.replied = payload; replied = payload; return null; },
-      async followUp(payload) {
-        followedUp.push(payload);
+      async editReply(payload) {
+        this.deferred = false;
+        this.replied = payload;
+        replied = payload;
         return channel.send(payload);
       },
-      async update(payload) { replied = payload; },
+      async followUp(payload) {
+        followedUp.push(payload);
+        const sent = await channel.send(payload);
+        if (!this.replied) { this.replied = payload; replied = payload; }
+        return sent;
+      },
+      async update(payload) { replied = payload; this.replied = payload; },
     };
+    this.lastInteraction = interaction;
     await handler(interaction);
     return { interaction, replied, followedUp };
   }
@@ -305,7 +333,7 @@ export class FakeDiscord {
       channelId,
       guildId,
       channel,
-      deferred,
+      deferred: false,
       options: {
         getString: (key) => (options[key] == null ? null : String(options[key])),
         getInteger: (key) => (options[key] == null ? null : Number(options[key])),
@@ -313,20 +341,28 @@ export class FakeDiscord {
       },
       async reply(payload) {
         replied = typeof payload === 'string' ? { content: payload } : payload;
-        const sent = await channel.send(replied);
-        return sent;
-      },
-      async deferReply() { deferred = true; this.deferred = true; },
-      async editReply(payload) {
-        replied = typeof payload === 'string' ? { content: payload } : payload;
+        this.replied = replied;
         return channel.send(replied);
       },
-      async followUp(payload) { return channel.send(payload); },
+      async deferUpdate() { this.deferred = true; deferred = true; },
+      async deferReply() { this.deferred = true; deferred = true; },
+      async editReply(payload) {
+        this.deferred = false;
+        replied = typeof payload === 'string' ? { content: payload } : payload;
+        this.replied = replied;
+        return channel.send(replied);
+      },
+      async followUp(payload) {
+        const body = typeof payload === 'string' ? { content: payload } : payload;
+        if (!this.replied) { replied = body; this.replied = body; }
+        return channel.send(body);
+      },
       async showModal(builder) { modal = builder; self.lastModal = builder; },
-      async update(payload) { replied = payload; },
+      async update(payload) { replied = payload; this.replied = payload; },
     };
+    this.lastInteraction = interaction;
     await handler(interaction);
-    return { interaction, replied, deferred, modal };
+    return { interaction, replied, deferred: interaction.deferred, modal };
   }
 
   /** The newest message that carries an approval button for the given action. */

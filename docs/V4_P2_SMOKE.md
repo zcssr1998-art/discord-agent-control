@@ -143,7 +143,39 @@ New suite `tests/v4-p2-native.test.mjs` (14 tests) covers:
 
 Behaviour-change note: the legacy test `a second task is refused while one is running`
 was updated to the P2.1 semantics — while a Work chain is active, a second message is
-now queued as a follow-up instead of refused (the other 239 tests are unchanged).
+now queued as a follow-up instead of refused (the other tests are unchanged).
+
+### Interaction ACK lifecycle fix (real /work smoke failure)
+
+The first real `/work` smoke failed with Discord showing "该应用程序未响应" while the
+thread was still created in the background; the new thread was briefly empty. Cause:
+a modal submit (and `/work task`) only responded *after* thread creation, so the
+3-second interaction ACK window was missed.
+
+Fix:
+
+- every slash command / button / modal submit is ACKed immediately
+  (`deferReply` / `deferUpdate`) before any slow work (thread create, filesystem,
+  Agent start, provider/model check, workspace queue, network);
+- `showModal` (which is its own ACK) is issued before the ACK step
+  (`/work` with no task, panel `🛠 新建 Work`, card `➕ 追加需求`);
+- `#interactionContext` + `#edit`/`#ephemeral` honour deferred/replied state and
+  never reply twice;
+- the Work task card is posted *before* the Agent starts, so a new thread is never
+  blank; and the login is confirmed via `editReply` ("已创建 Work 线程").
+
+New deterministic coverage in `tests/v4-p2-native.test.mjs`:
+
+- `/work` ACKs before a ~3.5s thread creation and only then creates the thread + card;
+- modal submit ACKs immediately before ~1.2s thread creation;
+- `/work` ACKs before a slow Agent startup;
+- an Agent failure after `/work` leaves the interaction ACKed and the thread shows the failure card.
+
+```text
+npm test      -> 244 passed / 0 failed
+npm run check -> 85 file(s), 0 failed
+npm run smoke:p2 -> 11/11 passed
+```
 
 P2.1 human Discord smoke: **PENDING_OWNER_DISCORD_SMOKE** (minimal, owner-run):
 

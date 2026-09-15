@@ -421,6 +421,71 @@ test('the follow-up queue cap is enforced', async () => {
   await task;
 });
 
+// ------------------------------------------------ interaction ACK lifecycle
+
+test('/work ACKs before slow thread creation and then produces a task card', async () => {
+  const { fake, plane, release } = makeWorkPlane({ threadCapable: true, hold: true, parentChat: true });
+  fake.threadDelayMs = 3500;
+  await plane.start();
+  const pending = fake.command('work', { options: { task: 'slow thread task' }, guildId: 'guild-1' });
+  await tick(80);
+  assert.equal(fake.lastInteraction.deferred, true, 'the slash interaction must ACK before thread creation');
+  assert.equal(fake.threads.length, 0, 'thread creation is still pending at ACK time');
+
+  await waitFor(() => fake.threads.length === 1, { timeoutMs: 7000, stepMs: 50 });
+  const threadId = fake.threads[0].id;
+  await waitFor(() => cardMessage(fake, threadId, 'stop'), { timeoutMs: 3000, stepMs: 20 });
+  assert.ok(cardMessage(fake, threadId, 'stop'), 'a task status card must appear in the new thread');
+  release(threadId);
+  await pending.catch(() => {});
+});
+
+test('modal submit ACKs immediately, before slow thread creation', async () => {
+  const { fake, plane, release } = makeWorkPlane({ threadCapable: true, hold: true, parentChat: true });
+  fake.threadDelayMs = 1200;
+  await plane.start();
+  const pending = fake.submitModal('workmodal:task', { values: { task: 'modal slow' }, guildId: 'guild-1' });
+  await tick(60);
+  assert.equal(fake.lastInteraction.deferred, true, 'the modal submit must ACK immediately');
+  await waitFor(() => fake.threads.length === 1, { timeoutMs: 4000, stepMs: 30 });
+  release(fake.threads[0].id);
+  await pending.catch(() => {});
+});
+
+test('/work ACKs before a slow Agent startup', async () => {
+  const { fake, plane } = makeWorkPlane({ hold: false });
+  plane.getRunner = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return {
+      sessionId: 's', model: 'm', busy: false, sent: [], idleMs: 0,
+      async send() { return { text: 'ok', sessionId: 's', durationMs: 1, tools: [], isError: false, costUsd: 0 }; },
+      async stop() {},
+    };
+  };
+  await plane.start();
+  const pending = fake.command('work', { options: { task: 'slow agent' } });
+  await tick(60);
+  assert.equal(fake.lastInteraction.deferred, true, 'must ACK before Agent startup');
+  await pending.catch(() => {});
+});
+
+test('an Agent failure after /work never leaves the slash interaction unresponsive', async () => {
+  const { fake, plane } = makeWorkPlane({ threadCapable: true, hold: false, parentChat: true });
+  fake.threadDelayMs = 150;
+  plane.getRunner = async () => ({
+    sessionId: 's', model: 'm', busy: false, sent: [], idleMs: 0,
+    async send() { throw new Error('agent exploded'); },
+    async stop() {},
+  });
+  await plane.start();
+  await fake.command('work', { options: { task: 'will fail' }, guildId: 'guild-1' });
+  assert.ok(fake.lastInteraction.deferred || fake.lastInteraction.replied, 'the interaction was ACKed');
+  assert.equal(fake.threads.length, 1);
+  const threadId = fake.threads[0].id;
+  await waitFor(() => fake.messagesIn(threadId).some((m) => /执行失败/.test(m.content)));
+  assert.ok(fake.messagesIn(threadId).some((m) => /执行失败/.test(m.content)), 'the thread shows the failure card');
+});
+
 test('a follow-up attachment is downloaded exactly once', async () => {
   let downloads = 0;
   const { fake, plane, runners, release } = makeWorkPlane({

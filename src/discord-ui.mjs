@@ -1379,23 +1379,57 @@ export class DiscordControlPlane {
     return Array.isArray(raw) ? raw : [];
   }
 
+  /**
+   * Immediately ACK an interaction so Discord never shows "该应用程序未响应".
+   * Must run before any slow work (thread create, filesystem, Agent start,
+   * provider/model check, workspace queue, network). `showModal` is its own
+   * ACK and is handled by the caller before this is reached.
+   */
+  async #acknowledge(interaction) {
+    if (interaction.deferred || interaction.replied) return;
+    try {
+      if (typeof interaction.isButton === 'function' && interaction.isButton()) {
+        await interaction.deferUpdate();
+        return;
+      }
+      if (typeof interaction.isModalSubmit === 'function' && interaction.isModalSubmit()) {
+        await interaction.deferReply({ ephemeral: true });
+        return;
+      }
+      await interaction.deferReply();
+    } catch { /* an already-acked interaction must never break the handler */ }
+  }
+
+  /** Send/update an interaction result regardless of deferred/replied state. */
+  async #edit(interaction, payload) {
+    const body = typeof payload === 'string' ? { content: payload } : payload;
+    if (interaction.deferred) return interaction.editReply(body);
+    if (interaction.replied && typeof interaction.followUp === 'function') {
+      const { ephemeral, ...rest } = body;
+      return interaction.followUp({ ...rest, ...(ephemeral ? { ephemeral: true } : {}) });
+    }
+    return interaction.reply(body);
+  }
+
+  /** An ephemeral result that works before or after deferral. */
+  async #ephemeral(interaction, payload) {
+    const body = typeof payload === 'string' ? { content: payload } : payload;
+    if (interaction.deferred || interaction.replied) {
+      if (typeof interaction.followUp === 'function') return interaction.followUp({ ...body, ephemeral: true });
+      return interaction.channel?.send ? interaction.channel.send(body) : Promise.resolve(null);
+    }
+    return interaction.reply({ ...body, ephemeral: true });
+  }
+
   /** A message-like context backed by an interaction, so Work can be reused. */
   #interactionContext(interaction) {
-    let replied = false;
-    const send = (payload) => {
-      if (!replied) {
-        replied = true;
-        return interaction.reply(payload);
-      }
-      if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      return interaction.channel?.send ? interaction.channel.send(payload) : Promise.resolve(null);
-    };
     const channel = interaction.channel ?? null;
     return {
       channelId: interaction.channelId,
       guildId: interaction.guildId ?? null,
       channel,
-      reply: send,
+      // Handles deferred/replied/none so Work never calls reply() twice.
+      reply: (payload) => this.#edit(interaction, payload),
       get startThread() {
         if (!channel || typeof channel.threads?.create !== 'function') return undefined;
         return async ({ name, autoArchiveDuration }) => channel.threads.create({
@@ -1451,6 +1485,7 @@ export class DiscordControlPlane {
   }
 
   async #handlePanelInteraction(interaction, id, channelId) {
+    // `newwork` shows a modal and must be handled before the immediate ACK.
     if (id === 'newwork') {
       await interaction.showModal(this.#newWorkModal());
       return;
@@ -1458,7 +1493,7 @@ export class DiscordControlPlane {
     if (id === 'models') {
       const state = this.sessionManager.get(channelId);
       const workProvider = this.providerManager?.get(state.providerId);
-      await interaction.update({
+      await this.#edit(interaction, {
         content: [
           '🧠 **换模型**',
           `💬 Chat：${this.#chatRouteText(channelId)}`,
@@ -1468,15 +1503,15 @@ export class DiscordControlPlane {
       });
       return;
     }
-    if (id === 'settings') { await interaction.update(this.#settingsPanel(channelId)); return; }
-    if (id === 'permission') { await interaction.update(this.#permissionMenu(channelId)); return; }
-    if (id === 'newchat') { await interaction.update({ content: clip(this.#newChat(channelId)), components: [panelBackRow()] }); return; }
-    if (id === 'compact') { await interaction.update({ content: clip(await this.#compactChat(channelId)), components: [panelBackRow()] }); return; }
-    if (id === 'status') { await interaction.update(await this.#panelStatus(channelId)); return; }
-    if (id === 'stop') { await interaction.update({ content: clip(await this.#stopChannel(channelId)), components: [panelBackRow()] }); return; }
-    if (id === 'help') { await interaction.update(this.#panelHelp()); return; }
+    if (id === 'settings') { await this.#edit(interaction, this.#settingsPanel(channelId)); return; }
+    if (id === 'permission') { await this.#edit(interaction, this.#permissionMenu(channelId)); return; }
+    if (id === 'newchat') { await this.#edit(interaction, { content: clip(this.#newChat(channelId)), components: [panelBackRow()] }); return; }
+    if (id === 'compact') { await this.#edit(interaction, { content: clip(await this.#compactChat(channelId)), components: [panelBackRow()] }); return; }
+    if (id === 'status') { await this.#edit(interaction, await this.#panelStatus(channelId)); return; }
+    if (id === 'stop') { await this.#edit(interaction, { content: clip(await this.#stopChannel(channelId)), components: [panelBackRow()] }); return; }
+    if (id === 'help') { await this.#edit(interaction, this.#panelHelp()); return; }
     // refresh / back / unknown
-    await interaction.update(this.#controlPanel(channelId));
+    await this.#edit(interaction, this.#controlPanel(channelId));
   }
 
   async #handleModalSubmit(interaction, parts) {
@@ -1485,13 +1520,13 @@ export class DiscordControlPlane {
       const run = this.workRuns.get(runId);
       const chain = run ? this.workChains.get(run.channelId) : null;
       if (!run || !chain || chain.activeRunId !== runId) {
-        await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+        await this.#ephemeral(interaction, '该任务已结束。');
         return;
       }
       let requirement = '';
       try { requirement = String(interaction.fields?.getTextInputValue?.('requirement') ?? '').trim(); } catch { requirement = ''; }
       if (!requirement) {
-        await interaction.reply({ content: '❌ 补充要求为空。', ephemeral: true });
+        await this.#ephemeral(interaction, '❌ 补充要求为空。');
         return;
       }
       const result = await this.#appendFollowUp({
@@ -1502,13 +1537,13 @@ export class DiscordControlPlane {
         dedupeKey: `modal:${interaction.id}`,
       });
       if (result.ok) {
-        await interaction.reply({ content: `✅ 已追加，当前任务结束后执行（队列 #${result.position}）。`, ephemeral: true });
+        await this.#ephemeral(interaction, `✅ 已追加，当前任务结束后执行（队列 #${result.position}）。`);
       } else if (result.reason === 'full') {
-        await interaction.reply({ content: `⛔ 追加队列已满（最多 ${this.maxWorkFollowUps} 条）。`, ephemeral: true });
+        await this.#ephemeral(interaction, `⛔ 追加队列已满（最多 ${this.maxWorkFollowUps} 条）。`);
       } else if (result.reason === 'duplicate') {
-        await interaction.reply({ content: '已收到该追加需求。', ephemeral: true });
+        await this.#ephemeral(interaction, '已收到该追加需求。');
       } else {
-        await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+        await this.#ephemeral(interaction, '该任务已结束。');
       }
       return;
     }
@@ -1516,7 +1551,7 @@ export class DiscordControlPlane {
     let task = '';
     try { task = String(interaction.fields?.getTextInputValue?.('task') ?? '').trim(); } catch { task = ''; }
     if (!task) {
-      await interaction.reply({ content: '❌ 任务内容为空。', ephemeral: true });
+      await this.#ephemeral(interaction, '❌ 任务内容为空。');
       return;
     }
     await this.#launchWork(this.#interactionContext(interaction), task);
@@ -1857,41 +1892,28 @@ export class DiscordControlPlane {
     return false;
   }
 
+  /**
+   * The interaction is already ACKed (deferredReply) before this runs, except
+   * for `/work` without a task which shows its modal as the ACK.
+   */
   async #handleApplicationCommand(interaction) {
     const channelId = interaction.channelId;
     const name = interaction.commandName;
-    if (name === 'panel') { await interaction.reply(this.#controlPanel(channelId)); return; }
+    if (name === 'panel') { await this.#edit(interaction, this.#controlPanel(channelId)); return; }
     if (name === 'model') {
-      await interaction.reply({ content: '🧠 换模型', components: panelModelRows() });
+      await this.#edit(interaction, { content: '🧠 换模型', components: panelModelRows() });
       return;
     }
-    if (name === 'settings') { await interaction.reply(this.#settingsPanel(channelId)); return; }
-    if (name === 'permission') { await interaction.reply(this.#permissionMenu(channelId)); return; }
-    if (name === 'help') { await interaction.reply(this.#panelHelp()); return; }
-    if (name === 'status') {
-      await interaction.deferReply();
-      await interaction.editReply(await this.#panelStatus(channelId));
-      return;
-    }
-    if (name === 'new') { await interaction.reply({ content: clip(this.#newChat(channelId)) }); return; }
-    if (name === 'compact') {
-      await interaction.deferReply();
-      await interaction.editReply({ content: clip(await this.#compactChat(channelId)) });
-      return;
-    }
-    if (name === 'stop') {
-      await interaction.deferReply();
-      await interaction.editReply({ content: clip(await this.#stopChannel(channelId)) });
-      return;
-    }
+    if (name === 'settings') { await this.#edit(interaction, this.#settingsPanel(channelId)); return; }
+    if (name === 'permission') { await this.#edit(interaction, this.#permissionMenu(channelId)); return; }
+    if (name === 'help') { await this.#edit(interaction, this.#panelHelp()); return; }
+    if (name === 'status') { await this.#edit(interaction, await this.#panelStatus(channelId)); return; }
+    if (name === 'new') { await this.#edit(interaction, { content: clip(this.#newChat(channelId)) }); return; }
+    if (name === 'compact') { await this.#edit(interaction, { content: clip(await this.#compactChat(channelId)) }); return; }
+    if (name === 'stop') { await this.#edit(interaction, { content: clip(await this.#stopChannel(channelId)) }); return; }
     if (name === 'work') {
       const task = typeof interaction.options?.getString === 'function' ? interaction.options.getString('task') : null;
-      if (task && String(task).trim()) {
-        await this.#launchWork(this.#interactionContext(interaction), String(task).trim());
-      } else {
-        await interaction.showModal(this.#newWorkModal());
-      }
-      return;
+      if (task && String(task).trim()) await this.#launchWork(this.#interactionContext(interaction), String(task).trim());
     }
   }
 
@@ -2222,48 +2244,71 @@ export class DiscordControlPlane {
     // Every panel/render/selection/command interaction is OWNER-only. Rendering
     // and selection interactions never call ChatRuntime or start an Agent.
     if (interaction.user.id !== this.config.ownerId) {
-      await interaction.reply({ content: '无权执行此操作。', ephemeral: true });
+      await this.#ephemeral(interaction, '无权执行此操作。');
       return;
     }
-    if (isCommand) {
-      await this.#handleApplicationCommand(interaction);
-      return;
-    }
-    const parts = String(interaction.customId).split(':');
+    const parts = String(interaction.customId ?? '').split(':');
     const prefix = parts[0];
-    if (isModal) {
-      await this.#handleModalSubmit(interaction, parts);
-      return;
-    }
     const id = parts[1];
     const action = parts[2];
     const channelId = interaction.channelId || interaction.message?.channelId;
+
+    // These three respond by showing a Modal, which is its own immediate ACK
+    // and cannot follow a defer. Everything else is ACKed before any slow work.
+    if (isCommand && interaction.commandName === 'work') {
+      const task = typeof interaction.options?.getString === 'function' ? interaction.options.getString('task') : null;
+      if (!task || !String(task).trim()) {
+        await interaction.showModal(this.#newWorkModal());
+        return;
+      }
+    }
+    if (isButton && prefix === 'panel' && id === 'newwork') {
+      await interaction.showModal(this.#newWorkModal());
+      return;
+    }
+    if (isButton && prefix === 'workctl' && id === 'append') {
+      const run = this.workRuns.get(action);
+      const chain = run ? this.workChains.get(run.channelId) : null;
+      if (!run || !chain || chain.activeRunId !== action) {
+        await this.#ephemeral(interaction, '该任务已结束。');
+        return;
+      }
+      await interaction.showModal(this.#appendModal(action));
+      return;
+    }
+
+    // Immediate ACK before thread create / filesystem / Agent start / provider
+    // check / workspace queue / network.
+    await this.#acknowledge(interaction);
+
+    if (isCommand) { await this.#handleApplicationCommand(interaction); return; }
+    if (isModal) { await this.#handleModalSubmit(interaction, parts); return; }
     if (prefix === 'panel') {
       await this.#handlePanelInteraction(interaction, id, channelId);
       return;
     }
     if (prefix === 'panelmodels') {
-      await interaction.update(id === 'chat' ? this.#chatModelMenu(channelId) : this.#workModelMenu(channelId));
+      await this.#edit(interaction, id === 'chat' ? this.#chatModelMenu(channelId) : this.#workModelMenu(channelId));
       return;
     }
     if (prefix === 'panelchat') {
       if (id === 'auto') {
         this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
-        await interaction.update(this.#chatModelMenu(channelId));
+        await this.#edit(interaction, this.#chatModelMenu(channelId));
         return;
       }
-      await interaction.update(this.#chatModelMenu(channelId));
+      await this.#edit(interaction, this.#chatModelMenu(channelId));
       return;
     }
     if (prefix === 'panelchatp') {
-      await interaction.update(await this.#chatProviderModels(channelId, parts.slice(1).join(':')));
+      await this.#edit(interaction, await this.#chatProviderModels(channelId, parts.slice(1).join(':')));
       return;
     }
     if (prefix === 'panelchatm') {
       const providerId = parts[1];
       const modelId = parts.slice(2).join(':');
       this.sessionManager.setChatSelection(channelId, { providerId, model: modelId });
-      await interaction.update({
+      await this.#edit(interaction, {
         content: `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`（不会自动回退）。`,
         components: [panelBackRow()],
       });
@@ -2273,7 +2318,7 @@ export class DiscordControlPlane {
       const providerId = parts.slice(1).join(':');
       const switched = await this.#switchProvider(channelId, providerId);
       const models = await this.#workProviderModels(channelId, providerId);
-      await interaction.update({ ...models, content: clip(`${switched}\n\n${models.content}`) });
+      await this.#edit(interaction, { ...models, content: clip(`${switched}\n\n${models.content}`) });
       return;
     }
     if (prefix === 'panelworkm') {
@@ -2281,47 +2326,40 @@ export class DiscordControlPlane {
       const modelId = parts.slice(2).join(':');
       const state = this.sessionManager.get(channelId);
       if (state.providerId !== providerId) {
-        await interaction.update({ content: '❌ Provider 已变化，请重新选择。', components: [panelBackRow()] });
+        await this.#edit(interaction, { content: '❌ Provider 已变化，请重新选择。', components: [panelBackRow()] });
         return;
       }
       const result = await this.#selectModel(channelId, modelId);
-      await interaction.update({ content: clip(result), components: [panelBackRow()] });
+      await this.#edit(interaction, { content: clip(result), components: [panelBackRow()] });
       return;
     }
     if (prefix === 'workctl') {
-      // `id` is the action, `action` holds the run id (custom id has no more parts).
+      // `id` is the action, `action` holds the run id. `append` was handled
+      // before the ACK because it responds with a Modal.
       const runId = action;
       const run = this.workRuns.get(runId);
       const chain = run ? this.workChains.get(run.channelId) : null;
       const live = Boolean(run && chain && chain.activeRunId === runId);
-      if (!live) {
-        await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+      if (!live || id !== 'stop') {
+        await this.#ephemeral(interaction, '该任务已结束。');
         return;
       }
-      if (id === 'append') {
-        await interaction.showModal(this.#appendModal(runId));
-        return;
-      }
-      if (id === 'stop') {
-        const text = await this.#stopChannel(run.channelId);
-        // Clear the card controls, then report the outcome as a short
-        // ephemeral follow-up so the terminal progress repaint cannot hide it.
-        const base = interaction.message?.content ?? '';
-        await interaction.update({ content: base, components: [] }).catch(() => {});
-        await interaction.followUp({ content: clip(text), ephemeral: true }).catch(() => {});
-        return;
-      }
-      await interaction.reply({ content: '该任务已结束。', ephemeral: true });
+      const text = await this.#stopChannel(run.channelId);
+      // Clear the card controls; the outcome goes out as an ephemeral follow-up
+      // so the terminal progress repaint cannot hide it.
+      const base = interaction.message?.content ?? '';
+      await this.#edit(interaction, { content: base, components: [] }).catch(() => {});
+      await interaction.followUp({ content: clip(text), ephemeral: true }).catch(() => {});
       return;
     }
     if (prefix === 'set') {
       if (id === 'chatauto') {
         this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
-        await interaction.update(this.#settingsPanel(channelId));
+        await this.#edit(interaction, this.#settingsPanel(channelId));
         return;
       }
       if (id === 'permission') {
-        await interaction.update(this.#permissionMenu(channelId));
+        await this.#edit(interaction, this.#permissionMenu(channelId));
         return;
       }
       if (id === 'executor') {
@@ -2332,7 +2370,7 @@ export class DiscordControlPlane {
           disabled: !executor.available,
         }));
         const rows = choiceRows('setexec', items, { current });
-        await interaction.update(rows
+        await this.#edit(interaction, rows
           ? { content: '🛠️ 选择执行器', components: [...rows, settingsBackRow()] }
           : { content: this.#executorText(channelId), components: [settingsBackRow()] });
         return;
@@ -2344,7 +2382,7 @@ export class DiscordControlPlane {
             && (!this.executorManager || this.executorManager.compatible(state.executorId, provider.protocol)))
           .map((provider) => ({ id: provider.id, label: provider.displayName }));
         const rows = choiceRows('setprov', items, { current: state.providerId });
-        await interaction.update(rows
+        await this.#edit(interaction, rows
           ? { content: '🌐 选择 Provider', components: [...rows, settingsBackRow()] }
           : { content: this.#providersText(channelId), components: [settingsBackRow()] });
         return;
@@ -2355,9 +2393,9 @@ export class DiscordControlPlane {
         const models = provider?.models ?? [];
         if (models.length && models.length <= SETTINGS_MODEL_LIMIT) {
           const rows = choiceRows('setmodel', models.map((model) => ({ id: model.id, label: model.id })), { current: state.model });
-          await interaction.update({ content: `🧠 选择模型（${provider.displayName}）`, components: [...rows, settingsBackRow()] });
+          await this.#edit(interaction, { content: `🧠 选择模型（${provider.displayName}）`, components: [...rows, settingsBackRow()] });
         } else {
-          await interaction.update({
+          await this.#edit(interaction, {
             content: `🧠 模型数量较多或未缓存（${models.length}）。请使用 \`!models\` / \`!model <model-id>\`。`,
             components: [settingsBackRow()],
           });
@@ -2365,7 +2403,7 @@ export class DiscordControlPlane {
         return;
       }
       // refresh / back / unknown
-      await interaction.update(this.#settingsPanel(channelId));
+      await this.#edit(interaction, this.#settingsPanel(channelId));
       return;
     }
     if (prefix === 'setexec' || prefix === 'setprov' || prefix === 'setmodel') {
@@ -2374,36 +2412,36 @@ export class DiscordControlPlane {
         : prefix === 'setprov'
           ? await this.#switchProvider(channelId, id)
           : await this.#selectModel(channelId, id);
-      await interaction.update({
+      await this.#edit(interaction, {
         content: clip(`${result}\n\n${this.#settingsPanel(channelId).content}`),
         components: settingsButtons({ workThread: this.#isWorkThread(channelId) }),
       });
       return;
     }
     if (prefix === 'cfg') {
-      if (id === 'executor') await interaction.update({ content: this.#executorText(channelId), components: [] });
-      else if (id === 'provider') await interaction.update({ content: this.#providersText(channelId), components: [] });
-      else if (id === 'model') await interaction.update(await this.#modelsPayload(channelId));
-      else if (id === 'permission') await interaction.update(this.#permissionMenu(channelId));
+      if (id === 'executor') await this.#edit(interaction, { content: this.#executorText(channelId), components: [] });
+      else if (id === 'provider') await this.#edit(interaction, { content: this.#providersText(channelId), components: [] });
+      else if (id === 'model') await this.#edit(interaction, await this.#modelsPayload(channelId));
+      else if (id === 'permission') await this.#edit(interaction, this.#permissionMenu(channelId));
       return;
     }
     if (prefix === 'models') {
-      await interaction.update(await this.#modelsPayload(channelId, id));
+      await this.#edit(interaction, await this.#modelsPayload(channelId, id));
       return;
     }
     if (prefix === 'apiproto') {
       const pending = this.apiOnboarding.get(channelId);
       if (!pending?.credentialRef) {
-        await interaction.reply({ content: 'API 添加请求已过期。', ephemeral: true });
+        await this.#ephemeral(interaction, 'API 添加请求已过期。');
         return;
       }
       try {
         const added = await this.providerManager.completePending(pending, id);
         this.apiOnboarding.delete(channelId);
-        await interaction.update(this.#providerAdded(channelId, added, pending.deleted));
+        await this.#edit(interaction, this.#providerAdded(channelId, added, pending.deleted));
       } catch (error) {
         this.apiOnboarding.delete(channelId);
-        await interaction.update({
+        await this.#edit(interaction, {
           content: `${providerErrorMessage(error)}${pending.deleted ? '' : '\n⚠️ Discord 未允许删除原消息，请立即手动删除。'}`,
           components: [],
         });
@@ -2411,49 +2449,49 @@ export class DiscordControlPlane {
       return;
     }
     if (prefix === 'apiuse') {
-      await interaction.update({ content: await this.#switchProvider(channelId, id), components: [] });
+      await this.#edit(interaction, { content: await this.#switchProvider(channelId, id), components: [] });
       return;
     }
     if (prefix === 'apimodel') {
-      await interaction.update(await this.#modelsPayload(channelId, 1, id));
+      await this.#edit(interaction, await this.#modelsPayload(channelId, 1, id));
       return;
     }
     if (prefix === 'perm') {
       if (id === 'menu') {
-        await interaction.update(this.#permissionMenu(interaction.message.channelId));
+        await this.#edit(interaction, this.#permissionMenu(interaction.message.channelId));
         return;
       }
       if (!Object.values(LEVEL).includes(id)) return;
       const result = await this.#switchPermission(interaction.message.channelId, id);
       if (result.confirmation) {
-        await interaction.update({
+        await this.#edit(interaction, {
           content: '⚠️ **全开放模式**\n\n普通工具调用将自动允许。OWNER 校验、凭据保护、超时、停止和后端校验仍然有效。',
           components: [fullConfirmationButtons()],
         });
         return;
       }
-      await interaction.update({ content: `🔐 当前权限：${PERM_SHORT[result.current]}`, components: [permissionButtons()] });
+      await this.#edit(interaction, { content: `🔐 当前权限：${PERM_SHORT[result.current]}`, components: [permissionButtons()] });
       return;
     }
     if (prefix === 'permfull') {
       if (id === 'cancel') {
-        await interaction.update({ content: `已取消。\n🔐 当前权限：${PERM_SHORT[this.permissionManager.getLevel(interaction.message.channelId)]}`, components: [permissionButtons()] });
+        await this.#edit(interaction, { content: `已取消。\n🔐 当前权限：${PERM_SHORT[this.permissionManager.getLevel(interaction.message.channelId)]}`, components: [permissionButtons()] });
         return;
       }
       if (id === 'confirm') {
         const result = await this.#switchPermission(interaction.message.channelId, LEVEL.FULL, { confirmed: true });
-        await interaction.update({ content: `🔐 当前权限：${PERM_SHORT[result.current]}`, components: [permissionButtons()] });
+        await this.#edit(interaction, { content: `🔐 当前权限：${PERM_SHORT[result.current]}`, components: [permissionButtons()] });
       }
       return;
     }
     if (prefix !== 'ap') return;
     const ok = this.approvalManager.resolve(id, action);
     if (!ok) {
-      await interaction.reply({ content: '审批请求已过期或已处理。', ephemeral: true });
+      await this.#ephemeral(interaction, '审批请求已过期或已处理。');
       return;
     }
     const label = { 'allow-once': APPROVAL_BUTTONS.ALLOW_ONCE, 'allow-session': APPROVAL_BUTTONS.ALLOW_SESSION, deny: APPROVAL_BUTTONS.DENY }[action] || action;
-    await interaction.update({
+    await this.#edit(interaction, {
       content: clip(`${interaction.message.content}\n\n**处理结果：${label}** — <@${interaction.user.id}>`),
       components: [],
     });

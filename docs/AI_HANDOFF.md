@@ -17,7 +17,7 @@ P0/P0.5 + P1 are merged on `main`.
 
 P2 + P2.1 on this branch are implemented and machine-verified:
 
-- `npm test` 240/0 (P2.1 adds `tests/v4-p2-native.test.mjs`, 14 tests)
+- `npm test` 244/0 (P2.1 adds `tests/v4-p2-native.test.mjs`, 18 tests incl. the ACK lifecycle)
 - `npm run check` 85/0
 - `npm run smoke:p2` 11/11
 - real LiteLLM Chat context recall PASS
@@ -30,6 +30,7 @@ Human Discord: `!panel` was confirmed handled locally by the live bridge. Final 
 
 - `src/commands.mjs`: application-command payloads + idempotent registration (no hard-coded IDs).
 - `src/discord-ui.mjs`: chat-input command handler; `workctl:append|stop:<runId>` card controls; `workappend:<runId>` modal; one shared `#stopChannel` (also clears follow-ups); `#appendFollowUp` + `#drainFollowUps` re-enter `runTask`/`WorkspaceScheduler`; natural text in an active Work context queues the same follow-up.
+- Interaction ACK lifecycle: `#acknowledge` (deferReply/deferUpdate) runs before any slow work; `showModal` cases ACK via the modal before that; `#edit`/`#ephemeral` respect deferred/replied and never double-reply; `#interactionContext` uses the same path. This fixed the real `/work` "该应用程序未响应" smoke failure.
 - `src/progress.mjs`: `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep buttons.
 - Behaviour change: the legacy test `a second task is refused while one is running` now asserts P2.1 follow-up queuing (intentional).
 - Registration defaults to global; `DISCORD_COMMANDS_GUILD_ID` optionally enables instant guild-scoped propagation (never hard-coded). `DISCORD_AUTO_REGISTER_COMMANDS=0` disables.
