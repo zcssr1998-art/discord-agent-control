@@ -8,7 +8,7 @@
 /** 任务状态标签。 */
 export const STATE_LABEL = {
   CREATED: '🆕 任务已创建',
-  PLANNING: '🧠 正在规划',
+  PLANNING: '🧠 正在分析任务',
   RUNNING: '🟡 正在执行',
   TESTING: '🧪 正在测试',
   WAITING_APPROVAL: '🔐 等待授权',
@@ -22,21 +22,24 @@ export const STATE_LABEL = {
 /** 工具调用 → 中文描述。 */
 export function describeTool(toolName, toolInput = {}) {
   const input = toolInput || {};
+  const safe = (value, max) => shorten(redact(value), max);
   switch (toolName) {
     case 'Read':
     case 'NotebookRead':
-      return `📖 读取 \`${shorten(input.file_path || input.notebook_path || '?', 50)}\``;
+      return `📖 读取 \`${safe(input.file_path || input.notebook_path || '?', 50)}\``;
     case 'Write':
-      return `✏️ 创建 \`${shorten(input.file_path || '?', 50)}\``;
+      return `✏️ 创建 \`${safe(input.file_path || '?', 50)}\``;
     case 'Edit':
     case 'NotebookEdit':
-      return `✏️ 修改 \`${shorten(input.file_path || input.notebook_path || '?', 50)}\``;
+      return `✏️ 修改 \`${safe(input.file_path || input.notebook_path || '?', 50)}\``;
     case 'Glob':
-      return `🔎 扫描文件 \`${shorten(input.pattern || '?', 40)}\``;
+      return `🔎 扫描文件 \`${safe(input.pattern || '?', 40)}\``;
     case 'Grep':
-      return `🔎 搜索 \`${shorten(input.pattern || '?', 40)}\``;
-    case 'Bash': {
-      const cmd = String(input.command || '');
+      return `🔎 搜索 \`${safe(input.pattern || '?', 40)}\``;
+    case 'Bash':
+    case 'Shell':
+    case 'PowerShell': {
+      const cmd = redact(input.command || '');
       if (/^\s*(npm|pnpm|yarn)\s+(test|run\s+(test|lint|check|build))\b/i.test(cmd)) {
         return `🧪 运行测试 / 检查`;
       }
@@ -50,13 +53,13 @@ export function describeTool(toolName, toolInput = {}) {
       if (/\b(pip|pip3|npm|pnpm|yarn|choco|winget|scoop)\s+(install|add)\b/i.test(cmd)) {
         return `📥 安装依赖`;
       }
-      if (/powershell|pwsh/i.test(cmd)) return `⚙️ 执行 PowerShell`;
-      return `⚙️ 执行命令 \`${shorten(cmd, 60)}\``;
+      if (toolName === 'PowerShell' || /powershell|pwsh/i.test(cmd)) return `⚙️ 执行 PowerShell`;
+      return `⚙️ 执行命令 \`${safe(cmd, 60)}\``;
     }
     case 'WebFetch':
-      return `🌐 获取网页 \`${shorten(input.url || '?', 50)}\``;
+      return `🌐 获取网页 \`${safe(input.url || '?', 50)}\``;
     case 'WebSearch':
-      return `🌐 搜索网络 \`${shorten(input.query || '?', 50)}\``;
+      return `🌐 搜索网络 \`${safe(input.query || '?', 50)}\``;
     case 'Agent':
       return `🤖 调用子代理`;
     case 'Task':
@@ -134,13 +137,15 @@ export function formatStatus({
     `🟢 状态：${state}`,
     `🔐 权限：${permissionLabel}`,
     `🤖 模型：${model ?? 'unknown'}`,
+    `⚙️ 执行器：${executor ?? 'unknown'}`,
     `🌐 后端：${backend ?? 'unknown'}`,
+    `🧾 计费线路：${billingRoute ?? 'unknown'}`,
     `💰 付费回退：${paidFallback ? '已启用' : '已禁用'}`,
     `🧬 apiKeySource：${apiKeySource ?? 'unknown'}`,
     `🧠 会话：\`${sessionId || '新会话'}\``,
   ];
   if (idleSec != null) lines.push(`⏱️ 最后事件：${idleSec}秒前`);
-  lines.push(`🔓 待审批：${pendingApprovals}`);
+  lines.push(`🔐 待审批：${pendingApprovals}`);
   if (blocked) lines.push(`⚠️ ${blocked}`);
   return lines.join('\n');
 }

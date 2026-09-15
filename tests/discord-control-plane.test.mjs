@@ -98,10 +98,11 @@ test('only the configured owner can drive the agent', async () => {
   await fake.sendAsUser({ content: '!status' });
   assert.equal(fake.messages.length, 1, 'owner messages are handled');
   const status = fake.messages[0].content;
-  assert.match(status, /Backend: WorkBuddy Free DSF/);
-  assert.match(status, /Billing route: WorkBuddy Free/);
-  assert.match(status, /Paid fallback: disabled/);
-  assert.match(status, /Model: deepseek-flash\[1m\]/);
+  assert.match(status, /后端：WorkBuddy Free DSF/);
+  assert.match(status, /计费线路：WorkBuddy Free/);
+  assert.match(status, /付费回退：已禁用/);
+  assert.match(status, /模型：deepseek-flash\[1m\]/);
+  assert.ok(fake.messages[0].buttonIds.includes('perm:menu'));
   assert.ok(!/^DeepSeek$/m.test(status), 'the backend must not be reported as a bare "DeepSeek"');
 });
 
@@ -122,10 +123,10 @@ test('a task produces one low-noise status message, not a log flood', async () =
   const status = fake.messages[0];
   assert.ok(status, 'a status message must be created');
   assert.ok(status.edits <= 3, `expected a handful of edits, got ${status.edits} for 21 tool events`);
-  assert.match(status.content, /✅ DONE/);
+  assert.match(status.content, /✅ 已完成/);
   assert.match(status.content, /Added the health endpoint and committed\./);
-  assert.match(status.content, /Tools: Edit ×20 · Bash ×1/);
-  assert.match(status.content, /Tests: passed \(12\)/);
+  assert.match(status.content, /🛠️ 工具调用：21/);
+  assert.match(status.content, /🧪 测试：通过 12/);
 });
 
 test('a second task is refused while one is running', async () => {
@@ -142,7 +143,7 @@ test('a second task is refused while one is running', async () => {
   await fake.sendAsUser({ content: 'task two' });
   await first;
 
-  assert.ok(fake.texts().some((t) => /already running/.test(t)), 'the second task must be refused');
+  assert.ok(fake.texts().some((t) => /已有任务正在运行/.test(t)), 'the second task must be refused');
 });
 
 test('an approval request appears in the channel and the button really resolves it', async () => {
@@ -175,10 +176,14 @@ test('an approval request appears in the channel and the button really resolves 
     approvalMsg.buttonIds.map((id) => id.split(':').pop()).sort(),
     ['allow-once', 'allow-session', 'deny'],
   );
+  assert.deepEqual(
+    approvalMsg.components[0].components.map((button) => button.data.label),
+    ['✅ 仅允许这一次', '✅ 本次会话允许', '❌ 拒绝'],
+  );
   assert.match(approvalMsg.content, /destructive or irreversible shell command/);
 
   const status = fake.messages[0];
-  assert.match(status.content, /🔐 WAITING_APPROVAL/, 'status must show WAITING_APPROVAL while blocked');
+  assert.match(status.content, /🔐 等待授权/, 'status must show WAITING_APPROVAL while blocked');
 
   const onceId = approvalMsg.buttonIds.find((id) => id.endsWith(':allow-once'));
   await fake.clickButton(onceId);
@@ -186,9 +191,9 @@ test('an approval request appears in the channel and the button really resolves 
   assert.equal(answer.decision, 'allow');
   await task;
 
-  assert.match(status.content, /✅ DONE/);
+  assert.match(status.content, /✅ 已完成/);
   assert.match(status.content, /approval=allow/);
-  assert.match(approvalMsg.content, /Decision: ✅ Allow once/);
+  assert.match(approvalMsg.content, /处理结果：✅ 仅允许这一次/);
 });
 
 test('deny from the phone propagates as a deny to the waiting agent', async () => {
@@ -226,7 +231,7 @@ test('a stranger cannot press the approval buttons', async () => {
   assert.ok(btn);
 
   const { interaction } = await fake.clickButton(btn.buttonIds[0], { userId: 'intruder' });
-  assert.match(interaction.replied.content, /Not authorized/);
+  assert.match(interaction.replied.content, /无权执行/);
   assert.equal(approvals.pending.size, 1, 'the request must still be pending');
 
   approvals.cancelForSession(null, 'cleanup');
@@ -254,7 +259,7 @@ test('!stop cancels a pending approval instead of leaving the agent hanging', as
   assert.equal((await pending).decision, 'deny');
   assert.equal(runner.stopped, true);
   await task;
-  assert.ok(fake.texts().some((t) => /Cancelled 1 pending approval/.test(t)));
+  assert.ok(fake.texts().some((t) => /已取消 1 个待审批请求/.test(t)));
 });
 
 test('!reset clears the session and re-arms session approvals', async () => {
@@ -267,7 +272,34 @@ test('!reset clears the session and re-arms session approvals', async () => {
 
   await fake.sendAsUser({ content: '!status' });
   const last = fake.messages[fake.messages.length - 1];
-  assert.match(last.content, /session: `new`/);
+  assert.match(last.content, /会话：`新会话`/);
+});
+
+test('permission commands and buttons share one manager, FULL confirms, reset/cwd restore STANDARD', async () => {
+  const { fake, plane } = makePlane();
+  await plane.start();
+
+  await fake.sendAsUser({ content: '!perm' });
+  const menu = fake.messages.at(-1);
+  assert.deepEqual(menu.buttonIds.sort(), ['perm:full', 'perm:relaxed', 'perm:standard', 'perm:strict']);
+  const labels = menu.components[0].components.map((button) => button.data.label);
+  assert.deepEqual(labels, ['🔒 严格', '🛡️ 标准', '⚡ 放宽', '🔓 全开放']);
+
+  await fake.clickButton('perm:strict');
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'strict');
+  await fake.sendAsUser({ content: '!permission relaxed' });
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'relaxed');
+
+  await fake.sendAsUser({ content: '!perm full' });
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'relaxed', 'FULL must wait for confirmation');
+  await fake.clickButton('permfull:confirm');
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full');
+
+  await fake.sendAsUser({ content: '!reset' });
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'standard');
+  plane.permissionManager.confirmFull(fake.channelId);
+  await fake.sendAsUser({ content: `!cwd ${os.tmpdir()}` });
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'standard');
 });
 
 test('!cwd rejects bad paths and accepts a real absolute path', async () => {
@@ -275,13 +307,13 @@ test('!cwd rejects bad paths and accepts a real absolute path', async () => {
   await plane.start();
 
   await fake.sendAsUser({ content: '!cwd relative/path' });
-  assert.match(fake.messages.at(-1).content, /existing absolute path/);
+  assert.match(fake.messages.at(-1).content, /已存在的绝对路径/);
 
   await fake.sendAsUser({ content: '!cwd C:\\definitely\\not\\here\\nope' });
-  assert.match(fake.messages.at(-1).content, /existing absolute path/);
+  assert.match(fake.messages.at(-1).content, /已存在的绝对路径/);
 
   await fake.sendAsUser({ content: `!cwd ${os.tmpdir()}` });
-  assert.match(fake.messages.at(-1).content, /Bound this Discord channel/);
+  assert.match(fake.messages.at(-1).content, /当前频道已绑定/);
 });
 
 test('!handoff produces a compact escalation package', async () => {
@@ -299,10 +331,10 @@ test('the owner is told the bridge is online, because Discord does not replay of
   await plane.start();
   const dm = fake.messages.find((m) => m.kind === 'dm');
   assert.ok(dm, 'a ready DM must be sent to the owner');
-  assert.match(dm.content, /Bridge ready/);
-  assert.match(dm.content, /Backend: WorkBuddy Free DSF/);
-  assert.match(dm.content, /Billing route: WorkBuddy Free/);
-  assert.match(dm.content, /Paid fallback: DISABLED/);
+  assert.match(dm.content, /Bridge 已就绪/);
+  assert.match(dm.content, /后端：WorkBuddy Free DSF/);
+  assert.match(dm.content, /计费线路：WorkBuddy Free/);
+  assert.match(dm.content, /付费回退：已禁用/);
   assert.equal(fake.ownerDmCount, 1, 'exactly one ready DM, not a stream of them');
 });
 
@@ -313,7 +345,7 @@ test('a failing agent surfaces FAILED instead of a silent success', async () => 
   await plane.start();
   await fake.sendAsUser({ content: 'do something' });
   const status = fake.messages[0];
-  assert.match(status.content, /❌ FAILED/);
+  assert.match(status.content, /❌ 执行失败/);
   assert.match(status.content, /Claude exited code=1/);
 });
 
@@ -373,12 +405,12 @@ test('a wedged agent cannot take the control plane down: !status and !stop still
   const started = Date.now();
   await fake.sendAsUser({ content: '!status' });
   assert.ok(Date.now() - started < 2000, '!status must answer while a task is wedged');
-  assert.ok(fake.texts().some((t) => /state: busy/.test(t)), '!status must report the wedged task');
+  assert.ok(fake.texts().some((t) => /状态：忙碌/.test(t)), '!status must report the wedged task');
 
   await fake.sendAsUser({ content: '!stop' });
   assert.ok(runner.stopped, '!stop must actually kill the agent');
   assert.ok(
-    fake.texts().some((t) => /Stopped the agent process tree|released/.test(t)),
+    fake.texts().some((t) => /已停止 Agent 进程树|任务占用已释放/.test(t)),
     '!stop must confirm the stop',
   );
   assert.equal(plane.tasks.size, 0, 'the busy state must be released by !stop');
@@ -388,7 +420,7 @@ test('a wedged agent cannot take the control plane down: !status and !stop still
   release({ text: 'late result', sessionId: 'sess-1', durationMs: 1, tools: [], isError: false, costUsd: 0 });
   await task;
   assert.ok(
-    fake.messages.some((m) => /⛔ CANCELLED/.test(m.content)),
+    fake.messages.some((m) => /⛔ 已停止/.test(m.content)),
     'the status must land on CANCELLED, never on RUNNING or DONE',
   );
 
@@ -418,7 +450,7 @@ test('a silent agent gets a "still waiting" notice without spending a model call
 
   const status = fake.messages[0];
   assert.match(status.content, /仍在等待 PowerShell/, 'the phone must be told what the agent is stuck on');
-  assert.match(status.content, /Last action: PowerShell/, 'and what it is waiting on');
+  assert.match(status.content, /执行 PowerShell/, 'and what it is waiting on');
   assert.equal(runner.sent.length, 1, 'the watchdog must never send another prompt to the model');
 
   release({ text: 'finally done', sessionId: 'sess-1', durationMs: 1, tools: [], isError: false, costUsd: 0 });
@@ -439,7 +471,7 @@ test('an agent that dies without a result ends FAILED and the channel stays usab
   await plane.start();
 
   await fake.sendAsUser({ content: 'wedge' });
-  assert.match(fake.messages[0].content, /❌ FAILED/, 'a dead agent must produce FAILED, not a permanent RUNNING');
+  assert.match(fake.messages[0].content, /❌ 执行失败/, 'a dead agent must produce FAILED, not a permanent RUNNING');
   assert.equal(plane.tasks.size, 0, 'the task must be released');
 
   await fake.sendAsUser({ content: 'try again' });
@@ -459,4 +491,3 @@ test('shutdown reaps every live agent tree so no orphan PowerShell survives', as
   assert.equal(plane.runners.size, 0);
   assert.equal(plane.tasks.size, 0, 'no task may be left behind on shutdown');
 });
-

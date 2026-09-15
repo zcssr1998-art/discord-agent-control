@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DiscordControlPlane } from '../src/discord-ui.mjs';
 import { ApprovalManager } from '../src/approval-manager.mjs';
+import { PermissionManager } from '../src/permission-manager.mjs';
 import { createHookServer, ensureHookSecret } from '../src/hook-server.mjs';
 import { StateStore } from '../src/state.mjs';
 import { RunLogger } from '../src/logger.mjs';
@@ -122,7 +123,7 @@ function countTranscript(logDir) {
   return stats;
 }
 
-const STATUS_LINE = /^(🆕 TASK CREATED|🧠 PLANNING|🟡 RUNNING|🧪 TESTING|🔐 WAITING_APPROVAL|✅ DONE|❌ FAILED) · /;
+const STATUS_LINE = /^(🆕 任务已创建|🧠 正在分析任务|🟡 正在执行|🧪 正在测试|🔐 等待授权|✅ 已完成|❌ 执行失败|⛔ 已停止|⏱️ 执行超时) · /;
 
 async function waitFor(predicate, { timeoutMs = 300000, intervalMs = 500, label = 'condition' } = {}) {
   const started = Date.now();
@@ -150,9 +151,11 @@ async function main() {
 
   const secret = ensureHookSecret();
   const approvals = new ApprovalManager({ timeoutMs: 180000 });
+  const permissions = new PermissionManager();
   const hookServer = createHookServer({
     config: { defaultCwd: process.cwd(), autoAllowWorkspaceWrites: true, autoAllowTestCommands: true },
     approvalManager: approvals,
+    permissionManager: permissions,
     secret,
   });
   const port = await new Promise((r) => hookServer.listen(0, '127.0.0.1', () => r(hookServer.address().port)));
@@ -182,6 +185,7 @@ async function main() {
     },
     state: new StateStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dac-discord-state-')), 'state.json')),
     approvalManager: approvals,
+    permissionManager: permissions,
     routing,
     logger: new RunLogger(logDir),
     extraEnv,
@@ -201,7 +205,7 @@ async function main() {
     // --- bind the channel to the project, exactly like the phone would ---
     await fake.sendAsUser({ content: `!cwd ${repo}` });
     const bound = fake.messages.at(-1).content;
-    check('D1 !cwd binds the channel to the project', /Bound this Discord channel/.test(bound), bound.split('\n')[0]);
+    check('D1 !cwd binds the channel to the project', /当前频道已绑定/.test(bound), bound.split('\n')[0]);
 
     const taskStartedAt = Date.now();
     const status = await fake.sendAsUser({
@@ -219,8 +223,8 @@ async function main() {
     const statusMessage = status.replies[0];
     check('D2 a live status message was created for the task', Boolean(statusMessage));
 
-    await waitFor(() => /✅ DONE|❌ FAILED/.test(statusMessage?.content || ''), { label: 'terminal task state' });
-    check('D3 the task reached a terminal state', /✅ DONE/.test(statusMessage.content), statusMessage.content.split('\n')[0]);
+    await waitFor(() => /✅ 已完成|❌ 执行失败/.test(statusMessage?.content || ''), { label: 'terminal task state' });
+    check('D3 the task reached a terminal state', /✅ 已完成/.test(statusMessage.content), statusMessage.content.split('\n')[0]);
 
     // real side effects
     const healthPath = path.join(repo, 'src', 'health.mjs');
@@ -257,7 +261,8 @@ async function main() {
     // An edit per meaningful event is fine (each one refreshes the phone); an edit
     // per raw stream line is not. Sparse events each get their own update because
     // the throttle only coalesces bursts.
-    const meaningfulEvents = stats.toolCalls + stats.textBlocks + 5;
+    const watchdogEdits = Math.ceil(Math.max(0, elapsedMs - 30000) / 5000);
+    const meaningfulEvents = stats.toolCalls + stats.textBlocks + watchdogEdits + 5;
     check('D13b edits track meaningful events, not raw stream volume',
       statusMessage.edits <= meaningfulEvents && statusMessage.edits < stats.stdoutLines,
       `${statusMessage.edits} edit(s); ${stats.toolCalls} tool call(s), ${stats.textBlocks} text block(s), ${stats.stdoutLines} raw stream line(s)`);

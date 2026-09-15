@@ -58,15 +58,14 @@ export class RunLimits {
     if (s.consecutiveFailures >= this.maxConsecutiveFailures) {
       return {
         blocked: true,
-        reason: `${s.consecutiveFailures} consecutive failures (limit ${this.maxConsecutiveFailures}). `
-          + `Last error: ${s.lastError}. Fix the cause, then send \`!reset\` to clear this counter.`,
+        reason: `连续失败 ${s.consecutiveFailures} 次（上限 ${this.maxConsecutiveFailures}）。`
+          + `最近错误：${s.lastError}。修复原因后发送 \`!reset\` 清零。`,
       };
     }
     if (s.restarts >= this.maxProcessRestarts) {
       return {
         blocked: true,
-        reason: `the agent process restarted ${s.restarts} times (limit ${this.maxProcessRestarts}). `
-          + 'Send `!reset` to clear this counter.',
+        reason: `Agent 进程已重启 ${s.restarts} 次（上限 ${this.maxProcessRestarts}）。发送 \`!reset\` 清零。`,
       };
     }
     return { blocked: false, reason: null };

@@ -1,13 +1,4 @@
-/**
- * PermissionManager — 四档权限系统的唯一真源。
- *
- * STRICT  → 只读 + 安全 git 操作
- * STANDARD→ 工作区读写 + 测试 + 常规 git（默认）
- * RELAXED → 网络 + 安装 + git push
- * FULL    → 普通工具自动通过（安全边界仍然有效）
- *
- * FULL 仅当前 session 生效，reset / change cwd / bridge 重启自动恢复 STANDARD。
- */
+import { classifyToolCall } from './policy.mjs';
 
 export const LEVEL = {
   STRICT: 'strict',
@@ -33,18 +24,13 @@ export const LEVEL_EMOJI = {
 /** 默认权限档位。 */
 export const DEFAULT_LEVEL = LEVEL.STANDARD;
 
-/** FULL 重置触发条件。 */
-const FULL_RESET_TRIGGERS = new Set(['reset', 'cwd', 'restart']);
-
 export class PermissionManager {
   constructor({ defaultLevel = DEFAULT_LEVEL } = {}) {
     this.defaultLevel = defaultLevel;
     /** 每个 channel 的当前权限档位。 */
     this.levelByChannel = new Map();
-    /** 每个 session 的当前权限档位（用于 hook server 查询）。 */
     this.levelBySession = new Map();
-    /** 每个 channel 是否已确认过 FULL 模式。 */
-    this.fullConfirmedByChannel = new Set();
+    this.channelBySession = new Map();
   }
 
   /** 获取指定 channel 的当前权限档位。 */
@@ -59,6 +45,8 @@ export class PermissionManager {
 
   /** 将 channel 的权限档位同步到 session（任务开始时调用）。 */
   syncSession(sessionId, channelId) {
+    if (!sessionId || !channelId) return;
+    this.channelBySession.set(sessionId, channelId);
     const level = this.getLevel(channelId);
     this.levelBySession.set(sessionId, level);
   }
@@ -66,35 +54,36 @@ export class PermissionManager {
   /** 移除 session 的权限记录。 */
   removeSession(sessionId) {
     this.levelBySession.delete(sessionId);
+    this.channelBySession.delete(sessionId);
   }
 
-  /** 设置指定 channel 的权限档位。 */
-  setLevel(channelId, level) {
-    if (!Object.values(LEVEL).includes(level)) return false;
+  #setLevel(channelId, level) {
     this.levelByChannel.set(channelId, level);
-    return true;
+    for (const [sessionId, ownerChannelId] of this.channelBySession) {
+      if (ownerChannelId === channelId) this.levelBySession.set(sessionId, level);
+    }
   }
 
   /** 切换档位。返回 { ok, previous, current, needsConfirm, changed }。 */
   switchLevel(channelId, level) {
     const previous = this.getLevel(channelId);
+    if (!Object.values(LEVEL).includes(level)) {
+      return { ok: false, previous, current: previous, needsConfirm: false, changed: false };
+    }
     if (previous === level) return { ok: true, previous, current: level, needsConfirm: false, changed: false };
 
     if (level === LEVEL.FULL) {
-      if (!this.fullConfirmedByChannel.has(channelId)) {
-        return { ok: false, previous, current: previous, needsConfirm: true, changed: false };
-      }
+      return { ok: false, previous, current: previous, needsConfirm: true, changed: false };
     }
 
-    this.levelByChannel.set(channelId, level);
+    this.#setLevel(channelId, level);
     return { ok: true, previous, current: level, needsConfirm: false, changed: true };
   }
 
   /** 确认 FULL 模式（二次确认后调用）。 */
   confirmFull(channelId) {
-    this.fullConfirmedByChannel.add(channelId);
     const previous = this.getLevel(channelId);
-    this.levelByChannel.set(channelId, LEVEL.FULL);
+    this.#setLevel(channelId, LEVEL.FULL);
     return { ok: true, previous, current: LEVEL.FULL, changed: previous !== LEVEL.FULL };
   }
 
@@ -102,9 +91,15 @@ export class PermissionManager {
   reset(channelId, reason = 'reset') {
     const previous = this.getLevel(channelId);
     this.levelByChannel.delete(channelId);
-    this.fullConfirmedByChannel.delete(channelId);
+    for (const [sessionId, ownerChannelId] of [...this.channelBySession]) {
+      if (ownerChannelId === channelId) this.removeSession(sessionId);
+    }
     const current = this.getLevel(channelId);
     return { previous, current, changed: previous !== current, reason };
+  }
+
+  classify({ sessionId, ...toolCall }) {
+    return classifyToolCall({ ...toolCall, permissionLevel: this.getLevelBySession(sessionId) });
   }
 
   /** 当前档位是否属于指定档位或更宽松。 */

@@ -13,19 +13,42 @@ import {
 import path from 'node:path';
 import fs from 'node:fs';
 import { ClaudeRunner } from './claude-runner.mjs';
-import { TaskProgress, ThrottledEditor, STATE, describeToolCall } from './progress.mjs';
+import { ThrottledEditor, STATE } from './progress.mjs';
+import { EventPresenter } from './event-presenter.mjs';
 import { describeRouting } from './win-env.mjs';
 import { discordRestAgent } from './discord-proxy.mjs';
 import { classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
 import { withTimeout } from './limits.mjs';
-import { PermissionManager, LEVEL, LEVEL_LABEL } from './permission-manager.mjs';
-import { helpText, readyText, formatStatus, APPROVAL_BUTTONS, PERM_LABEL, PERM_SHORT, shorten } from './i18n.mjs';
+import { PermissionManager, LEVEL } from './permission-manager.mjs';
+import { helpText, readyText, formatStatus, APPROVAL_BUTTONS, PERM_LABEL, PERM_SHORT, redact } from './i18n.mjs';
 
 const DISCORD_LIMIT = 1900;
 
 function clip(text, n = DISCORD_LIMIT) {
   const s = String(text ?? '');
   return s.length <= n ? s : `${s.slice(0, n - 20)}\n…(truncated)`;
+}
+
+function permissionButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('perm:strict').setLabel(PERM_LABEL.strict).setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('perm:standard').setLabel(PERM_LABEL.standard).setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('perm:relaxed').setLabel(PERM_LABEL.relaxed).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('perm:full').setLabel(PERM_LABEL.full).setStyle(ButtonStyle.Danger),
+  );
+}
+
+function permissionMenuButton() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('perm:menu').setLabel('🔐 权限设置').setStyle(ButtonStyle.Secondary),
+  );
+}
+
+function fullConfirmationButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('permfull:confirm').setLabel('确认全开放').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('permfull:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary),
+  );
 }
 
 export class DiscordControlPlane {
@@ -163,16 +186,7 @@ export class DiscordControlPlane {
 
     const task = this.tasks.get(channelId);
     if (!task) return;
-    if (event.type === 'tool') {
-      task.progress.recordTool(event.tool);
-      task.schedule();
-    } else if (event.type === 'text') {
-      task.progress.recordText(event.text);
-      task.schedule();
-    } else if (event.type === 'retry') {
-      task.progress.recordRetry(event);
-      task.schedule();
-    }
+    if (task.progress.record(event)) task.schedule();
   }
 
   /**
@@ -222,6 +236,31 @@ export class DiscordControlPlane {
     });
   }
 
+  #permissionMenu(channelId) {
+    const level = this.permissionManager.getLevel(channelId);
+    return {
+      content: `🔐 当前权限：${PERM_SHORT[level]}\n\n请选择权限档位：`,
+      components: [permissionButtons()],
+    };
+  }
+
+  async #refreshTaskPermission(channelId, level) {
+    const task = this.tasks.get(channelId);
+    if (!task) return;
+    task.progress.setPermissionLabel(PERM_SHORT[level]);
+    await task.editor.flushNow(task.progress.render());
+  }
+
+  async #switchPermission(channelId, level, { confirmed = false } = {}) {
+    const result = confirmed
+      ? this.permissionManager.confirmFull(channelId)
+      : this.permissionManager.switchLevel(channelId, level);
+    if (result.needsConfirm) return { ...result, confirmation: true };
+    if (!result.ok) return result;
+    await this.#refreshTaskPermission(channelId, result.current);
+    return result;
+  }
+
   async onMessage(message) {
     if (!this.allowedMessage(message)) return;
     const text = message.content.trim();
@@ -232,7 +271,29 @@ export class DiscordControlPlane {
       return;
     }
     if (text === '!status') {
-      await message.reply(clip(this.#statusLine(message.channelId)));
+      await message.reply({ content: clip(this.#statusLine(message.channelId)), components: [permissionMenuButton()] });
+      return;
+    }
+    const permissionCommand = text.toLowerCase().match(/^!(?:perm|permission)(?:\s+(\S+))?$/);
+    if (permissionCommand) {
+      const requested = permissionCommand[1];
+      if (!requested) {
+        await message.reply(this.#permissionMenu(message.channelId));
+        return;
+      }
+      if (!Object.values(LEVEL).includes(requested)) {
+        await message.reply('未知权限档位。可用值：`strict`、`standard`、`relaxed`、`full`。');
+        return;
+      }
+      const result = await this.#switchPermission(message.channelId, requested);
+      if (result.confirmation) {
+        await message.reply({
+          content: '⚠️ **全开放模式**\n\n普通工具调用将自动允许。OWNER 校验、凭据保护、超时、停止和后端校验仍然有效。',
+          components: [fullConfirmationButtons()],
+        });
+        return;
+      }
+      await message.reply(`🔐 当前权限：${PERM_SHORT[result.current]}`);
       return;
     }
     if (text === '!stop') {
@@ -246,7 +307,7 @@ export class DiscordControlPlane {
       const cancelled = this.approvalManager.cancelForSession(sessionId, 'stopped from Discord');
       if (task) {
         task.cancelled = true;
-        task.progress.setState(STATE.CANCELLED, 'stopped by owner');
+        task.progress.setState(STATE.CANCELLED, '已由 OWNER 停止');
         task.schedule();
       }
       const killed = (runner && await runner.stop({ reason: 'stopped by owner (!stop)' })) || { killed: false, pid: null };
@@ -254,10 +315,10 @@ export class DiscordControlPlane {
       if (task) await task.finish();
       await message.reply([
         killed.pid
-          ? `⛔ Stopped the agent process tree (pid ${killed.pid}).`
-          : '⛔ No agent process was running; the task is released.',
-        `Cancelled ${cancelled} pending approval(s).`,
-        'Send `!status` to confirm, or a new task to continue.',
+          ? `⛔ 已停止 Agent 进程树（pid ${killed.pid}）。`
+          : '⛔ 当前没有 Agent 进程；任务占用已释放。',
+        `已取消 ${cancelled} 个待审批请求。`,
+        '可发送 `!status` 确认，或直接发送新任务。',
       ].join('\n'));
       return;
     }
@@ -272,10 +333,11 @@ export class DiscordControlPlane {
       this.approvalManager.cancelForSession(sessionId, 'session reset');
       this.approvalManager.clearSessionAllows(sessionId);
       if (sessionId) this.channelBySession.delete(sessionId);
+      this.permissionManager.reset(message.channelId, 'reset');
       this.limits?.reset(message.channelId);
       this.backendVerdictByChannel.delete(message.channelId);
       this.state.patchChannel(message.channelId, { sessionId: null }, this.config.defaultCwd);
-      await message.reply('Session reset. Next task starts a fresh session; failure/restart counters cleared.');
+      await message.reply('✅ 会话已重置。下一个任务将使用新会话，权限已恢复为 🛡️ 标准，失败/重启计数已清零。');
       return;
     }
     if (text === '!handoff') {
@@ -290,7 +352,7 @@ export class DiscordControlPlane {
         `当前状态: ${last?.progress?.state || 'idle'}`,
         `最近动作: ${last?.progress?.lastAction || '-'}`,
         `测试: ${last?.progress?.tests || '-'}`,
-        `最近错误: ${runner?.lastError?.message || '-'}`,
+        `最近错误: ${redact(runner?.lastError?.message || '-')}`,
         '需要判断: <填写>',
         '```',
       ];
@@ -300,19 +362,24 @@ export class DiscordControlPlane {
     if (text.startsWith('!cwd ')) {
       const requested = text.slice(5).trim().replace(/^"(.*)"$/s, '$1');
       if (!path.isAbsolute(requested) || !fs.existsSync(requested)) {
-        await message.reply('Path must be an existing absolute path on the Windows machine running the bridge.');
+        await message.reply('路径必须是 Bridge 所在 Windows 机器上已存在的绝对路径。');
         return;
       }
+      const oldSessionId = this.state.getChannel(message.channelId, this.config.defaultCwd).sessionId;
       const old = this.runners.get(message.channelId);
       if (old) await old.stop();
       this.runners.delete(message.channelId);
+      this.approvalManager.cancelForSession(oldSessionId, 'project changed');
+      this.approvalManager.clearSessionAllows(oldSessionId);
+      if (oldSessionId) this.channelBySession.delete(oldSessionId);
+      this.permissionManager.reset(message.channelId, 'cwd');
       this.state.patchChannel(message.channelId, { cwd: requested, sessionId: null, model: null }, this.config.defaultCwd);
-      await message.reply(`Bound this Discord channel to \`${requested}\`.\nSession cleared so the previous project's context cannot leak in.`);
+      await message.reply(`✅ 当前频道已绑定到 \`${requested}\`。\n会话已清除，权限已恢复为 🛡️ 标准。`);
       return;
     }
 
     if (this.tasks.has(message.channelId) || this.runners.get(message.channelId)?.busy) {
-      await message.reply('A task is already running in this channel. Use `!stop` first.');
+      await message.reply('当前频道已有任务正在运行。如需中止，请先发送 `!stop`。');
       return;
     }
 
@@ -320,7 +387,7 @@ export class DiscordControlPlane {
     // burns tokens unattended.
     const blocked = this.limits?.blocked(message.channelId);
     if (blocked?.blocked) {
-      await message.reply(`⛔ Refusing to start: ${blocked.reason}`);
+      await message.reply(`⛔ 拒绝启动：${redact(blocked.reason)}`);
       return;
     }
 
@@ -331,7 +398,11 @@ export class DiscordControlPlane {
     const channelId = message.channelId;
     const chState = this.state.getChannel(channelId, this.config.defaultCwd);
 
-    const progress = new TaskProgress({ cwd: chState.cwd });
+    const level = this.permissionManager.getLevel(channelId);
+    const progress = new EventPresenter({
+      cwd: chState.cwd,
+      model: chState.model || this.backendState?.backend?.model || 'unknown',
+    }).setPermissionLabel(PERM_SHORT[level]);
     const statusMessage = await message.reply(progress.render());
     const editor = new ThrottledEditor({
       intervalMs: this.config.progressThrottleMs,
@@ -361,10 +432,14 @@ export class DiscordControlPlane {
     this.tasks.set(channelId, task);
 
     const runner = this.getRunner(channelId);
-    if (runner.sessionId) this.channelBySession.set(runner.sessionId, channelId);
+    if (runner.sessionId) {
+      this.channelBySession.set(runner.sessionId, channelId);
+      this.permissionManager.syncSession(runner.sessionId, channelId);
+    }
+    progress.setModel(runner.model || progress.model);
     progress.setState(STATE.PLANNING);
     await editor.flushNow(progress.render());
-    console.log(`[task] start channel=${channelId} cwd=${chState.cwd} prompt=${clip(prompt, 140).replace(/\n/g, ' ⏎ ')}`);
+    console.log(`[task] start channel=${channelId} cwd=${chState.cwd} prompt=${clip(redact(prompt), 140).replace(/\n/g, ' ⏎ ')}`);
 
     // Watchdog. It only repaints the existing status message: it never calls the
     // model and never touches the agent process, so a wedged PowerShell/Agent
@@ -408,31 +483,36 @@ export class DiscordControlPlane {
       }
       console.log(`[task] done channel=${channelId} state=${progress.state} tools=${result.tools.length} durationMs=${result.durationMs} tests=${progress.tests || '-'}`);
       const extras = [
-        result.costUsd != null ? `Cost: $${result.costUsd.toFixed(4)}` : null,
-        runLog.path ? `Log: \`${path.basename(runLog.path)}\`` : null,
+        runLog.path ? `日志：\`${path.basename(runLog.path)}\`` : null,
       ].filter(Boolean).join(' · ');
+      progress.costUsd = result.costUsd ?? 0;
       // progress.render() already carries the state, project, last action, test
       // result and tool histogram — reuse it instead of rebuilding the summary.
       const body = [
         progress.render(),
         extras || null,
         '',
-        clip(result.text || '(no final text)', 1200),
+        clip(redact(result.text || '（无最终文本）'), 1200),
       ].filter((line) => line !== null).join('\n');
       await editor.flushNow(body);
     } catch (error) {
-      const detail = String(error?.message || error);
+      const detail = redact(error?.message || error);
       // A run that ends because the owner stopped it, the wall-clock cap fired,
       // or the agent died mid-flight must land on a terminal state. Leaving it
       // on RUNNING was the original bug: the channel stayed "busy" forever.
       const cancelled = task.cancelled || error?.code === 'TASK_CANCELLED';
       if (cancelled) {
         progress.clearStall();
-        progress.setState(STATE.CANCELLED, 'stopped by owner');
+        progress.setState(STATE.CANCELLED, '已由 OWNER 停止');
         console.log(`[task] cancelled channel=${channelId} reason=${detail}`);
+      } else if (error?.code === 'TASK_TIMEOUT') {
+        progress.clearStall();
+        progress.setState(STATE.TIMEOUT, '任务达到时间上限');
+        const failures = this.limits?.noteFailure(channelId, error);
+        console.log(`[task] timeout channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
       } else {
         progress.clearStall();
-        progress.setState(STATE.FAILED, 'agent run failed');
+        progress.setState(STATE.FAILED, 'Agent 执行失败');
         const failures = this.limits?.noteFailure(channelId, error);
         console.log(`[task] failed channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
       }
@@ -453,19 +533,19 @@ export class DiscordControlPlane {
     }
 
     const buttons = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ap:${req.id}:allow-once`).setLabel('Allow once').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`ap:${req.id}:allow-session`).setLabel('Allow session').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`ap:${req.id}:deny`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`ap:${req.id}:allow-once`).setLabel(APPROVAL_BUTTONS.ALLOW_ONCE).setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`ap:${req.id}:allow-session`).setLabel(APPROVAL_BUTTONS.ALLOW_SESSION).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`ap:${req.id}:deny`).setLabel(APPROVAL_BUTTONS.DENY).setStyle(ButtonStyle.Danger),
     );
 
     const body = [
-      '🔐 **Agent requests permission**',
-      `Tool: **${req.toolName}**`,
-      `Project: \`${req.cwd}\``,
-      `Reason: ${req.reason}`,
+      '🔐 **Agent 请求授权**',
+      `工具：**${req.toolName}**`,
+      `项目：\`${redact(req.cwd)}\``,
+      `原因：${redact(req.reason)}`,
       '',
       '```json',
-      clip(JSON.stringify(req.toolInput ?? {}, null, 2), 700),
+      clip(redact(JSON.stringify(req.toolInput ?? {}, null, 2)), 700),
       '```',
     ].join('\n');
 
@@ -488,19 +568,47 @@ export class DiscordControlPlane {
   async onInteraction(interaction) {
     if (!interaction.isButton()) return;
     if (interaction.user.id !== this.config.ownerId) {
-      await interaction.reply({ content: 'Not authorized.', ephemeral: true });
+      await interaction.reply({ content: '无权执行此操作。', ephemeral: true });
       return;
     }
     const [prefix, id, action] = interaction.customId.split(':');
+    if (prefix === 'perm') {
+      if (id === 'menu') {
+        await interaction.update(this.#permissionMenu(interaction.message.channelId));
+        return;
+      }
+      if (!Object.values(LEVEL).includes(id)) return;
+      const result = await this.#switchPermission(interaction.message.channelId, id);
+      if (result.confirmation) {
+        await interaction.update({
+          content: '⚠️ **全开放模式**\n\n普通工具调用将自动允许。OWNER 校验、凭据保护、超时、停止和后端校验仍然有效。',
+          components: [fullConfirmationButtons()],
+        });
+        return;
+      }
+      await interaction.update({ content: `🔐 当前权限：${PERM_SHORT[result.current]}`, components: [permissionButtons()] });
+      return;
+    }
+    if (prefix === 'permfull') {
+      if (id === 'cancel') {
+        await interaction.update({ content: `已取消。\n🔐 当前权限：${PERM_SHORT[this.permissionManager.getLevel(interaction.message.channelId)]}`, components: [permissionButtons()] });
+        return;
+      }
+      if (id === 'confirm') {
+        const result = await this.#switchPermission(interaction.message.channelId, LEVEL.FULL, { confirmed: true });
+        await interaction.update({ content: `🔐 当前权限：${PERM_SHORT[result.current]}`, components: [permissionButtons()] });
+      }
+      return;
+    }
     if (prefix !== 'ap') return;
     const ok = this.approvalManager.resolve(id, action);
     if (!ok) {
-      await interaction.reply({ content: 'Approval request expired or already handled.', ephemeral: true });
+      await interaction.reply({ content: '审批请求已过期或已处理。', ephemeral: true });
       return;
     }
-    const label = { 'allow-once': '✅ Allow once', 'allow-session': '✅ Allow session', deny: '⛔ Deny' }[action] || action;
+    const label = { 'allow-once': APPROVAL_BUTTONS.ALLOW_ONCE, 'allow-session': APPROVAL_BUTTONS.ALLOW_SESSION, deny: APPROVAL_BUTTONS.DENY }[action] || action;
     await interaction.update({
-      content: clip(`${interaction.message.content}\n\n**Decision: ${label}** — by <@${interaction.user.id}>`),
+      content: clip(`${interaction.message.content}\n\n**处理结果：${label}** — <@${interaction.user.id}>`),
       components: [],
     });
   }

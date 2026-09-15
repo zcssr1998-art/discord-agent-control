@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classifyToolCall } from './policy.mjs';
+import { PermissionManager } from './permission-manager.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const secretPath = path.resolve(__dirname, '..', 'data', 'hook-secret');
@@ -37,7 +37,7 @@ function hookBody(decision, reason) {
   };
 }
 
-export function createHookServer({ config, approvalManager, secret, permissionManager = null }) {
+export function createHookServer({ config, approvalManager, secret, permissionManager = new PermissionManager() }) {
   return http.createServer(async (req, res) => {
     if (req.method !== 'POST' || req.url !== '/pre-tool-use') {
       json(res, 404, { error: 'not found' });
@@ -65,11 +65,14 @@ export function createHookServer({ config, approvalManager, secret, permissionMa
     const toolInput = event.tool_input || event.toolInput || {};
     const cwd = event.cwd || config.defaultCwd;
     const sessionId = event.session_id || event.sessionId || 'unknown';
-    const permissionLevel = permissionManager?.getLevelBySession(sessionId) || 'standard';
-    const classified = classifyToolCall({ toolName, toolInput, cwd, config, permissionLevel });
+    const classified = permissionManager.classify({ sessionId, toolName, toolInput, cwd });
 
     if (classified.decision === 'allow') {
       json(res, 200, hookBody('allow', classified.reason));
+      return;
+    }
+    if (classified.decision === 'deny') {
+      json(res, 200, hookBody('deny', classified.reason));
       return;
     }
 

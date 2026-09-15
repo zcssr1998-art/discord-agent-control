@@ -1,12 +1,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'TodoRead']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 const NETWORK_TOOLS = new Set(['WebFetch', 'WebSearch']);
+const SHELL_TOOLS = new Set(['Bash', 'Shell', 'PowerShell']);
 
 const SENSITIVE_PATH_PATTERNS = [
-  /[\\/]\.env($|\.)/i,
+  /(^|[\\/])\.env($|\.)/i,
   /[\\/]\.ssh([\\/]|$)/i,
   /[\\/]\.aws([\\/]|$)/i,
   /[\\/]\.config[\\/]gh([\\/]|$)/i,
@@ -15,8 +17,7 @@ const SENSITIVE_PATH_PATTERNS = [
   /id_(rsa|ed25519)/i,
 ];
 
-/** 真正不可逆/危险操作 — 所有模式（除 FULL）都审批。 */
-const DESTRUCTIVE_BASH = [
+const DESTRUCTIVE_SHELL = [
   /(^|[;&|]\s*)rm\s+-/i,
   /\bdel\s+\/([fq]|s)/i,
   /\brmdir\s+\/s/i,
@@ -29,23 +30,36 @@ const DESTRUCTIVE_BASH = [
   /\bsc\s+(delete|stop)\b/i,
 ];
 
-const NETWORK_BASH = [
-  /\b(curl|wget|Invoke-WebRequest|iwr|ssh|scp|sftp)\b/i,
+const SYSTEM_OR_CREDENTIAL_SHELL = [
+  /\b(ssh|scp|sftp)\b/i,
+  /\b(Set-ExecutionPolicy|Set-ItemProperty|New-Service|Set-Service)\b/i,
+  /\b(reg\s+(add|import)|sc\s+(create|config)|bcdedit|mount|umount)\b/i,
+  /(^|[\\/])\.env($|\.)/i,
+  /(^|[\\/])\.ssh([\\/]|$)/i,
+  /\b(credentials?|secrets?|id_(rsa|ed25519))\b/i,
+];
+
+const NETWORK_SHELL = [
+  /\b(curl|wget|Invoke-WebRequest|iwr)\b/i,
   /\b(npm|pnpm|yarn)\s+(install|add|publish)\b/i,
   /\b(pip|pip3)\s+install\b/i,
   /\b(choco|winget|scoop)\s+(install|uninstall|upgrade)\b/i,
 ];
 
-const SAFE_BASH = [
+const READ_ONLY_SHELL = [
   /^\s*(pwd|cd\s+[^;&|]+|dir|ls(?:\s|$)|where\s+|which\s+)/i,
-  /(^|[;&|]\s*)git\s+(status|diff|log|show|branch|add|commit|rev-parse|ls-files|describe|blame|shortlog)\b/i,
-  /(^|[;&|]\s*)git\s+(checkout\s+-b|switch\s+-c)\s+\S+/i,
+  /(^|[;&|]\s*)git\s+(status|diff|log|show|branch|rev-parse|ls-files|describe|blame|shortlog)\b/i,
   /(^|[;&|]\s*)git\s+(remote\s+-v|tag(?:\s+-l)?|stash\s+list)\s*$/i,
-  /(^|[;&|]\s*)(rg|grep|findstr|type|cat|Get-Content)\b/i,
+  /(^|[;&|]\s*)(rg|grep|findstr|type|cat|Get-Content|Get-ChildItem|Get-Item|Test-Path)\b/i,
   /(^|[;&|]\s*)(node|npm|pnpm|yarn)\s+(--version|-v)\s*$/i,
 ];
 
-const TEST_BASH = [
+const STANDARD_GIT_SHELL = [
+  /(^|[;&|]\s*)git\s+(add|commit)\b/i,
+  /(^|[;&|]\s*)git\s+(checkout\s+-b|switch\s+-c)\s+\S+/i,
+];
+
+const TEST_SHELL = [
   /^\s*(npm|pnpm|yarn)\s+(test|run\s+(test|lint|check|build))\b/i,
   /^\s*(pytest|python\s+-m\s+pytest|dotnet\s+test|cargo\s+test|go\s+test)\b/i,
 ];
@@ -84,7 +98,7 @@ function normalize(p) {
 }
 
 export function isTestCommand(command) {
-  return TEST_BASH.some((re) => re.test(String(command || '')));
+  return TEST_SHELL.some((re) => re.test(String(command || '')));
 }
 
 export function isTestToolName(toolName) {
@@ -101,16 +115,55 @@ function filePathFromInput(input = {}) {
   return input.file_path || input.path || input.notebook_path || null;
 }
 
+function sensitivePath(value) {
+  const candidate = String(value || '');
+  if (!candidate || /(^|[\\/])\.env\.example$/i.test(candidate)) return false;
+  return SENSITIVE_PATH_PATTERNS.some((re) => re.test(candidate));
+}
+
+function stagedSecretRisk(cwd) {
+  const result = spawnSync('git', ['diff', '--cached', '--unified=0', '--no-color'], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 3000,
+    windowsHide: true,
+  });
+  if (result.status !== 0) return false;
+  const added = String(result.stdout || '').split(/\r?\n/).filter((line) => /^\+(?!\+\+)/.test(line)).join('\n');
+  return /(?:token|secret|api[_-]?key|authorization|cookie)\s*[:=]\s*["'][^"']{12,}["']/i.test(added)
+    || /bearer\s+[A-Za-z0-9._~+/-]{16,}/i.test(added);
+}
+
+function commandTouchesSensitivePath(command) {
+  const tokens = String(command || '').match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  return tokens.some((token) => sensitivePath(token.replace(/^["']|["']$/g, '')));
+}
+
+function secretGitRisk(command, cwd) {
+  if (/\bgit\s+add\b/i.test(command) && commandTouchesSensitivePath(command)) return true;
+  return /\bgit\s+commit\b/i.test(command) && stagedSecretRisk(cwd);
+}
+
 /**
  * 根据工具名、输入和权限档位决定是否需要审批。
  *
  * @param {string} permissionLevel - 'strict' | 'standard' | 'relaxed' | 'full'
  */
-export function classifyToolCall({ toolName, toolInput = {}, cwd, config, permissionLevel = 'standard' }) {
-  // FULL: 所有工具自动通过（安全边界由 bridge 层维护）
-  if (permissionLevel === 'full') {
-    return { decision: 'allow', reason: 'FULL mode', ruleKey: 'full' };
+export function classifyToolCall({ toolName, toolInput = {}, cwd, permissionLevel = 'standard' }) {
+  const targetPath = filePathFromInput(toolInput);
+  if (targetPath && sensitivePath(targetPath)) {
+    return { decision: 'ask', reason: 'sensitive file access', ruleKey: 'sensitive-file' };
   }
+
+  const command = String(toolInput.command || '');
+  if (SHELL_TOOLS.has(toolName) && secretGitRisk(command, cwd)) {
+    return { decision: 'deny', reason: 'secret-like content must not be committed', ruleKey: 'secret-git' };
+  }
+  if (SHELL_TOOLS.has(toolName) && commandTouchesSensitivePath(command)) {
+    return { decision: 'ask', reason: 'sensitive file access', ruleKey: 'sensitive-file' };
+  }
+
+  if (permissionLevel === 'full') return { decision: 'allow', reason: 'FULL mode', ruleKey: 'full' };
 
   if (READ_ONLY_TOOLS.has(toolName)) {
     return { decision: 'allow', reason: 'read-only tool', ruleKey: 'read-only' };
@@ -124,9 +177,6 @@ export function classifyToolCall({ toolName, toolInput = {}, cwd, config, permis
     const p = filePathFromInput(toolInput);
     if (!p) return { decision: 'ask', reason: 'write target unknown', ruleKey: 'write-unknown' };
     const absolute = path.isAbsolute(p) ? p : path.resolve(cwd, p);
-    if (SENSITIVE_PATH_PATTERNS.some((re) => re.test(absolute))) {
-      return { decision: 'ask', reason: `sensitive file`, ruleKey: 'write-sensitive' };
-    }
     if (!inside(cwd, absolute)) {
       return { decision: 'ask', reason: `write outside workspace`, ruleKey: 'write-outside' };
     }
@@ -134,19 +184,18 @@ export function classifyToolCall({ toolName, toolInput = {}, cwd, config, permis
     if (permissionLevel === 'strict') {
       return { decision: 'ask', reason: 'workspace write (STRICT)', ruleKey: 'write-workspace' };
     }
-    if (config.autoAllowWorkspaceWrites) {
-      return { decision: 'allow', reason: 'workspace write', ruleKey: 'write-workspace' };
-    }
-    return { decision: 'ask', reason: `workspace write`, ruleKey: 'write-workspace' };
+    return { decision: 'allow', reason: 'workspace write', ruleKey: 'write-workspace' };
   }
 
-  if (toolName === 'Bash') {
-    const command = String(toolInput.command || '');
+  if (SHELL_TOOLS.has(toolName)) {
     if (!command) return { decision: 'ask', reason: 'shell command missing', ruleKey: 'bash-unknown' };
 
-    // 真正不可逆操作：所有非 FULL 模式都审批
-    if (DESTRUCTIVE_BASH.some((re) => re.test(command))) {
+    if (DESTRUCTIVE_SHELL.some((re) => re.test(command))) {
       return { decision: 'ask', reason: 'destructive or irreversible shell command', ruleKey: 'bash-destructive' };
+    }
+
+    if (SYSTEM_OR_CREDENTIAL_SHELL.some((re) => re.test(command))) {
+      return { decision: 'ask', reason: 'system, SSH, or credential access', ruleKey: 'bash-sensitive' };
     }
 
     // git push：RELAXED 自动通过
@@ -158,33 +207,25 @@ export function classifyToolCall({ toolName, toolInput = {}, cwd, config, permis
     }
 
     // 网络/安装命令
-    if (NETWORK_BASH.some((re) => re.test(command))) {
+    if (NETWORK_SHELL.some((re) => re.test(command))) {
       if (permissionLevel === 'relaxed') {
         return { decision: 'allow', reason: 'network/install shell command', ruleKey: 'bash-network' };
       }
       return { decision: 'ask', reason: 'network/install/publish shell command', ruleKey: 'bash-network' };
     }
 
-    // 安全命令：所有模式自动通过
-    if (SAFE_BASH.some((re) => re.test(command))) {
+    if (READ_ONLY_SHELL.some((re) => re.test(command))) {
       return { decision: 'allow', reason: 'read-only shell command', ruleKey: 'bash-read' };
     }
 
-    // 测试命令
-    if (TEST_BASH.some((re) => re.test(command))) {
-      if (permissionLevel === 'strict') {
-        return { decision: 'ask', reason: 'test command (STRICT)', ruleKey: 'bash-test' };
-      }
-      if (config.autoAllowTestCommands) {
-        return { decision: 'allow', reason: 'test/build command', ruleKey: 'bash-test' };
-      }
-      return { decision: 'ask', reason: 'test/build command', ruleKey: 'bash-test' };
+    if (permissionLevel === 'strict') {
+      const ruleKey = TEST_SHELL.some((re) => re.test(command)) ? 'bash-test' : 'bash-other';
+      return { decision: 'ask', reason: 'shell command requires approval in STRICT', ruleKey };
     }
 
-    // 未分类命令
-    if (permissionLevel === 'strict') {
-      return { decision: 'ask', reason: 'unclassified shell command (STRICT)', ruleKey: 'bash-other' };
-    }
+    if (TEST_SHELL.some((re) => re.test(command))) return { decision: 'allow', reason: 'test/build command', ruleKey: 'bash-test' };
+    if (STANDARD_GIT_SHELL.some((re) => re.test(command))) return { decision: 'allow', reason: 'local git command', ruleKey: 'bash-git' };
+    if (permissionLevel === 'relaxed') return { decision: 'allow', reason: 'ordinary shell command', ruleKey: 'bash-other' };
     return { decision: 'ask', reason: 'unclassified shell command', ruleKey: 'bash-other' };
   }
 
@@ -193,6 +234,12 @@ export function classifyToolCall({ toolName, toolInput = {}, cwd, config, permis
       return { decision: 'allow', reason: 'network access', ruleKey: 'network' };
     }
     return { decision: 'ask', reason: 'network access', ruleKey: 'network' };
+  }
+
+  if (isTestToolName(toolName)) {
+    return permissionLevel === 'strict'
+      ? { decision: 'ask', reason: 'test tool requires approval in STRICT', ruleKey: 'test-tool' }
+      : { decision: 'allow', reason: 'test tool', ruleKey: 'test-tool' };
   }
 
   if (toolName?.startsWith('mcp__')) {

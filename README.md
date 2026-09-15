@@ -69,6 +69,8 @@ Paid fallback: disabled
 | --- | --- |
 | _any text_ | run it as a task in the bound project |
 | `!status` | executor / backend / model / billing route / cwd / session / busy-idle |
+| `!perm` / `!permission` | 查看四档权限菜单 |
+| `!perm strict\|standard\|relaxed\|full` | 切换权限；FULL 需要二次确认 |
 | `!cwd <absolute path>` | bind this Discord channel to a project (clears the session) |
 | `!stop` | kill the running agent process and cancel pending approvals |
 | `!reset` | stop + clear the session, approvals and failure counters |
@@ -92,12 +94,14 @@ The bridge launches Claude Code with `DISCORD_BRIDGE_ACTIVE=1` and a global
 `PreToolUse` hook. The hook is **inert** for ordinary local Claude Code and the
 WebUI — it exits immediately without that variable.
 
-For bridge sessions every tool call is classified by `src/policy.mjs`:
+For bridge sessions every tool call is classified through the shared
+`PermissionManager`; see `docs/PERMISSIONS.md` for the four-level matrix and
+lifecycle.
 
 - auto-allowed: read-only tools, in-workspace edits, `git status/diff/log/add/commit`, lint/test/build;
 - sent to your phone: `git push`, `reset --hard`, `clean`, rebase, recursive deletes, install/publish, network access, writes outside the workspace, `.env`/credential files, unknown MCP tools.
 
-The phone shows `Allow once` / `Allow session` / `Deny`. `Allow session` is scoped
+The phone shows `✅ 仅允许这一次` / `✅ 本次会话允许` / `❌ 拒绝`. `Allow session` is scoped
 to one Claude session **and** one policy rule key — it never becomes a global
 permanent allow. If the local approval service is unreachable the hook **fails
 closed** (denies).

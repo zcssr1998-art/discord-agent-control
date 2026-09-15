@@ -157,10 +157,13 @@ test('stop() releases a pending request so !stop frees the channel immediately',
 });
 
 test('idleMs tracks how long the agent has been silent, for the control-plane watchdog', async (t) => {
-  const runner = wedgeRunner('hang');
+  let sawInit;
+  const init = new Promise((resolve) => { sawInit = resolve; });
+  const runner = wedgeRunner('hang', { onEvent: (event) => { if (event.type === 'init') sawInit(); } });
   t.after(() => runner.stop());
 
   const pending = runner.send('wedge').catch(() => {});
+  await init;
   await tick(120);
   assert.ok(runner.idleMs >= 100, `expected a non-trivial idle time, got ${runner.idleMs}`);
   await runner.stop();

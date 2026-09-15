@@ -87,7 +87,7 @@ test('consecutive failures eventually refuse to start more work', () => {
   limits.noteFailure('c', new Error('boom again'));
   const verdict = limits.blocked('c');
   assert.equal(verdict.blocked, true);
-  assert.match(verdict.reason, /consecutive failures/);
+  assert.match(verdict.reason, /连续失败/);
   assert.match(verdict.reason, /!reset/);
 
   limits.noteSuccess('c');

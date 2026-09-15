@@ -16,6 +16,7 @@ import { explainDiscordLoginError } from './discord-errors.mjs';
 import { stripPaidCredentials, probeBackend, classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
 import { DiscordControlPlane } from './discord-ui.mjs';
 import { killAllChildrenSync } from './kill-tree.mjs';
+import { PermissionManager } from './permission-manager.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -24,6 +25,7 @@ async function main() {
   const config = loadConfig();
   const state = new StateStore(path.join(root, 'data', 'state.json'));
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
+  const permissions = new PermissionManager();
   const secret = ensureHookSecret();
   const logger = new RunLogger(config.logDir || path.join(root, 'logs'));
   const limits = new RunLimits({
@@ -40,6 +42,7 @@ async function main() {
   // and restarts the bridge after a short backoff, so the control plane comes
   // back online automatically.
   let discord = null;
+  let hookServer = null;
   let shuttingDown = false;
 
   const fatalShutdown = async (label, error) => {
@@ -70,7 +73,7 @@ async function main() {
     try { await discord?.client?.destroy?.(); } catch { /* best effort */ }
     const pids = killAllChildrenSync();
     if (pids.length) console.error(`[bridge] reaped ${pids.length} orphan child tree(s): ${pids.join(', ')}`);
-    process.exit(1);
+    process.exitCode = 1;
   };
 
   process.on('uncaughtException', (error) => { fatalShutdown('uncaughtException', error); });
@@ -132,7 +135,7 @@ async function main() {
     console.log(`[proxy] discord connects directly (source=${proxy.source})`);
   }
 
-  const hookServer = createHookServer({ config, approvalManager: approvals, secret });
+  hookServer = createHookServer({ config, approvalManager: approvals, permissionManager: permissions, secret });
   await new Promise((resolve, reject) => {
     hookServer.once('error', reject);
     hookServer.listen(config.approvalPort, config.approvalHost, resolve);
@@ -150,6 +153,7 @@ async function main() {
     config,
     state,
     approvalManager: approvals,
+    permissionManager: permissions,
     logger,
     limits,
     backendState,
@@ -160,7 +164,9 @@ async function main() {
   try {
     await discord.start();
   } catch (error) {
-    hookServer.close();
+    try { await discord.stopAll({ reason: 'Discord startup failed' }); } catch { /* best effort */ }
+    try { await discord.client.destroy(); } catch { /* best effort */ }
+    await new Promise((resolve) => hookServer.close(resolve));
     throw new Error(`Discord startup failed: ${error?.message || error} ${explainDiscordLoginError(error?.message)}`);
   }
 
@@ -180,7 +186,7 @@ async function main() {
     try { await discord.stopAll({ reason: `bridge shutdown (${signal})` }); } catch { /* best effort */ }
     try { hookServer.close(); } catch { /* best effort */ }
     try { await discord.client.destroy(); } catch { /* best effort */ }
-    process.exit(0);
+    process.exitCode = 0;
   };
   process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });
   process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(0)); });
@@ -188,5 +194,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`[fatal] ${error?.message || error}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

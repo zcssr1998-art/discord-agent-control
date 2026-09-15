@@ -327,8 +327,8 @@ async function main() {
 
   // --------------------------------------------------------------- Phase D2
   console.log('\n--- Phase D2 — real hook client: a destructive git push is denied ---');
-  phone.setScript('bash-destructive', ['deny']);
-  const asksBeforePush = phone.countFor('bash-destructive');
+  phone.setScript('bash-push', ['deny']);
+  const asksBeforePush = phone.countFor('bash-push');
   const push = await callHookClient({
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
@@ -338,13 +338,13 @@ async function main() {
     permission_mode: 'bypassPermissions',
   }, port);
   check('D6 a git push is classified as destructive and gated',
-    phone.countFor('bash-destructive') === asksBeforePush + 1, `${phone.countFor('bash-destructive')} ask(s)`);
+    phone.countFor('bash-push') === asksBeforePush + 1, `${phone.countFor('bash-push')} ask(s)`);
   check('D7 the denied push returns a real deny to Claude Code',
     push.permissionDecision === 'deny' && /denied from Discord/.test(push.permissionDecisionReason || ''),
     push.permissionDecisionReason);
 
   const allowedPush = await (async () => {
-    phone.setScript('bash-destructive', ['allow-once']);
+    phone.setScript('bash-push', ['allow-once']);
     return await callHookClient({
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',

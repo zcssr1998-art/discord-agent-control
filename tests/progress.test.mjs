@@ -17,8 +17,8 @@ test('progress walks CREATED -> RUNNING -> TESTING and renders low-noise status'
   const rendered = p.render();
   assert.match(rendered, /🧪 正在测试/);
   assert.match(rendered, /📁 当前项目：`C:\\proj`/);
-  assert.match(rendered, /Read×1 · Edit×1 · Bash×1/);
-  assert.ok(rendered.split('\n').length <= 12, 'status must stay reasonably short');
+  assert.match(rendered, /🛠️ 工具调用：3/);
+  assert.ok((rendered.match(/[├└]─/g) || []).length <= 6, 'only the latest six actions are shown');
 });
 
 test('a non-test shell command moves the status out of TESTING', () => {

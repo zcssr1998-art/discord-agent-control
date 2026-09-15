@@ -303,6 +303,15 @@ export class ClaudeRunner {
       }
     }
 
+    if (event.type === 'user' && Array.isArray(event.message?.content)) {
+      for (const block of event.message.content) {
+        if (block.type === 'tool_result') {
+          const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+          this.onEvent({ type: 'tool-result', text });
+        }
+      }
+    }
+
     if (event.type === 'result') {
       const current = this.current;
       this.current = null;

@@ -10,6 +10,7 @@ export const STATE = {
   DONE: 'DONE',
   FAILED: 'FAILED',
   CANCELLED: 'CANCELLED',
+  TIMEOUT: 'TIMEOUT',
 };
 
 function formatDuration(ms) {
@@ -55,7 +56,7 @@ function renderRecent(actions, max = 6) {
 }
 
 export class TaskProgress {
-  constructor({ cwd, startedAt = Date.now(), maxRecent = 6 } = {}) {
+  constructor({ cwd, startedAt = Date.now(), maxRecent = 6, model = 'unknown', costUsd = 0 } = {}) {
     this.cwd = cwd;
     this.startedAt = startedAt;
     this.maxRecent = maxRecent;
@@ -70,6 +71,8 @@ export class TaskProgress {
     this.stall = null;
     this.lastTool = null;
     this.permissionLabel = '🛡️ 标准';
+    this.model = model;
+    this.costUsd = costUsd;
   }
 
   markStalled(idleMs) {
@@ -83,7 +86,7 @@ export class TaskProgress {
   }
 
   recordRetry({ attempt, maxRetries, errorStatus, error } = {}) {
-    this.retry = { attempt, maxRetries, errorStatus, error };
+    this.retry = { attempt, maxRetries, errorStatus, error: redact(error) };
     this.state = STATE.RUNNING;
     this.stall = null;
     return this;
@@ -91,7 +94,12 @@ export class TaskProgress {
 
   setState(state, note = null) {
     this.state = state;
-    if (note !== undefined) this.note = note;
+    if (note !== undefined) this.note = redact(note);
+    return this;
+  }
+
+  setModel(model) {
+    this.model = model || 'unknown';
     return this;
   }
 
@@ -160,6 +168,8 @@ export class TaskProgress {
     lines.push('');
     lines.push(`📁 当前项目：\`${this.cwd}\``);
     lines.push(`🔐 权限：${this.permissionLabel}`);
+    lines.push(`🤖 模型：${this.model}`);
+    lines.push(`💰 成本：$${Number(this.costUsd || 0)}`);
 
     if (this.approval) {
       lines.push('');
@@ -170,9 +180,10 @@ export class TaskProgress {
       lines.push(`⚠️ 模型请求重试 ${this.retry.attempt ?? '?'}/${this.retry.maxRetries ?? '?'} (${this.retry.errorStatus ?? 'error'})`);
     }
 
-    if (this.lastAction && !this.approval) {
+    if (!this.approval) {
       lines.push('');
-      lines.push(`⚡ 最近操作：${this.lastAction}`);
+      lines.push('🧠 当前状态');
+      lines.push(this.lastAction || '正在分析任务');
     }
 
     if (this.stall && !this.approval) {
@@ -192,10 +203,8 @@ export class TaskProgress {
     }
 
     if (this.toolCounts.size) {
-      const summary = [...this.toolCounts.entries()]
-        .map(([k, v]) => `${k}×${v}`)
-        .join(' · ');
-      lines.push(`🛠️ 工具调用：${shorten(summary, 180)}`);
+      const total = [...this.toolCounts.values()].reduce((sum, count) => sum + count, 0);
+      lines.push(`🛠️ 工具调用：${total}`);
     }
 
     if (this.note && !this.approval) {
