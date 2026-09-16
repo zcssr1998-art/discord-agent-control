@@ -6,43 +6,33 @@ Current execution specification:
 
 Branch: `jarvis-v4-p2-2-hardening`
 
-## Why this task is active
+## Status
 
-P2.2 passed earlier deterministic/machine smoke, but the owner's first real reboot smoke exposed a reliability failure:
+Implemented and verified on the real Windows machine; owner reboot smoke is the only remaining gate.
 
-- logon Task Scheduler trigger fired and Jarvis initially came ONLINE;
-- after ~2503.5s the Bridge exited;
-- Supervisor logged `Restarting in 2s...` but no later `Starting bridge` occurred;
-- Scheduled Task returned to `Ready` and Jarvis stayed Discord OFFLINE;
-- `LastTaskResult = 3221225786` (`0xC000013A`, control-exit class result).
+Evidence: `docs/V4_P2_2_SMOKE.md` §0 — `scripts/smoke-supervisor-recovery.ps1` 23/23, plus `npm test` 316/0, `npm run check` 105/0, `smoke:p2` 11/11, `smoke:p22` 10/10.
 
-Therefore the reboot smoke is a real FAIL requiring repair.
+## What was done
 
-## Scope
+1. Production supervisor retries indefinitely with bounded backoff (`2/5/10/30/60/120s`, `>=60s` resets); optional finite mode is test-only.
+2. Bridge runs in its own hidden console → a bridge/control event can no longer terminate the supervisor.
+3. Installed Task Scheduler task updated: native `powershell.exe` action, `ExecutionTimeLimit=unlimited`, `StartWhenAvailable`, `IgnoreNew`, `RestartCount=999`/`PT1M`, plus a `PT1M` watchdog repetition trigger (the reliable Level-2 recovery; Windows restart-on-failure did not fire for a killed action on this machine).
+4. LiteLLM health-checked/recovered every 30s while the bridge runs; the recovery launch no longer deadlocks on a piped child.
+5. Minimal observability: heartbeat, UP/DOWN + PID, retry-with-delay, recovery lines; no new state DB (`/doctor` unchanged).
+6. Real Windows smoke: kill bridge / kill LiteLLM / kill supervisor / >5 simulated failures — all recover; no duplicate bridge; task settings verified.
 
-Execute only the focused P2.2.1 recovery task:
+## Remaining
 
-1. production Supervisor retries indefinitely with bounded backoff;
-2. Task Scheduler restarts Supervisor on unexpected exit;
-3. isolate scheduled Supervisor lifetime from Bridge/control-console failures;
-4. continuously health-check/recover LiteLLM;
-5. add minimal recovery observability;
-6. real Windows smoke: kill Bridge, kill LiteLLM, kill Supervisor, and >5 simulated startup failures;
-7. update the actual installed scheduled task and verify effective restart settings.
-
-Do not redo P2/P2.1/P2.2, start P3, or add a new service/daemon framework.
+`PENDING_OWNER_REBOOT_SMOKE` — owner-only; the worker must never reboot the machine.
 
 ## Preserved constraints
 
 - single-instance guard remains authoritative;
 - Supervisor remains Level-1 owner of Bridge + LiteLLM;
 - Windows Task Scheduler is Level-2 recovery for Supervisor;
-- never reboot the owner's machine automatically;
 - no secrets in repo/logs;
 - retain existing Chat/Work/model/workspace/permission invariants.
 
 ## Completion
 
-Update `docs/CURRENT.md`, `docs/AI_HANDOFF.md`, this file, and `docs/V4_P2_2_SMOKE.md`; commit + push.
-
-Final worker reply must use the short response contract defined in the task file.
+State files updated (`docs/CURRENT.md`, `docs/AI_HANDOFF.md`, this file, `docs/V4_P2_2_SMOKE.md`); commit + push.

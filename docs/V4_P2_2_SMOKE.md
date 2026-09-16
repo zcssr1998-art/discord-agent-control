@@ -1,8 +1,104 @@
 # Jarvis V4 P2.2 Smoke / Acceptance Evidence
 
-Status: deterministic + Windows real-machine evidence recorded. Owner Discord smoke and owner reboot smoke remain PENDING (owner-only).
+Status: deterministic + Windows real-machine evidence recorded. Owner Discord smoke remains PENDING (owner-only). The owner reboot smoke is re-opened by P2.2.1 and is PENDING_OWNER again after the recovery fix.
 
 Branch: `jarvis-v4-p2-2-hardening`
+
+## 0. P2.2.1 supervisor / autostart recovery (real Windows)
+
+The owner's first real reboot smoke exposed a FAIL: the bridge exited after ~2503.5s, the supervisor logged `Restarting in 2s...` and then both the bridge and the supervisor disappeared; the scheduled task returned to `Ready` with `LastTaskResult = 3221225786` (`0xC000013A`). Root-cause origin of that control event is not required; the defect was the missing recovery layer.
+
+### What was wrong
+
+- `start-supervisor.ps1` used a finite `MaxRestarts=5` loop, so production could permanently give up; backoff was capped at 30s.
+- The bridge was launched with `Start-Process -NoNewWindow`, sharing the supervisor's console/control-event group. A console/control event aimed at the bridge could take the supervisor down with it (the wrapper log recorded `autostart wrapper exited with 1073807364` = `DBG_TERMINATE_PROCESS` at the same second the bridge died).
+- LiteLLM was only health-checked when a bridge started; a LiteLLM crash during a long bridge run was never repaired.
+- The supervisor called `start-litellm.ps1` through a PowerShell pipeline (`| Out-Null`); the grandchild LiteLLM inherited the pipe handle and the supervisor hung forever on the first gateway recovery.
+- The installed task had `RestartCount = 0` (no restart-on-failure) and launched through `cmd.exe -> start-supervisor-autostart.cmd`.
+
+### What changed
+
+- `scripts/start-supervisor.ps1`: production default `-MaxRestarts 0` (unlimited). Backoff ladder `2s -> 5s -> 10s -> 30s -> 60s -> 120s` (capped, parameterised); a run `>= 60s` resets the counter; any bridge exit (including 0) is recovered because it leaves Jarvis offline. The bridge now runs in its own hidden console with output redirected to `logs/bridge.log` / `logs/bridge.err.log`, so a bridge/control event cannot terminate the supervisor. LiteLLM is re-probed every 30s while the bridge runs and recovered through `start-litellm.ps1` (launched without a pipe). Heartbeat every 5 min plus immediate state-change lines. A supervisor pid file + orphan-bridge reclaim keep exactly one supervised bridge.
+- `scripts/install-autostart.ps1`: native action `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <abs>\scripts\start-supervisor.ps1` with `-WorkingDirectory <repo>` (no `cmd.exe` hop), `ExecutionTimeLimit = unlimited`, `StartWhenAvailable`, `MultipleInstances = IgnoreNew`, `RestartCount 999` / `RestartInterval PT1M`, and a **1-minute repeating watchdog trigger**.
+- `scripts/start-litellm.ps1`: LiteLLM gets its own hidden console instead of sharing the caller's.
+- `scripts/start-supervisor-autostart.cmd` deleted (no longer part of any launch path).
+- `data/jarvis-supervisor.pid` git-ignored.
+
+### Why a watchdog trigger and not just restart-on-failure
+
+Real machine evidence: with `RestartCount 999 / RestartInterval PT1M` configured, Task Scheduler recorded the killed task action as a failure (`LastTaskResult = 1`) but did **not** restart it. A minimal probe task reproduced this: kill the action process, wait >2 restart intervals, no restart. Adding a `-Once -At (now) -RepetitionInterval PT1M` trigger with `MultipleInstances = IgnoreNew` restarted a killed probe after ~49s, and restarted the killed supervisor in the real smoke. The repetition is a no-op while the supervisor runs (`IgnoreNew`) and is the reliable Level-2 recovery. Restart-on-failure stays configured per spec.
+
+### Real Windows recovery smoke
+
+`powershell -ExecutionPolicy Bypass -File scripts\smoke-supervisor-recovery.ps1` (never reboots; G5 uses an isolated temp RuntimeDir/LogDir and a fake always-fail entry):
+
+```text
+=== P2.2.1 supervisor recovery smoke 2026-09-16 18:58:52 ===
+PASS G1 supervisor started by the scheduled task - pid=54780
+PASS G1 LiteLLM healthy under the supervisor - pid=47836
+PASS G1 bridge process running - pid=52148
+PASS G1 exactly one Jarvis bridge owns the instance lock - count=1
+PASS G1 bridge reached Discord ready
+G2 killing bridge pid=52148 only
+PASS G2 bridge auto-recovered with a new pid - old=52148 new=55020
+PASS G2 supervisor PID preserved across the bridge kill - supervisor=54780
+PASS G2 no duplicate bridge after recovery - count=1
+G3 killing LiteLLM pid=47836 only
+PASS G3 LiteLLM auto-recovered - old=47836 new=32220
+PASS G3 supervisor survived the LiteLLM kill - supervisor=54780
+G4 killing supervisor pid=54780 only (no manual restart afterwards)
+PASS G4 supervisor really stopped before the restart window
+PASS G4 Task Scheduler restarted the supervisor automatically - old=54780 new=54560
+PASS G4 bridge restored after the supervisor restart - pid=31264
+PASS G4 exactly one bridge after the supervisor restart - count=1
+PASS G5 more than five bridge failures still keep retrying - restarts=6
+PASS G5 isolated supervisor still alive after >5 failures
+PASS G5 production mode never logs "Giving up"
+PASS installed task: restart on failure configured - count=999 interval=PT1M
+PASS installed task: restart count survives a long outage - count=999
+PASS installed task: unlimited execution time limit - limit=PT0S
+PASS installed task: StartWhenAvailable
+PASS installed task: 1-minute watchdog trigger present - repetition=PT1M
+PASS installed task: native powershell supervisor action
+
+summary: 23/23 checks passed
+```
+
+Effective installed task (`Get-ScheduledTask`):
+
+```text
+Execute          : powershell.exe
+Arguments        : -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "...\scripts\start-supervisor.ps1"
+WorkingDirectory : C:\Users\Administrator.DESKTOP-RHFCBBR\Documents\Default Project
+Triggers         : AtLogOn (delay PT15S) + repeating watchdog PT1M
+RestartCount=999 RestartInterval=PT1M ExecutionTimeLimit=PT0S StartWhenAvailable=True MultipleInstances=IgnoreNew
+```
+
+Production supervisor log during the recovery window (crash-loop proof: counter passes 5, backoff caps at 120s, never gives up):
+
+```text
+[2026-09-16 18:34:21] Bridge UP: starting entry=... consecutive=5
+[2026-09-16 18:35:00] Bridge DOWN: exited code=1 after 38.4s pid=19780
+[2026-09-16 18:35:00] Bridge failed; retrying in 120s (consecutive=6/unlimited)
+[2026-09-16 18:37:00] Bridge UP: starting entry=... consecutive=6
+```
+
+### Item I — workspace source (focused verification only)
+
+No live path violates the invariant. The startup ready card (`notifyReady`), `/status` / `!workspace` and new Work launches all resolve through `effectiveRuntimeState()`; `preferences.workspace` is unset and no `recent-run` / historical-run fallback exists in the code. The `D:\deepseeek` seen in boot logs is the owner's configured `DEFAULT_CWD=D:\\deepseeek` in `.env` (`workspaceSource=config`), not stale run state. No workspace code changed.
+
+### P2.2.1 gates
+
+- [x] `npm test` — 316 pass / 0 fail
+- [x] `npm run check` — 105 files, 0 failed
+- [x] `npm run smoke:p2` — 11/11
+- [x] `npm run smoke:p22` — 10/10
+- [x] `scripts/smoke-supervisor-recovery.ps1` — 23/23 real-machine recovery
+- [x] installed task restart-on-failure + 1-minute watchdog verified
+- [x] no duplicate bridge / no orphan process from the smoke
+- [ ] owner reboot smoke — **PENDING_OWNER_REBOOT_SMOKE** (worker must not reboot)
+
+
 Commit under test: the branch HEAD P2.2 implementation commit (its parent is P2/P2.1 head `3fc0c35`); regression and machine smoke were run on the working tree of that commit.
 Host: Windows, `DESKTOP-RHFCBBR`, Node `v24.19.0`
 
@@ -307,10 +403,11 @@ Note: this milestone extracted the pure helper/row layer only. Further controlle
 ## Final verdict
 
 ```text
-P2.2: PASS (deterministic + Windows real-machine); owner Discord smoke + owner reboot smoke pending owner action
-commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2 implementation + ACK hardening)
-tests: 311/0 · check 104/0 · smoke:p22-workspace 8/8 · smoke:p2 11/11 · smoke:p22 10/10 · smoke:p22-insert 14/14 · smoke:p22-model 5/5
-windows-smoke: scheduled task 鈫?supervisor 鈫?LiteLLM(UP) 鈫?bridge online; second launch refused pre-login (exit 1)
-autostart: installed (task 'Jarvis Discord Agent Control', Ready) 路 PENDING_OWNER_REBOOT_SMOKE
-blocker: real /work ACK timeout previously reproduced twice and has been fixed (see 搂5b); owner re-test pending
+P2.2.1: PASS (deterministic + real Windows kill/recovery smoke); owner reboot smoke pending owner action
+commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2.1 supervisor/autostart recovery)
+tests: 316/0 · check 105/0 · smoke:p2 11/11 · smoke:p22 10/10 · smoke-supervisor-recovery 23/23
+windows-smoke: kill bridge -> supervisor survives + new bridge UP; kill LiteLLM -> auto-recovered; kill supervisor -> Task Scheduler watchdog restarts it and the bridge returns
+autostart: task 'Jarvis Discord Agent Control' · AtLogOn(PT15S) + watchdog PT1M · RestartCount=999/RestartInterval=PT1M · ExecutionTimeLimit=unlimited · StartWhenAvailable · IgnoreNew
+reboot-smoke: PENDING_OWNER_REBOOT_SMOKE (worker never reboots the machine)
+blocker: none
 ```

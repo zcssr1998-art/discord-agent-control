@@ -92,9 +92,12 @@ if ($Foreground) {
 
 # Start-Process does not quote array elements, and this repository path contains
 # a space, so quote the config path by hand.
-$proc = Start-Process -FilePath $litellmExe -ArgumentList @('--config', "`"$config`"", '--host', $HostName, '--port', $Port) -NoNewWindow -PassThru `
+# Own hidden console: the gateway must not share a console/control-event group
+# with the supervisor, so a gateway crash can never take the supervisor with it.
+$proc = Start-Process -FilePath $litellmExe -ArgumentList @('--config', "`"$config`"", '--host', $HostName, '--port', $Port) -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput (Join-Path $dataDir 'gateway.out.log') `
   -RedirectStandardError (Join-Path $dataDir 'gateway.err.log')
+try { $proc.EnableRaisingEvents = $true } catch {}
 Set-Content -Path $pidFile -Value $proc.Id -Encoding ascii
 Write-Host "LiteLLM pid=$($proc.Id)"
 

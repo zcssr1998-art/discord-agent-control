@@ -8,41 +8,22 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Active task
 
-`docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md`
+`docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md` — implemented and verified; awaiting owner reboot smoke.
 
 ## Current status
 
-P2.2 baseline exists, but the owner's first real reboot smoke exposed a reliability failure that reopens hardening work.
+The P2.2.1 recovery fix is complete and proven on the real machine (`docs/V4_P2_2_SMOKE.md` §0, 23/23).
 
-Observed:
+Key facts a successor must not re-derive:
 
-- logon Scheduled Task triggered and Jarvis initially reached Discord ready;
-- Bridge ran ~2503.5s, then exited;
-- Supervisor logged `Restarting in 2s...` but never started a new Bridge;
-- Scheduled Task returned to `Ready`; Jarvis stayed OFFLINE;
-- `LastTaskResult = 3221225786` / `0xC000013A` (control-exit class result).
+- `scripts/start-supervisor.ps1` is unlimited in production (`-MaxRestarts 0`), bounded backoff `2/5/10/30/60/120s`, `>=60s` run resets the counter, and recovers any bridge exit; it also probes/recover LiteLLM every 30s and keeps a supervisor pid file + orphan-bridge reclaim. The bridge runs in its own hidden console (`logs/bridge.log`).
+- The installed task action is native `powershell.exe -File <abs>\scripts\start-supervisor.ps1` (the old `cmd.exe -> start-supervisor-autostart.cmd` chain and that file were removed).
+- **Task Scheduler restart-on-failure did not restart a killed action process on this machine** (probe reproduced). Level-2 recovery is the `RepetitionInterval PT1M` watchdog trigger with `MultipleInstances=IgnoreNew`; restart-on-failure stays configured too.
+- Real smoke: kill bridge / kill LiteLLM / kill supervisor / >5 startup failures all recover automatically. Worker never reboots the machine.
 
-Exact origin of the control event is unproven and is not a prerequisite. The defect is the missing recovery layer when Supervisor exits.
+## Remaining
 
-## Required recovery model
-
-- Level 1: persistent Supervisor continuously recovers Bridge + LiteLLM with bounded backoff and no production five-failure give-up.
-- Level 2: Windows Task Scheduler restarts Supervisor if Supervisor exits unexpectedly.
-- Keep the existing single-instance guard.
-- No Windows Service/NSSM/PM2/Docker or other new daemon framework.
-
-## Real acceptance gates
-
-Worker must prove on Windows:
-
-1. scheduled-task startup;
-2. kill Bridge → Supervisor survives and Bridge auto-recovers;
-3. kill LiteLLM → LiteLLM auto-recovers;
-4. kill Supervisor → Task Scheduler restarts it with no manual startup command;
-5. >5 safe simulated startup failures do not permanently strand recovery;
-6. actual installed task has restart-on-failure settings.
-
-Never reboot the owner's PC. After these pass, leave a fresh `PENDING_OWNER_REBOOT_SMOKE` for owner-only validation.
+`PENDING_OWNER_REBOOT_SMOKE`. Owner reboots Windows; expected: AtLogOn trigger starts the supervisor, LiteLLM comes up, the bridge reaches Discord ready, `/status` shows the live identity, and a manual second launch is refused by the single-instance guard.
 
 ## Preserve
 
@@ -50,4 +31,4 @@ Do not regress P2/P2.1/P2.2 Chat/Work/thread/queue/permissions/model/workspace/l
 
 ## Delivery
 
-Update `docs/CURRENT.md`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_2_SMOKE.md`; commit + push to the active branch. Final response must follow the short contract in the active task.
+State is recorded in `docs/CURRENT.md`, `docs/tasks/CURRENT.md` and `docs/V4_P2_2_SMOKE.md`. Final worker response follows the short contract in the active task.

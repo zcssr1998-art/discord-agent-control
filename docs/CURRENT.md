@@ -10,72 +10,40 @@ Stacked on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. Do not merge
 
 ## Current milestone
 
-Jarvis V4 P2.2.1 — Supervisor / Autostart recovery hardening.
+Jarvis V4 P2.2.1 — Supervisor / Autostart recovery hardening. **Implemented and verified on the real machine.**
 
-Active spec:
+Spec (authoritative):
 
 `docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md`
 
-## Why P2.2.1 exists
+Evidence:
 
-P2.2 implementation passed earlier deterministic and machine smoke, but the owner's first real reboot smoke exposed a production reliability failure.
+`docs/V4_P2_2_SMOKE.md` §0 (real Windows kill/recovery smoke, 23/23).
 
-Real sequence:
-
-- Windows logon task fired successfully and Jarvis initially reached Discord ready;
-- LiteLLM was healthy and the Bridge ran for ~2503.5s;
-- Bridge then exited;
-- Supervisor logged `Restarting in 2s...` but never logged another `Starting bridge`;
-- Scheduled Task returned to `Ready` and Jarvis remained OFFLINE;
-- `Get-ScheduledTaskInfo` reported `LastTaskResult = 3221225786` (`0xC000013A`, control-exit class result).
-
-TaskScheduler Operational logs around the failure did not establish the exact source of the control event. Do not block the fix on proving that source: the established defect is that both Bridge and Supervisor can disappear without recovery.
-
-The previous owner reboot gate is therefore **FAIL until repaired and re-tested**.
-
-## Required recovery model
-
-Use the existing lightweight stack only:
+## Verified recovery model
 
 ```text
-Windows Task Scheduler  (Level 2: recover Supervisor)
+Windows Task Scheduler  (Level 2: AtLogOn + 1-min watchdog trigger restarts Supervisor)
         ↓
-Persistent Supervisor   (Level 1: recover Bridge + LiteLLM)
-   ├── Jarvis Bridge
+Persistent Supervisor   (Level 1: recovers Bridge + LiteLLM, never gives up)
+   ├── Jarvis Bridge  (own hidden console, logs/bridge.log)
    └── LiteLLM
 ```
 
-Production behavior must not permanently give up after five failures. Use bounded backoff and continue recovering while the logged-in Windows session is alive.
+- Supervisor production default is unlimited; backoff `2s → 5s → 10s → 30s → 60s → 120s`; a `>= 60s` run resets the counter.
+- The bridge runs in its own hidden console so a bridge/control event cannot kill the supervisor.
+- LiteLLM is re-probed every 30s and recovered while the bridge runs.
+- Task Scheduler restart-on-failure is configured (`RestartCount=999`, `RestartInterval=PT1M`) but Windows did **not** honor it for an externally killed action process; the reliable Level-2 path is the `RepetitionInterval PT1M` watchdog trigger with `MultipleInstances=IgnoreNew`. Both remain configured.
+- Supervisor pid file + orphan-bridge reclaim keep exactly one supervised bridge.
 
-## P2.2 baseline to preserve
+## Verified gates (2026-09-16, real Windows)
 
-Already implemented and not to be redone:
+- `npm test` 316/0 · `npm run check` 105/0 · `smoke:p2` 11/11 · `smoke:p22` 10/10.
+- `scripts/smoke-supervisor-recovery.ps1` 23/23: G1 scheduled-task start → LiteLLM + bridge + Discord ready; G2 kill bridge → supervisor survives + new bridge; G3 kill LiteLLM → auto-recovered; G4 kill supervisor → watchdog restarts it + bridge restored; G5 >5 failures still retrying.
 
-- single-instance guard + runtime/build identity;
-- Windows logon autostart scripts;
-- SQLite WAL durable operational store;
-- parent Work summary/control card;
-- `/doctor` + CI;
-- first-class workspace resolution;
-- model-selection persistence;
-- live Work insert/steering;
-- Discord interaction ACK hardening.
+## Pending
 
-Existing regression evidence before this recovery fix included `npm test` 311/0, `npm run check` 104/0, `npm run smoke:p2` 11/11, `npm run smoke:p22` 10/10. Re-run required gates after changes; do not assume old evidence proves the new recovery path.
-
-## Acceptance focus
-
-P2.2.1 is not complete until real Windows smoke proves:
-
-- Scheduled Task starts Supervisor → LiteLLM + Bridge;
-- killing Bridge only causes automatic Bridge recovery with Supervisor PID preserved;
-- killing LiteLLM only causes automatic LiteLLM recovery;
-- killing Supervisor only causes Task Scheduler to restart it without a manual startup command;
-- >5 simulated startup failures do not permanently strand production recovery;
-- the actual installed scheduled task has effective restart-on-failure settings;
-- no duplicate Jarvis instance or orphan runtime processes remain.
-
-Worker must never reboot the owner's PC. After all machine gates pass, leave a fresh `PENDING_OWNER_REBOOT_SMOKE` for the owner.
+- `PENDING_OWNER_REBOOT_SMOKE` — owner reboots Windows and confirms Jarvis returns ONLINE. The worker must never reboot the machine.
 
 ## Preserved invariants
 
@@ -95,4 +63,4 @@ No P3 market monitoring, Longbridge/Futu, web dashboard, Redis/Postgres, Agent s
 
 ## Next action
 
-Execute `docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md`, verify the real Windows recovery paths, update evidence/state, commit + push. Do not merge P2.2 before this recovery task is accepted.
+Owner: run the reboot smoke and, if it passes, proceed to the P2.2 → P2/P2.1 merge decision. Do not start P3 or an unrelated refactor.

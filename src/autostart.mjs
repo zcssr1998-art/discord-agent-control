@@ -15,11 +15,16 @@ const execFileAsync = promisify(execFile);
 export const AUTOSTART_TASK_NAME = 'Jarvis Discord Agent Control';
 export const SUPERVISOR_SCRIPT = path.join('scripts', 'start-supervisor.ps1');
 
-/** Build the scheduled-task action command line for a given checkout root. */
+/**
+ * Build the scheduled-task action command line for a given checkout root.
+ *
+ * Native PowerShell action (no cmd.exe hop): the supervisor becomes the task's
+ * top-level process, so the Task Scheduler restart-on-failure policy observes
+ * its exit directly. The installer sets the working directory separately.
+ */
 export function buildTaskAction(root) {
   const script = path.join(root, 'scripts', 'start-supervisor.ps1');
-  const drive = path.dirname(script).slice(0, 2);
-  return `${drive} && cd /d "${path.dirname(script)}" && powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${script}"`;
+  return `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${script}"`;
 }
 
 /**
