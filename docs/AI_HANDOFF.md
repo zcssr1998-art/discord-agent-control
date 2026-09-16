@@ -4,56 +4,76 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Branch
 
-`jarvis-v4-p2-control-context` (PR #4, Draft; do not merge yet).
+`jarvis-v4-p2-2-hardening`.
 
-## Active specs
+Stacked on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. PR #4 (`jarvis-v4-p2-control-context`) is still the parent functional PR. Do not merge this branch to `main` until P2/P2.1 is accepted/merged.
 
-- `docs/JARVIS_V4_P2_TASK.md` — P2 implementation complete; human Discord smoke not closed.
-- `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — P2.1 implementation complete; human Discord smoke not closed.
+## Active spec
 
-## Last known good state
+`docs/JARVIS_V4_P2_2_HARDENING_TASK.md`
 
-P0/P0.5 + P1 are merged on `main`.
+## Baseline
 
-P2 + P2.1 on this branch are implemented and machine-verified:
+At branch point P2/P2.1 were machine-verified:
 
-- `npm test` 244/0 (P2.1 adds `tests/v4-p2-native.test.mjs`, 18 tests incl. the ACK lifecycle)
+- `npm test` 244/0
 - `npm run check` 85/0
 - `npm run smoke:p2` 11/11
-- real LiteLLM Chat context recall PASS
-- real vision PASS
-- real Agent file task from P2 panel-created Work thread PASS
+- live `/work` ACK timeout bug fixed: interactions ACK before slow thread/filesystem/Agent/network work
+- P2.1 slash commands + follow-up queue + Stop card behavior already implemented
 
-Human Discord: `!panel` was confirmed handled locally by the live bridge. Final combined P2/P2.1 owner smoke is not closed.
+Do not rebuild P2/P2.1.
 
-## P2.1 implementation note
+## P2.2 goals
 
-- `src/commands.mjs`: application-command payloads + idempotent registration (no hard-coded IDs).
-- `src/discord-ui.mjs`: chat-input command handler; `workctl:append|stop:<runId>` card controls; `workappend:<runId>` modal; one shared `#stopChannel` (also clears follow-ups); `#appendFollowUp` + `#drainFollowUps` re-enter `runTask`/`WorkspaceScheduler`; natural text in an active Work context queues the same follow-up.
-- Interaction ACK lifecycle: `#acknowledge` (deferReply/deferUpdate) runs before any slow work; `showModal` cases ACK via the modal before that; `#edit`/`#ephemeral` respect deferred/replied and never double-reply; `#interactionContext` uses the same path. This fixed the real `/work` "该应用程序未响应" smoke failure.
-- `src/progress.mjs`: `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep buttons.
-- Behaviour change: the legacy test `a second task is refused while one is running` now asserts P2.1 follow-up queuing (intentional).
-- Registration defaults to global; `DISCORD_COMMANDS_GUILD_ID` optionally enables instant guild-scoped propagation (never hard-coded). `DISCORD_AUTO_REGISTER_COMMANDS=0` disables.
+- single-instance guard before Discord login
+- `/status` runtime/build identity: PID/uptime/branch/commit/instance/autostart
+- Windows Task Scheduler autostart at owner logon; canonical task launches `scripts/start-supervisor.ps1`, not raw Node
+- autostart install/remove/status is idempotent and does not touch unrelated tasks
+- parent-channel compact Work summary card reusing existing Work thread/follow-up/stop paths
+- SQLite WAL operational store for run/session/queue metadata; credentials remain outside; restart never silently resumes a dead Agent
+- incrementally split the giant Discord control-plane module without changing behavior
+- minimal Windows GitHub CI
+- deterministic local `/doctor` (no LLM)
 
-## Architecture constraints
+## Autostart safety
 
-- reuse existing P2 panel/model/settings/status/help renderers
-- reuse existing New Work path for `/work`
-- one shared stop path for text command, panel, slash command, and progress card
-- no parallel config/state system
-- no mid-process stdin injection
-- no market-data/P3 work in this branch
-- preserve P0/P1/P2 routing, history, attachments, permissions, queue and Work-thread invariants
+Treat “开机自启” as current-user logon autostart, not a pre-login Windows service. The supervisor remains the sole bridge/LiteLLM restart owner. Manual + scheduled launch must be safe because the second instance fails fast.
 
-## Minimal files first
+Never reboot the owner PC automatically. Mark final reboot acceptance `PENDING_OWNER_REBOOT_SMOKE` until the owner explicitly restarts Windows.
 
+## Execution order
+
+1. single-instance + live build identity
+2. Task Scheduler autostart
+3. durable SQLite store / restart-interrupted semantics
+4. parent Work summary card
+5. incremental `discord-ui.mjs` extraction
+6. CI + `/doctor`
+7. full regression / Windows smoke / minimal owner Discord smoke
+
+## Read first
+
+- `AGENTS.md`
+- `docs/CURRENT.md`
+- `docs/tasks/CURRENT.md`
+- active P2.2 spec
+- then only relevant files/diffs
+
+Minimal code entry points:
+
+- `scripts/start-supervisor.ps1`
+- `src/index.mjs`
 - `src/discord-ui.mjs`
-- `src/commands.mjs`
+- `src/workspace-scheduler.mjs`
+- `src/state.mjs`
+- `src/session-manager.mjs`
 - `src/progress.mjs`
-- `tests/v4-p2-native.test.mjs`
-- `tests/helpers/fake-discord.mjs`
+- `package.json`
 
 ## Verification
+
+Use targeted tests during implementation, then:
 
 ```text
 npm test
@@ -61,12 +81,23 @@ npm run check
 npm run smoke:p2
 ```
 
-Human Discord evidence goes into `docs/V4_P2_SMOKE.md` §9.
+Add P2.2 Windows/autostart/store smoke as appropriate. Evidence goes to `docs/V4_P2_2_SMOKE.md`.
 
-## Blocker
+## Non-goals
 
-None known. Human P2/P2.1 smoke is the only open item (owner-run).
+No Longbridge/Futu/P3, no web dashboard, no Redis/Postgres, no Agent swarm/worktree, no new real Codex/OpenCode adapter, no voice.
 
 ## Delivery
 
-Update `CURRENT`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_SMOKE.md`; commit + push to `jarvis-v4-p2-control-context`. Final worker reply stays short.
+Update `CURRENT`, this file, `docs/tasks/CURRENT.md`, and `docs/V4_P2_2_SMOKE.md`; commit + push to `jarvis-v4-p2-2-hardening`.
+
+Final worker reply stays short:
+
+```text
+PASS/FAIL
+commit: <sha>
+tests: <summary>
+windows-smoke: <summary>
+autostart: <installed/status/PENDING_OWNER_REBOOT_SMOKE>
+blocker: <none or one key blocker>
+```
