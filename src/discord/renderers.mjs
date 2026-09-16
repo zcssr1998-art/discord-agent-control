@@ -126,12 +126,13 @@ export function panelModelRows() {
 
 /**
  * Active Work progress-card controls. The custom id carries the run id so a
- * stale card from an earlier run can never stop/append to a newer task.
+ * stale card from an earlier run can never stop/insert into a newer task.
+ * `插入需求` steers the RUNNING turn; it is not a queued follow-up.
  */
 export function workControlRows(runId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`workctl:append:${runId}`).setLabel('➕ 追加需求').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`workctl:append:${runId}`).setLabel('➕ 插入需求').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`workctl:stop:${runId}`).setLabel('⛔ Stop').setStyle(ButtonStyle.Danger),
     ),
   ];

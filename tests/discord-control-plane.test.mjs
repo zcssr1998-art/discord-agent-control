@@ -132,7 +132,8 @@ test('a task produces one low-noise status message, not a log flood', async () =
   assert.match(status.content, /🧪 测试：通过 12/);
 });
 
-test('a second message while one is running is queued as a follow-up, not run concurrently (P2.1)', async () => {
+test('a second message while one is running is steered into the live turn, not run concurrently', async () => {
+  const injections = [];
   const { fake, plane, runner } = makePlane({
     sendImpl: async () => {
       runner.busy = true;
@@ -140,19 +141,21 @@ test('a second message while one is running is queued as a follow-up, not run co
       return { text: 'slow', sessionId: 'sess-1', durationMs: 60, tools: [], isError: false, costUsd: 0 };
     },
   });
+  runner.injectRequirement = (prompt) => { injections.push(prompt); return { ok: true, delivered: true }; };
   await plane.start();
   const first = fake.sendAsUser({ content: 'task one' });
   await tick(10);
   await fake.sendAsUser({ content: 'task two' });
 
-  // P2.1: an active Work channel queues the follow-up instead of starting a
-  // second concurrent Agent; the follow-up runs after the first turn releases.
-  assert.ok(fake.texts().some((t) => /已追加/.test(t)), 'the second message must be acknowledged as a follow-up');
+  // Live steering: the second message goes into the RUNNING turn (same Agent,
+  // same session). It is no longer queued as a follow-up turn.
+  assert.ok(fake.texts().some((t) => /已插入当前任务/.test(t)), 'the second message must be acknowledged as an insert');
+  assert.deepEqual(injections, ['task two'], 'the requirement is injected into the running turn');
   assert.deepEqual(runner.sent, ['task one'], 'no concurrent Agent turn may start while one is running');
 
   await first;
   await tick(30);
-  assert.deepEqual(runner.sent, ['task one', 'task two'], 'the follow-up drains after the first turn');
+  assert.deepEqual(runner.sent, ['task one'], 'no extra turn is started after a live insert');
 });
 
 test('an approval request appears in the channel and the button really resolves it', async () => {

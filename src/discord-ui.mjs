@@ -71,6 +71,17 @@ export function wsStatusText(status) {
 }
 
 /**
+ * User-facing result of an insert/steering attempt. Never claims a live insert
+ * that did not happen: an unsupported executor is reported as such.
+ */
+export function insertMessage(mode) {
+  if (mode === 'inserted') return '✅ 已插入当前任务，Agent 将在下一个安全执行边界读取。';
+  if (mode === 'continued') return '✅ 当前轮刚结束，已转为同 Session 继续执行。';
+  if (mode === 'unsupported') return '⚠️ 当前执行器不支持运行中插入，将在当前轮后继续。';
+  return '该任务已结束。';
+}
+
+/**
  * P2.2 ACK fix: classify a failed interaction acknowledgement with the real
  * Discord cause instead of a generic swallow. Codes:
  *   10062 Unknown interaction · 40060 already acknowledged · 50027 invalid webhook.
@@ -1532,7 +1543,9 @@ export class DiscordControlPlane {
   }
 
   async #handleModalSubmit(interaction, parts) {
-    if (parts[0] === 'workappend') {
+    // `workinsert` is the current id; `workappend` is accepted for a modal that
+    // was already open in Discord before the rename.
+    if (parts[0] === 'workinsert' || parts[0] === 'workappend') {
       const runId = parts[1];
       const run = this.workRuns.get(runId);
       const chain = run ? this.workChains.get(run.channelId) : null;
@@ -1543,10 +1556,11 @@ export class DiscordControlPlane {
       let requirement = '';
       try { requirement = String(interaction.fields?.getTextInputValue?.('requirement') ?? '').trim(); } catch { requirement = ''; }
       if (!requirement) {
-        await this.#ephemeral(interaction, '❌ 补充要求为空。');
+        await this.#ephemeral(interaction, '❌ 插入内容为空。');
         return;
       }
-      const result = await this.#appendFollowUp({
+      const result = await this.#insertRequirement({
+        runId,
         channelId: run.channelId,
         guildId: interaction.guildId ?? null,
         channel: interaction.channel ?? chain.channel,
@@ -1554,11 +1568,11 @@ export class DiscordControlPlane {
         dedupeKey: `modal:${interaction.id}`,
       });
       if (result.ok) {
-        await this.#ephemeral(interaction, `✅ 已追加，当前任务结束后执行（队列 #${result.position}）。`);
-      } else if (result.reason === 'full') {
-        await this.#ephemeral(interaction, `⛔ 追加队列已满（最多 ${this.maxWorkFollowUps} 条）。`);
+        await this.#ephemeral(interaction, insertMessage(result.mode));
       } else if (result.reason === 'duplicate') {
-        await this.#ephemeral(interaction, '已收到该追加需求。');
+        await this.#ephemeral(interaction, '已收到该插入需求。');
+      } else if (result.reason === 'empty') {
+        await this.#ephemeral(interaction, '❌ 插入内容为空。');
       } else {
         await this.#ephemeral(interaction, '该任务已结束。');
       }
@@ -1720,7 +1734,20 @@ export class DiscordControlPlane {
     // Stop always clears the chain's pending follow-ups first, so nothing
     // unexpectedly starts after the owner pressed Stop.
     const clearedFollowUps = this.#clearFollowUps(channelId);
-    const followUpLine = clearedFollowUps ? [`已清空 ${clearedFollowUps} 条待执行的追加需求。`] : [];
+    // Unconsumed steering demands (live-injected or continuation) belong to the
+    // stopped Work: drop them so they can never run later.
+    const activeChain = this.workChains.get(channelId);
+    const activeRun = activeChain?.activeRunId ? this.workRuns.get(activeChain.activeRunId) : null;
+    let clearedInserts = 0;
+    if (activeRun) {
+      clearedInserts = (activeRun.injected?.length ?? 0) + (activeRun.continuations?.length ?? 0);
+      activeRun.injected = [];
+      activeRun.continuations = [];
+    }
+    const followUpLine = [
+      clearedFollowUps ? `已清空 ${clearedFollowUps} 条待执行的追加需求。` : null,
+      clearedInserts ? `已清空 ${clearedInserts} 条未处理的插入需求。` : null,
+    ].filter(Boolean);
     const queued = this.scheduler?.cancelQueued(channelId);
     if (queued) {
       console.log(`[queue] cancel channel=${channelId} workspace=${queued.key} position=${queued.position}`);
@@ -1767,7 +1794,13 @@ export class DiscordControlPlane {
 
   #beginRun(message) {
     const channelId = message.channelId;
-    const run = { id: randomUUID(), channelId, state: 'queued', drainable: true, createdAt: Date.now() };
+    const run = {
+      id: randomUUID(), channelId, state: 'queued', drainable: true, createdAt: Date.now(),
+      // Live steering bookkeeping. `injected` = delivered into the running turn;
+      // `continuations` = not deliverable live (race/unsupported), executed as an
+      // extra turn in the SAME run/session so nothing is silently dropped.
+      injected: [], continuations: [],
+    };
     this.workRuns.set(run.id, run);
     const chain = this.#chain(channelId);
     chain.activeRunId = run.id;
@@ -1779,6 +1812,8 @@ export class DiscordControlPlane {
   #endRun(run) {
     if (!run) return;
     run.state = 'ended';
+    run.injected = [];
+    if (run.continuations) run.continuations = [];
     this.workRuns.delete(run.id);
     const chain = this.workChains.get(run.channelId);
     if (chain?.activeRunId === run.id) chain.activeRunId = null;
@@ -1876,12 +1911,12 @@ export class DiscordControlPlane {
 
   #appendModal(runId) {
     return new ModalBuilder()
-      .setCustomId(`workappend:${runId}`)
-      .setTitle('追加需求')
+      .setCustomId(`workinsert:${runId}`)
+      .setTitle('插入需求')
       .addComponents(new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('requirement')
-          .setLabel('补充要求')
+          .setLabel('插入到当前任务')
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(true)
           .setMaxLength(4000),
@@ -1980,6 +2015,28 @@ export class DiscordControlPlane {
   }
 
   async #handleWorkFollowUp(message, text, attachments) {
+    const chain = this.workChains.get(message.channelId);
+    const activeRun = chain?.activeRunId ? this.workRuns.get(chain.activeRunId) : null;
+    // While the Agent is actually RUNNING, an owner message is steering, not a
+    // queued next turn. Only the not-yet-started case falls back to the queue.
+    if (activeRun && activeRun.state === 'running') {
+      const inserted = await this.#insertRequirement({
+        runId: activeRun.id,
+        channelId: message.channelId,
+        guildId: message.guildId,
+        channel: message.channel,
+        prompt: text,
+        attachments,
+      });
+      if (inserted.ok) {
+        await message.reply(insertMessage(inserted.mode));
+        return true;
+      }
+      if (inserted.reason === 'duplicate') {
+        await message.reply('已收到该插入需求。');
+        return true;
+      }
+    }
     const result = await this.#appendFollowUp({
       channelId: message.channelId,
       guildId: message.guildId,
@@ -1996,6 +2053,69 @@ export class DiscordControlPlane {
       return true;
     }
     return false;
+  }
+
+  /** Which executor can steer a running turn (Claude-compatible stream-json). */
+  #supportsLiveInsert(channelId) {
+    if (!this.executorManager) return true; // direct ClaudeRunner path
+    const executorId = this.sessionManager.get(channelId).executorId;
+    if (typeof this.executorManager.supportsLiveSteering === 'function') {
+      return this.executorManager.supportsLiveSteering(executorId);
+    }
+    return Boolean(this.executorManager.get(executorId)?.capabilities?.includes('live-steering'));
+  }
+
+  /**
+   * Insert a requirement into the CURRENTLY RUNNING Work turn.
+   *
+   * Never starts a second Agent, never re-acquires the workspace lock, never
+   * changes runId/sessionId. Delivered live into the running child's stdin when
+   * the executor supports steering; otherwise (or when the turn ended in the
+   * same instant) it becomes an extra turn in the SAME run/session so the demand
+   * is never lost.
+   */
+  async #insertRequirement({ runId, channelId, prompt, attachments = null, guildId = null, channel = null, dedupeKey = null }) {
+    const chain = this.workChains.get(channelId);
+    const run = this.workRuns.get(runId);
+    if (!run || !chain || chain.activeRunId !== runId) return { ok: false, reason: 'not-active' };
+    if (dedupeKey) {
+      if (chain.dedupe.has(dedupeKey)) return { ok: false, reason: 'duplicate' };
+      chain.dedupe.add(dedupeKey);
+    }
+
+    let prepared = String(prompt ?? '').trim();
+    if (attachments?.length) {
+      try { prepared = await this.#prepareWorkPrompt({ channelId, id: `insert-${++this.followUpSeq}` }, prepared, attachments); }
+      catch (error) { console.warn(`[work-insert] attachment prepare failed: ${redact(error?.message || error)}`); }
+    }
+    if (!prepared) return { ok: false, reason: 'empty' };
+
+    const runner = this.tasks.get(channelId)?.runner ?? this.runners.get(channelId);
+    const supports = this.#supportsLiveInsert(channelId);
+    const record = { prompt: prepared, channelId, guildId, channel, at: Date.now() };
+    const durableId = `${channelId}:insert:${Date.now()}:${(run.injected?.length ?? 0) + 1}`;
+
+    if (supports && runner?.busy && typeof runner.injectRequirement === 'function') {
+      const delivery = runner.injectRequirement(prepared);
+      if (delivery?.delivered) {
+        run.injected.push(record);
+        // Observable delivery receipt; the requirement body is never logged.
+        console.log(`[work-insert] run=${run.id} accepted mode=live bytes=${delivery.bytes ?? '-'}`);
+        try { this.durableStore?.followUpAdd({ id: durableId, runId: run.id, channelId, position: run.injected.length, state: 'INSERTED' }); } catch { /* audit-only */ }
+        return { ok: true, mode: 'inserted' };
+      }
+      console.log(`[work-insert] run=${run.id} live delivery rejected (${delivery?.reason ?? 'unknown'}); continuing in the same session`);
+    } else if (!supports) {
+      console.log(`[work-insert] run=${run.id} executor does not support live insert; continuing in the same session`);
+    }
+
+    run.continuations = run.continuations ?? [];
+    run.continuations.push(record);
+    try { this.durableStore?.followUpAdd({ id: durableId, runId: run.id, channelId, position: run.continuations.length, state: 'CONTINUATION' }); } catch { /* audit-only */ }
+    const mode = supports ? 'continued' : 'unsupported';
+    console.log(`[work-insert] run=${run.id} accepted mode=${mode} pending=${run.continuations.length}`);
+    await this.#refreshParentCard(channelId).catch(() => {});
+    return { ok: true, mode };
   }
 
   /**
@@ -2215,6 +2335,8 @@ export class DiscordControlPlane {
 
     const task = {
       runId: run?.id ?? null,
+      // The exact runner this task owns; live insert steering must target it.
+      runner,
       progress,
       editor,
       statusMessage,
@@ -2278,31 +2400,54 @@ export class DiscordControlPlane {
     if (typeof task.watchdog.unref === 'function') task.watchdog.unref();
 
     try {
-      const result = await withTimeout(runner.send(prompt), this.config.taskTimeoutMs, {
-        label: 'task',
-        onTimeout: () => { console.error(`[task] timeout after ${this.config.taskTimeoutMs}ms; killing the agent process`); runner.stop({ reason: 'task wall-clock timeout' }).catch(() => {}); },
-      });
+      // Same-turn steering goes straight into the running child's stdin, so most
+      // inserts produce exactly one `result`. Anything that could not be
+      // delivered live (race/unsupported executor) is executed here as an extra
+      // turn in the SAME run, session and card — never a second Agent, never a
+      // new workspace lock, and only ONE final DONE.
+      let turnPrompt = prompt;
+      let result;
+      let turn = 0;
+      for (;;) {
+        turn += 1;
+        result = await withTimeout(runner.send(turnPrompt), this.config.taskTimeoutMs, {
+          label: 'task',
+          onTimeout: () => { console.error(`[task] timeout after ${this.config.taskTimeoutMs}ms; killing the agent process`); runner.stop({ reason: 'task wall-clock timeout' }).catch(() => {}); },
+        });
 
-      // A result that arrives after `!stop` must not be presented as a success.
-      if (task.cancelled) {
-        throw Object.assign(new Error('stopped by owner'), { code: 'TASK_CANCELLED' });
+        // A result that arrives after `!stop` must not be presented as a success.
+        if (task.cancelled) {
+          throw Object.assign(new Error('stopped by owner'), { code: 'TASK_CANCELLED' });
+        }
+
+        // Fail closed: never present a paid-backend result as a successful run.
+        // The verdict comes from the init event this run actually produced.
+        const verdict = this.backendVerdictByChannel.get(channelId);
+        if (verdict && !verdict.ok) throw new Error(`Backend rejected: ${verdict.reason}`);
+
+        progress.recordText(result.text);
+        progress.clearStall();
+        if (result.sessionId) {
+          this.state.patchChannel(channelId, { sessionId: result.sessionId }, this.config.defaultCwd);
+          this.channelBySession.set(result.sessionId, channelId);
+        }
+        console.log(`[task] turn=${turn} channel=${channelId} isError=${Boolean(result.isError)} tools=${result.tools.length} durationMs=${result.durationMs}`);
+
+        const next = run?.continuations?.length && !result.isError && !task.cancelled
+          ? run.continuations.shift()
+          : null;
+        if (!next) break;
+        console.log(`[work-insert] run=${run.id} continuation turn=${turn + 1} (same session, no new run)`);
+        try { this.durableStore?.followUpRemove(`continuation:${run.id}:${turn}`, { state: 'EXECUTED' }); } catch { /* audit-only */ }
+        progress.setState(STATE.RUNNING, '继续执行插入的需求');
+        await editor.flushNow(progress.render());
+        turnPrompt = next.prompt;
       }
 
-      // Fail closed: never present a paid-backend result as a successful run.
-      // The verdict comes from the init event this run actually produced.
-      const verdict = this.backendVerdictByChannel.get(channelId);
-      if (verdict && !verdict.ok) throw new Error(`Backend rejected: ${verdict.reason}`);
-
-      progress.recordText(result.text);
-      progress.clearStall();
       progress.setState(result.isError ? STATE.FAILED : STATE.DONE);
       if (result.isError) this.limits?.noteFailure(channelId, result.text);
       else this.limits?.noteSuccess(channelId);
-      if (result.sessionId) {
-        this.state.patchChannel(channelId, { sessionId: result.sessionId }, this.config.defaultCwd);
-        this.channelBySession.set(result.sessionId, channelId);
-      }
-      console.log(`[task] done channel=${channelId} state=${progress.state} tools=${result.tools.length} durationMs=${result.durationMs} tests=${progress.tests || '-'}`);
+      console.log(`[task] done channel=${channelId} state=${progress.state} turns=${turn} tools=${result.tools.length} durationMs=${result.durationMs} tests=${progress.tests || '-'}`);
       const extras = [
         runLog.path ? `日志：\`${path.basename(runLog.path)}\`` : null,
       ].filter(Boolean).join(' · ');

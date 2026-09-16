@@ -136,14 +136,14 @@ export class DurableStore {
     this.db.prepare('UPDATE runs SET session_id = ?2 WHERE run_id = ?1').run(runId, sessionId);
   }
 
-  /** Follow-up enqueued while the bridge is up; state QUEUED. */
-  followUpAdd({ id, runId = null, channelId, position, prompt = null, createdAt = null }) {
+  /** Follow-up / inserted-requirement audit row. State defaults to QUEUED. */
+  followUpAdd({ id, runId = null, channelId, position, prompt = null, createdAt = null, state = 'QUEUED' }) {
     this.#assertOpen();
     this.db.prepare(`
       INSERT INTO queued_followups (id, run_id, channel_id, position, state, prompt, created_at)
-      VALUES (?1,?2,?3,?4,'QUEUED',?5,?6)
-      ON CONFLICT(id) DO UPDATE SET state='QUEUED', position=excluded.position
-    `).run(id, runId, channelId, position, prompt, createdAt ?? new Date().toISOString());
+      VALUES (?1,?2,?3,?4,?5,?6,?7)
+      ON CONFLICT(id) DO UPDATE SET state=?5, position=excluded.position
+    `).run(id, runId, channelId, position, state, prompt, createdAt ?? new Date().toISOString());
   }
 
   followUpRemove(id, { state = 'EXECUTED' } = {}) {

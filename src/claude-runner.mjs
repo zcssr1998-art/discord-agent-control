@@ -115,6 +115,48 @@ export class ClaudeRunner {
     return Boolean(this.current);
   }
 
+  /**
+   * Whether this runner can deliver a requirement into a RUNNING turn.
+   *
+   * Claude-compatible `--input-format stream-json` reads user messages from stdin
+   * continuously, so an extra `user` message written while a tool is running is
+   * picked up at the next safe boundary of the SAME turn/session. Verified on the
+   * real CLI: a message injected during a 14s Bash tool call was executed after
+   * the tool returned, and only one `result` event was produced.
+   */
+  get supportsLiveInsert() {
+    return true;
+  }
+
+  /**
+   * Live steering: write an additional user message into the RUNNING child's
+   * stdin. This is deliberately NOT `send()`:
+   *   - it never touches `pending` (that queue means "next turn");
+   *   - it never starts a second process or a new session;
+   *   - it never interrupts the tool that is currently executing.
+   *
+   * Returns a delivery record so the caller can tell the owner the truth:
+   *   { ok, delivered, reason?, bytes?, error? }
+   * `reason: 'not-busy' | 'not-running' | 'write-failed'` are the honest
+   * fallback triggers (the caller then continues in the same session).
+   */
+  injectRequirement(prompt) {
+    if (this.disposed || !this.child?.stdin || this.child.exitCode !== null) {
+      return { ok: false, delivered: false, reason: 'not-running' };
+    }
+    if (!this.current) return { ok: false, delivered: false, reason: 'not-busy' };
+    const line = userMessage(prompt);
+    try {
+      this.child.stdin.write(line);
+    } catch (error) {
+      return { ok: false, delivered: false, reason: 'write-failed', error };
+    }
+    this.lastEventAt = Date.now();
+    this.injections = (this.injections ?? 0) + 1;
+    this.lastInjectionAt = Date.now();
+    return { ok: true, delivered: true, bytes: Buffer.byteLength(line) };
+  }
+
   /** Milliseconds since the agent last produced any output. */
   get idleMs() {
     return Date.now() - this.lastEventAt;

@@ -11,13 +11,13 @@ Do not mark an item PASS from unit tests alone. Items below record what was actu
 ## 1. Baseline regression
 
 - [x] `npm test` 鈥?266 pass / 0 fail
-- [x] `npm run check` 鈥?96 files, 0 failed
+- [x] `npm run check` 鈥?97 files, 0 failed
 - [x] `npm run smoke:p2` 鈥?11/11 passed (includes a real Agent run in a panel Work thread, 9.8s)
 - [x] `npm run smoke:p22` 鈥?10/10 checks passed (new P2.2 machine smoke)
 
 ```text
 > npm test        鈫?tests 266, pass 266, fail 0
-> npm run check   鈫?checked 96 file(s), 0 failed
+> npm run check   鈫?checked 97 file(s), 0 failed
 > npm run smoke:p2 鈫?=== summary: 11/11 passed ===
 > npm run smoke:p22 鈫?P2.2 smoke: 10/10 checks passed
 ```
@@ -203,6 +203,52 @@ Real owner Discord smoke (must be re-run by the owner, expected log):
 PENDING_OWNER_DISCORD_SMOKE  (expect: [interaction] /work ACK PASS <ms> method=deferReply)
 ```
 
+## 5c. Live insert / steering (➕ 插入需求)
+
+Previous (wrong) behavior: the button queued a next turn that only ran after the current task reached DONE. Required behavior: insert into the RUNNING turn.
+
+Implemented:
+
+- `ClaudeRunner.injectRequirement(prompt)` writes a stream-json `user` message straight into the RUNNING child's stdin; it never touches the `pending` (next turn) queue, never starts a second process, never interrupts the tool in flight. `send(prompt)` keeps its next-turn semantics — the two are separate APIs.
+- Verified on the real CLI before wiring: a message injected during a 14s Bash tool call was executed after the tool returned and produced exactly ONE `result` event.
+- Every executor advertises a capability (`live-steering` present on WorkBuddy + Claude Code); when an executor cannot steer, the UI says so instead of pretending.
+- Discord: the control is now `➕ 插入需求` (modal id `workinsert:<runId>`, legacy `workappend` still accepted). Reply on success: `✅ 已插入当前任务，Agent 将在下一个安全执行边界读取。` — never a queue position.
+- Owner text while the Agent is RUNNING is also steered, not queued. The follow-up queue remains only for a Work run that is queued and has not started yet.
+- Delivery is observable: `[work-insert] run=<runId> accepted mode=live bytes=<n>` (no requirement body is logged).
+- Race safety: if the turn ends in the same instant, the demand becomes an extra turn in the SAME run/session (`mode=continued`, UI: `当前轮刚结束，已转为同 Session 继续执行。`); an unsupported executor reports `⚠️ 当前执行器不支持运行中插入，将在当前轮后继续。`
+- `Stop` clears unconsumed inserts/continuations and reports `已清空 N 条未处理的插入需求。`
+- Same runId, same sessionId, no second Agent, no re-acquired workspace lock, one final DONE.
+
+Deterministic: `tests/v4-p22-insert.test.mjs` (10 tests) + updated P2.1/P2.2 suites (`npm test` 284/0).
+
+Real-machine smoke: `npm run smoke:p22-insert` (`scripts/p22-live-insert-e2e.mjs`) — real Agent process, real provider route, real filesystem, real hook server, real durable store. A ~35s task was inserted into while RUNNING.
+
+```text
+[smoke][env] providerRoute=local-adapter baseUrl=set inheritEnv=false
+PASS a real Work task reached RUNNING before the insert
+PASS the live insert was accepted into the running turn · ✅ 已插入当前任务，Agent 将在下一个安全执行边界读取。
+PASS the UI did not show a queue position for the live insert
+PASS exactly one Agent process was used (no second Agent PID) · pids=38464
+PASS exactly one workspace lock acquisition / Work run (no new run) · submit=1
+PASS the same runId was used for the insert · runIdAfter=null
+PASS one stable Agent session for the insert and the final result · runner=38aa7f1c-… channel=38aa7f1c-…
+PASS the run finished through the same channel (no active run left)
+PASS the workspace lock was released
+PASS the inserted side effect is part of the same Work run · inserted.txt="INSERT_OK"
+PASS exactly one Work run record exists · ["DONE"]
+PASS the run reached a single terminal DONE · states=DONE
+PASS the progress card shows a single DONE · doneTokens=1
+PASS no follow-up queue entries were created for the live insert
+
+P2.2 live-insert smoke: 14/14 checks passed
+```
+
+Real Discord click (owner-run, still pending) — start a Work, wait for RUNNING, tap `➕ 插入需求`:
+
+```text
+PENDING_OWNER_DISCORD_SMOKE  (expect: [work-insert] run=<id> accepted mode=live)
+```
+
 ## 6. `/doctor`
 
 - [x] local/deterministic; no model call (asserted: 0 ChatRuntime calls, 0 Agent starts)
@@ -235,7 +281,7 @@ live bridge: [commands] registered=11 changed=1   (adds /doctor)
 ```text
 .github/workflows/ci.yml
 jobs: windows (runs-on: windows-latest) [required], linux-portability (ubuntu-latest)
-local equivalents: npm test 274/0, npm run check 96/0
+local equivalents: npm test 284/0, npm run check 97/0
 ```
 
 ## 8. Refactor regression
@@ -251,7 +297,7 @@ local equivalents: npm test 274/0, npm run check 96/0
 - [x] no parallel replacement state/control implementation introduced (single source of truth kept in `DiscordControlPlane`)
 
 ```text
-tests 274 pass / 0 fail after extraction + ACK hardening (baseline at branch point: 244 pass / 0 fail)
+tests 284 pass / 0 fail after extraction + ACK hardening + live-insert steering (baseline at branch point: 244 pass / 0 fail)
 check 95 files / 0 failed
 smoke:p2 11/11
 ```
@@ -263,7 +309,7 @@ Note: this milestone extracted the pure helper/row layer only. Further controlle
 ```text
 P2.2: PASS (deterministic + Windows real-machine); owner Discord smoke + owner reboot smoke pending owner action
 commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2 implementation + ACK hardening)
-tests: 274/0 路 check 96/0 路 smoke:p2 11/11 路 smoke:p22 10/10
+tests: 284/0 · check 97/0 · smoke:p2 11/11 · smoke:p22 10/10 · smoke:p22-insert 14/14
 windows-smoke: scheduled task 鈫?supervisor 鈫?LiteLLM(UP) 鈫?bridge online; second launch refused pre-login (exit 1)
 autostart: installed (task 'Jarvis Discord Agent Control', Ready) 路 PENDING_OWNER_REBOOT_SMOKE
 blocker: real /work ACK timeout previously reproduced twice and has been fixed (see 搂5b); owner re-test pending

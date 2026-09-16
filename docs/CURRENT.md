@@ -25,11 +25,22 @@ Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOK
 
 ## Verified at this commit
 
-- `npm test` 274/0
-- `npm run check` 96/0
+- `npm test` 284/0
+- `npm run check` 97/0
 - `npm run smoke:p2` 11/11
 - `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
 - Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
+
+## Live insert / steering (semantics correction)
+
+`➕ 插入需求` (formerly `追加需求`) now steers the RUNNING turn instead of queueing a next turn:
+
+- `ClaudeRunner.injectRequirement(prompt)` writes a stream-json user message into the live child's stdin (verified on the real CLI: injected during a 14s tool call, executed after it, one `result`); `send()` keeps next-turn semantics.
+- no second Agent, no re-acquired workspace lock, no new run, same runId/sessionId, single final DONE
+- owner text while RUNNING steers too; the follow-up queue remains only for Work that is queued and not yet started
+- race/unsupported paths are honest (`当前轮刚结束，已转为同 Session 继续执行。` / `⚠️ 当前执行器不支持运行中插入，将在当前轮后继续。`)
+- Stop clears unconsumed inserts (`已清空 N 条未处理的插入需求。`)
+- evidence: `tests/v4-p22-insert.test.mjs` (10) + `npm run smoke:p22-insert` 14/14 real-agent
 
 ## Interaction ACK hardening (real `/work` FAIL fix)
 

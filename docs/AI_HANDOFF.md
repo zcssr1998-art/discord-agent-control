@@ -12,6 +12,7 @@ P2.2 implementation is complete and verified. Evidence: `docs/V4_P2_2_SMOKE.md`.
 
 ## What a next worker must know
 
+- `➕ 插入需求` is live steering, not a queued turn: `ClaudeRunner.injectRequirement()` writes into the RUNNING child's stdin (`send()` remains next-turn). Keep them separate; an insert must never start a second Agent/run/lock or invent a queue position. Unsupported executors must degrade visibly (`⚠️ 当前执行器不支持运行中插入…`), and a race at the turn boundary becomes a same-session continuation, never a dropped demand.
 - Interaction ACK failures are never swallowed: `#acknowledge()`/`#showModalAck()` in `src/discord-ui.mjs` return a result, `onInteraction` aborts on failure, and every interaction logs `[interaction] <label> ACK PASS|FAIL|SKIP <ms>ms method=…` with `requestReceivedAt/ackStartedAt/ackCompletedAt`. Do not re-introduce a bare `catch {}` around defer/showModal: that caused Discord "该应用程序未响应" while the backend still created the Work thread.
 
 - The single-instance lock is `data/jarvis-instance.lock` (git-ignored). A live holder is never killed; a second instance exits 1 before Discord login. `JARVIS_INSTANCE_LOCK` isolates the lock for tests.
@@ -24,8 +25,8 @@ P2.2 implementation is complete and verified. Evidence: `docs/V4_P2_2_SMOKE.md`.
 ## Verification used
 
 ```text
-npm test         274/0
-npm run check    96/0
+npm test         284/0
+npm run check    97/0
 npm run smoke:p2 11/11
 npm run smoke:p22 10/10
 ```
