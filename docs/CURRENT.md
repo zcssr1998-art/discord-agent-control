@@ -4,17 +4,28 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 ## Branch
 
-`jarvis-v4-p2-control-context`
+`jarvis-v4-p2-2-hardening`
+
+This is a stacked follow-up branch based on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. P2/P2.1 PR #4 is still Draft/open; do not merge P2.2 to `main` before P2/P2.1 is accepted and merged.
 
 ## Milestone
 
-Jarvis V4 P2 + P2.1 — persistent control panel, Chat context/attachments, native Discord commands, and interactive Work controls.
+Jarvis V4 P2.2 — hardening, durable runtime metadata, parent Work controls, CI/doctor, and Windows autostart.
 
-Status: P2 + P2.1 are implemented and machine-verified on this branch. PR #4 remains Draft and must not merge until the combined P2/P2.1 human Discord smoke + final review pass.
+Active spec: `docs/JARVIS_V4_P2_2_HARDENING_TASK.md`.
 
 ## Stable baseline
 
-P0/P0.5 and P1 are merged to `main` and are the rollback point.
+P0/P0.5 and P1 are merged to `main`.
+
+P2/P2.1 are the direct functional baseline for this branch and are machine-verified at branch point:
+
+- `npm test` 244/0
+- `npm run check` 85/0
+- `npm run smoke:p2` 11/11
+- real `/work` interaction ACK lifecycle fixed on the live bridge
+
+P2/P2.1 final owner smoke/PR #4 merge may still be pending. Do not redo their implementation in P2.2.
 
 Preserve these invariants:
 
@@ -22,57 +33,44 @@ Preserve these invariants:
 - LiteLLM primary + OpenCode Go direct fallback
 - manual Chat pin never silently falls back
 - AUTO never surprises the owner with metered routes
-- guild `work <task>` creates a permanent Work thread; parent remains Chat
+- guild Work runs in a permanent Work thread; parent remains Chat
 - one canonical workspace has at most one active Jarvis Work task; same-workspace tasks FIFO
 - queued Work never starts an Agent before lock acquisition
-- real stop kills active process trees / cancels queued work correctly
-- permission/approval/session safety remains intact
+- P2.1 follow-ups are later turns in the same Work session; no mid-process stdin injection
+- real stop kills active process trees, cancels queued work, and clears pending follow-ups
+- stale cards/runIds cannot control newer work
+- permission/approval/session/secret safety remains intact
 
-P1 evidence: `docs/V4_P1_SMOKE.md`.
-P2 + P2.1 evidence: `npm test` 244/0, `npm run check` 85/0, `npm run smoke:p2` 11/11. Evidence: `docs/V4_P2_SMOKE.md` (§9 for P2.1, incl. the interaction ACK fix).
+## P2.2 scope
 
-## Active specs
+1. single-instance lock + real PID/branch/commit/uptime/instance identity
+2. Windows Task Scheduler autostart at user logon, launching the existing supervisor (and therefore LiteLLM + bridge), with install/remove/status/idempotency
+3. compact parent-channel Work summary card: open thread / append / stop
+4. local SQLite WAL durable operational store for run/session/queue metadata; no secret migration and no surprise auto-resume after restart
+5. incremental split of the oversized `discord-ui.mjs`; no big-bang rewrite
+6. Windows GitHub CI + local deterministic `/doctor`
 
-1. `docs/JARVIS_V4_P2_TASK.md` — implemented; owner human Discord smoke not yet closed.
-2. `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — implemented; owner human Discord smoke not yet closed.
+Explicitly not P2.2: market monitoring, web dashboard, Redis/Postgres, Agent swarm/worktrees, new real Codex/OpenCode adapters, voice.
 
-The former P1.1 panel task is superseded; do not implement it separately.
+## Key autostart decision
 
-## P2.1 requested UX
+“开机自启” means: after Windows starts and the owner logs into the user profile, Task Scheduler starts `scripts/start-supervisor.ps1` from the current checkout. Do not build a Windows service in this milestone. Do not start `node src/index.mjs` directly. The supervisor remains the only restart owner for Jarvis + LiteLLM.
 
-- Discord-native application commands: `/panel /work /model /settings /permission /status /stop /new /compact /help`
-- active/queued Work progress card buttons: `➕ 追加需求` + `⛔ Stop`
-- append button opens a multiline Modal
-- normal owner text in an active Work thread/Work-mode DM/channel also queues a follow-up requirement
-- follow-ups execute FIFO as later turns in the same Work session, through the existing `runTask` + `WorkspaceScheduler` path; no fragile stdin injection
-- parent guild channel stays Chat
-- Stop cancels active/queued work and clears pending follow-ups
-- stale task cards must never affect a newer run
+A single-instance guard must make manual launch + scheduled launch safe. The scheduled task installer must be idempotent and update the canonical task to the current checkout rather than create duplicates.
 
-## Key architecture decisions
-
-- no second settings/model/work/stop implementation; slash commands and card controls delegate to existing handlers
-- no second state store; P2.1 uses minimal in-memory per-run/per-chain follow-up state
-- follow-up queue is distinct from workspace scheduling, but every follow-up must reacquire the workspace through `WorkspaceScheduler` for FIFO fairness
-- progress-card controls bind to a per-run identifier, not only channel ID
-- Discord cards have no permanent inline text field; use a Modal for the button path, plus ordinary Work-thread text as the fastest path
-- no adapter-specific mid-process stdin injection
-
-## P2.1 implementation map
-
-- `src/commands.mjs` — application-command definitions + idempotent registration (no hard-coded IDs)
-- `src/discord-ui.mjs` — `onInteraction` handles chat-input commands, `workctl:append|stop:<runId>` card controls, `workappend:<runId>` modal; shared `#stopChannel`; `#appendFollowUp` / `#drainFollowUps`; `#launchWork` reused by text/panel/slash
-- `src/progress.mjs` — `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep controls
-- `src/config.mjs` — `DISCORD_AUTO_REGISTER_COMMANDS`, optional `DISCORD_COMMANDS_GUILD_ID`, `MAX_WORK_FOLLOWUPS`
+Never reboot the owner machine automatically. Real reboot acceptance remains `PENDING_OWNER_REBOOT_SMOKE` until the owner explicitly restarts and confirms Jarvis returns.
 
 ## Next action
 
-Owner runs the combined minimal P2/P2.1 human Discord smoke (`docs/V4_P2_SMOKE.md` §8–§9), then final PR #4 review. Do not redo already-proven P2 internals.
+Read `AGENTS.md`, this file, `docs/AI_HANDOFF.md`, `docs/tasks/CURRENT.md`, then execute `docs/JARVIS_V4_P2_2_HARDENING_TASK.md` in the specified order. Use targeted tests while coding and full regression at milestones. Do not rescan/replan P2/P2.1.
 
-## Minimal relevant files
+## Minimal relevant files first
 
+- `scripts/start-supervisor.ps1`
+- `src/index.mjs`
 - `src/discord-ui.mjs`
-- `src/commands.mjs`
+- `src/workspace-scheduler.mjs`
+- `src/state.mjs`
+- `src/session-manager.mjs`
 - `src/progress.mjs`
-- `tests/v4-p2-native.test.mjs`
-- `tests/helpers/fake-discord.mjs`
+- `package.json`
