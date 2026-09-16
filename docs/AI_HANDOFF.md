@@ -1,6 +1,6 @@
 # AI handoff
 
-Keep this file short and overwrite/update it at every meaningful handoff. Do not paste old chat transcripts here.
+Keep this file short and only add facts that help a successor resume without reconstructing chat history.
 
 ## Branch
 
@@ -8,33 +8,30 @@ Keep this file short and overwrite/update it at every meaningful handoff. Do not
 
 ## Active task
 
-None. P2.2.2 (`docs/JARVIS_V4_P2_2_2_CHAT_MODEL_SELECTION_TASK.md`) is complete.
+`docs/JARVIS_V4_P2_2_3_REPOSITORY_STABILIZATION_TASK.md`
 
 ## Current status
 
-The post-reboot Chat bug is fixed and verified. Chat now defaults to `AUTO`, a
-real manual pin is available and persists, placeholders are rejected at one
-shared boundary, and an already-persisted `<model-id>` is auto-repaired to
-`AUTO/null` on `StateStore.load()`.
+P2.2.1 Supervisor recovery and P2.2.2 Chat model selection are complete and must be preserved. The owner has requested one repository-wide stabilization pass because adjacent bugs continued surfacing after focused fixes.
 
-Live evidence on this machine (2026-09-16): the real persisted
-`opencode-go / <model-id>` was injected in a state copy and, separately, the real
-`data/state.json` was re-seeded with it and the bridge restarted through the
-supervisor. The log recorded
-`[state] repaired invalid Chat selection for channel=1033760247598288908 -> AUTO`
-and the on-disk state became `AUTO/null` while cwd/Work fields were preserved.
-Real-provider smoke (`npm run smoke:p222`) proved AUTO chat (`你好` via LiteLLM
-`chat-fast` → opencode-go/deepseek-v4.1-flash), a real OpenCode Go manual pin,
-`/status` showing the pin, switch back to AUTO, and restart persistence across
-separate processes.
+Already reproduced mandatory findings:
+
+- many-model Chat UI still emits a fake runnable placeholder (`!chatmodel opencode-go <model-id>`) even though placeholders are now rejected;
+- previous `/status` Discord `该应用程序未响应` means ACK timing/reply semantics need matrix coverage across every slash/button/modal path;
+- help text can reference emoji controls that are not actually present in the help view.
+
+## Execution model
+
+Use the active taskbook's feature matrix. Fix every reproducible in-scope current-feature bug discovered. Keep a compact ledger at `docs/P2_2_3_BUG_BASH.md`; do not dump logs there. Focused workers are allowed only by domain and must not duplicate whole-repo scans/replanning.
 
 ## Preserve
 
-Do not regress P2.2.1 recovery, Work model persistence, Chat-vs-Work separation,
-safe AUTO billing policy, or manual-pin no-fallback behavior. Do not start P3.
-No secrets in repo/logs.
+- P2.2.1: persistent Supervisor, LiteLLM recovery, Task Scheduler watchdog, one bridge instance;
+- P2.2.2: default AUTO/null, selectable manual Chat pin, no silent manual fallback, switch back to AUTO, placeholder repair;
+- Chat/Work separation, workspace/model persistence, permission/approval/stop semantics;
+- safe AUTO billing policy;
+- no secrets in repo/logs.
 
-## Delivery
+## Completion
 
-`docs/CURRENT.md`, `docs/tasks/CURRENT.md`, `docs/V4_P2_2_SMOKE.md` updated;
-committed and pushed to the active branch.
+Do not mark PASS until the audit matrix has been exercised, all reproducible in-scope bugs are fixed or explicitly externally blocked, regression and focused real-machine E2E are green, state/evidence are updated, and the verified commit is pushed. Do not start P3.
