@@ -34,82 +34,40 @@ import {
   downloadWorkAttachments, buildWorkManifest, readChatAttachments, buildChatContent, buildChatHistoryText,
 } from './attachments.mjs';
 import { registerApplicationCommands, COMMAND_NAMES } from './commands.mjs';
+import { autostartSummary } from './autostart.mjs';
+import {
+  clip,
+  permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
+  providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, panelMainRows,
+  panelBackRow, panelModelRows, workControlRows, providerModelRows, choiceRows,
+  modelPageButtons, protocolLabel, transportLabel, billingLabel, sanitizeThreadName, workTitle,
+  SETTINGS_MODEL_LIMIT, DISCORD_LIMIT,
+} from './discord/renderers.mjs';
 
-const DISCORD_LIMIT = 1900;
-
-function clip(text, n = DISCORD_LIMIT) {
-  const s = String(text ?? '');
-  return s.length <= n ? s : `${s.slice(0, n - 20)}\n…(truncated)`;
+/**
+ * P2.2A/P2.2F: live uptime + WebSocket-state rendering for /status and /doctor.
+ * Pure functions, model-free.
+ */
+export function formatUptime(ms) {
+  const total = Math.max(0, Math.floor(Number(ms) / 1000));
+  const days = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (!days && !h && !m) parts.push(`${s}s`);
+  return parts.join('');
 }
 
-function permissionButtons() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('perm:strict').setLabel(PERM_LABEL.strict).setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('perm:standard').setLabel(PERM_LABEL.standard).setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('perm:relaxed').setLabel(PERM_LABEL.relaxed).setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('perm:full').setLabel(PERM_LABEL.full).setStyle(ButtonStyle.Danger),
-  );
-}
-
-function permissionMenuButton() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('perm:menu').setLabel('🔐 权限设置').setStyle(ButtonStyle.Secondary),
-  );
-}
-
-function fullConfirmationButtons() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('permfull:confirm').setLabel('确认全开放').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('permfull:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary),
-  );
-}
-
-function configButtons() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('cfg:executor').setLabel('🛠️ 执行器').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:provider').setLabel('🌐 提供商').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:model').setLabel('🧠 模型').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
-  );
-}
-
-function providerResultButtons(providerId) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`apiuse:${providerId}`).setLabel('选择 Provider').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`apimodel:${providerId}`).setLabel('选择模型').setStyle(ButtonStyle.Secondary),
-  );
-}
-
-function protocolButtons() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`apiproto:${PROTOCOL.OPENAI}`).setLabel('OpenAI Compatible').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`apiproto:${PROTOCOL.ANTHROPIC}`).setLabel('Anthropic Compatible').setStyle(ButtonStyle.Secondary),
-  );
-}
-
-function settingsButtons({ workThread = false } = {}) {
-  const top = [];
-  // A permanent Work thread has no Chat context, so the Chat-route control is
-  // deliberately absent there.
-  if (!workThread) top.push(new ButtonBuilder().setCustomId('set:chatauto').setLabel('💬 Chat→AUTO').setStyle(ButtonStyle.Secondary));
-  top.push(
-    new ButtonBuilder().setCustomId('set:executor').setLabel('🛠️ 执行器').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('set:provider').setLabel('🌐 提供商').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('set:model').setLabel('🧠 模型').setStyle(ButtonStyle.Secondary),
-  );
-  return [
-    new ActionRowBuilder().addComponents(...top),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('set:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('set:refresh').setLabel('🔄 刷新').setStyle(ButtonStyle.Primary),
-    ),
-  ];
-}
-
-function settingsBackRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('set:refresh').setLabel('⬅️ 返回').setStyle(ButtonStyle.Secondary),
-  );
+export function wsStatusText(status) {
+  const map = {
+    0: 'connecting', 1: 'connected', 2: 'disconnected', 3: 'reconnecting',
+    4: 'identifying', 5: 'resuming', 6: 'close requested', 7: 'destroyed', '-1': 'ready',
+  };
+  return map[status] ?? `ws status ${status}`;
 }
 
 export const PANEL_HELP_TEXT = [
@@ -144,132 +102,6 @@ export const PANEL_HELP_TEXT = [
 const PANEL_COMPACT_HEADER = '以下是此前对话的摘要，请在回答时作为背景上下文：';
 const PANEL_COMPACT_SYSTEM = '你是一个对话摘要器。只输出摘要本身，不要寒暄，不要复述原始日志。';
 
-function panelMainRows() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel:newwork').setLabel('🛠 新建 Work').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('panel:models').setLabel('🧠 换模型').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel:settings').setLabel('⚙️ 设置').setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel:newchat').setLabel('🆕 新对话').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel:compact').setLabel('🧹 压缩上下文').setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel:status').setLabel('📊 状态').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('panel:stop').setLabel('⛔ Stop').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('panel:help').setLabel('📖 使用说明').setStyle(ButtonStyle.Secondary),
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel:refresh').setLabel('🔄 刷新').setStyle(ButtonStyle.Success),
-    ),
-  ];
-}
-
-function panelBackRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('panel:refresh').setLabel('⬅️ 返回').setStyle(ButtonStyle.Secondary),
-  );
-}
-
-function panelModelRows() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panelmodels:chat').setLabel('💬 Chat 模型').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('panelmodels:work').setLabel('🛠 Work 模型').setStyle(ButtonStyle.Primary),
-    ),
-    panelBackRow(),
-  ];
-}
-
-/**
- * Active Work progress-card controls. The custom id carries the run id so a
- * stale card from an earlier run can never stop/append to a newer task.
- */
-function workControlRows(runId) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`workctl:append:${runId}`).setLabel('➕ 追加需求').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`workctl:stop:${runId}`).setLabel('⛔ Stop').setStyle(ButtonStyle.Danger),
-    ),
-  ];
-}
-
-/** Choice rows that keep provider + model in the custom id (`prefix:provider:model`). */
-function providerModelRows(prefix, providerId, items, { current = null } = {}) {
-  if (!items.length || items.length > 20) return null;
-  const rows = [];
-  for (let i = 0; i < items.length; i += 5) {
-    rows.push(new ActionRowBuilder().addComponents(
-      ...items.slice(i, i + 5).map((item) => new ButtonBuilder()
-        .setCustomId(`${prefix}:${providerId}:${item.id}`)
-        .setLabel(item.id === current ? `✓ ${item.label}`.slice(0, 80) : String(item.label).slice(0, 80))
-        .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)),
-    ));
-  }
-  return rows;
-}
-
-export const SETTINGS_MODEL_LIMIT = 20;
-
-/**
- * Turn a choice list into button rows (5 per row, 5 rows). Returns null when the
- * list does not fit; callers fall back to the existing text command instead of
- * building pagination in P1.
- */
-function choiceRows(prefix, items, { current = null } = {}) {
-  if (!items.length || items.length > 25) return null;
-  const rows = [];
-  for (let i = 0; i < items.length; i += 5) {
-    rows.push(new ActionRowBuilder().addComponents(
-      ...items.slice(i, i + 5).map((item) => new ButtonBuilder()
-        .setCustomId(`${prefix}:${item.id}`)
-        .setLabel(item.id === current ? `✓ ${item.label}`.slice(0, 80) : String(item.label).slice(0, 80))
-        .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)
-        .setDisabled(Boolean(item.disabled))),
-    ));
-  }
-  return rows;
-}
-
-const THREAD_NAME_MAX = 90;
-
-export function sanitizeThreadName(task) {
-  const cleaned = String(task ?? '')
-    .replace(/\s+/g, ' ')
-    .replace(/[`*_~|]/g, '')
-    .trim();
-  const base = cleaned || 'Work';
-  const name = `🛠 ${base}`;
-  return name.length <= 100 ? name : `${name.slice(0, THREAD_NAME_MAX)}…`;
-}
-
-function modelPageButtons(page, pages) {
-  if (pages <= 1) return null;
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`models:${Math.max(1, page - 1)}`).setLabel('上一页').setStyle(ButtonStyle.Secondary).setDisabled(page <= 1),
-    new ButtonBuilder().setCustomId(`models:${Math.min(pages, page + 1)}`).setLabel('下一页').setStyle(ButtonStyle.Secondary).setDisabled(page >= pages),
-  );
-}
-
-function protocolLabel(protocol) {
-  return { [PROTOCOL.WORKBUDDY]: 'WorkBuddy Native', [PROTOCOL.OPENAI]: 'OpenAI Compatible', [PROTOCOL.ANTHROPIC]: 'Anthropic Compatible', [PROTOCOL.OPENCODE_GO]: 'OpenCode Go' }[protocol] || protocol || 'unknown';
-}
-
-function transportLabel(transport) {
-  return {
-    [TRANSPORT.ANTHROPIC_MESSAGES]: 'anthropic-messages',
-    [TRANSPORT.OPENAI_CHAT]: 'openai-chat',
-    [TRANSPORT.OPENAI_RESPONSES]: 'openai-responses',
-    [TRANSPORT.UNKNOWN]: 'unknown',
-  }[transport] || transport || 'unknown';
-}
-
-function billingLabel(type) {
-  return { FREE: '免费', SUBSCRIPTION: '订阅', METERED: '按量 API', UNKNOWN: '未知' }[type] || '未知';
-}
-
 export class DiscordControlPlane {
   constructor({
     config,
@@ -289,6 +121,8 @@ export class DiscordControlPlane {
     gatewayHealth = null,
     workspaceScheduler = null,
     attachmentInbox = null,
+    runtimeIdentity = null,
+    durableStore = null,
     attachmentFetch = fetch,
     extraEnv = {},
     envUnset = [],
@@ -312,6 +146,10 @@ export class DiscordControlPlane {
     // session and is only ever touched by the Chat path.
     this.chatHistory = chatHistory;
     this.gatewayHealth = gatewayHealth;
+    // P2.2A live build/runtime identity (guard lock + branch/commit) and the
+    // P2.2D durable store. Both optional so existing test harnesses work.
+    this.runtimeIdentity = runtimeIdentity;
+    this.durableStore = durableStore;
     // Where downloaded Discord attachments land. Null disables attachments so a
     // bare test harness cannot accidentally write to the real data directory.
     this.attachmentInbox = attachmentInbox;
@@ -554,7 +392,7 @@ export class DiscordControlPlane {
       : null;
     const protocol = provider?.protocol === PROTOCOL.OPENCODE_GO ? transportLabel(transport) : protocolLabel(provider?.protocol);
     const adapter = provider ? this.executorManager?.adapterLabel(provider.protocol, transport) : null;
-    return formatStatus({
+    const statusText = formatStatus({
       executor: executor?.displayName ?? this.config.claudeCommand,
       provider: this.providerManager ? provider?.displayName || '未选择' : undefined,
       protocol,
@@ -579,6 +417,57 @@ export class DiscordControlPlane {
       chatHealth: this.#chatHealthText(channelId),
       gateway,
     });
+    // P2.2A/P2.2B: real runtime/build/instance identity + autostart state.
+    return this.#withRuntimeIdentity(statusText);
+  }
+
+  /** Append live identity lines; never invents a branch/commit. */
+  #withRuntimeIdentity(text) {
+    const identity = this.runtimeIdentity;
+    const lines = [];
+    if (identity?.describe && identity.describe !== 'unknown') lines.push(`Build: ${identity.describe}`);
+    lines.push(`Runtime: PID ${process.pid} · uptime ${formatUptime(process.uptime() * 1000)}`);
+    const ownerId = identity?.guard?.info?.instanceId;
+    if (ownerId) lines.push(`Instance: ${ownerId.split(':')[0]}`);
+    return lines.length ? `${text}\n\n${lines.join('\n')}` : text;
+  }
+
+  /** Deterministic local diagnostics for /doctor and !doctor. No model call. */
+  async #doctorText() {
+    const lines = ['🩺 **Doctor**（本地确定性检查，无模型调用）', ''];
+
+    const identity = this.runtimeIdentity;
+    if (identity) {
+      lines.push(`🖥 Instance: PID ${process.pid} · uptime ${formatUptime(process.uptime() * 1000)} · build ${identity.describe}`);
+      lines.push(`🔒 Instance lock: ${identity.guard?.acquired ? 'yes' : 'NO'}`);
+      const store = this.durableStore?.status?.();
+      lines.push(`💾 Durable store: ${store?.open ? `open (v${store.schemaVersion}, ${store.runCount} runs, ${store.pendingFollowups} pending follow-up(s))` : 'unavailable'}`);
+    }
+
+    let discord = 'offline';
+    if (this.client?.ws) discord = wsStatusText(this.client.ws.status);
+    else if (this.client) discord = 'client online';
+    lines.push(`💬 Discord: ${discord}`);
+
+    let gateway = 'disabled';
+    if (this.gatewayHealth) {
+      const result = await this.gatewayHealth().catch(() => ({ ok: false, detail: 'error' }));
+      gateway = result.ok ? 'UP' : `DOWN (${result.detail || 'error'})`;
+    }
+    lines.push(`🌐 LiteLLM gateway: ${gateway}`);
+
+    const executors = (this.executorManager?.list() ?? []);
+    lines.push(`🛠 Executors: ${executors.length ? '' : '(none discovered)'}`);
+    for (const executor of executors.slice(0, 6)) {
+      lines.push(`   ${executor.status === 'PASS' ? '✅' : '❌'} ${executor.id}=${executor.status}`);
+    }
+
+    try {
+      lines.push(`⏰ Autostart: ${await autostartSummary()}`);
+    } catch {
+      lines.push('⏰ Autostart: unknown');
+    }
+    return lines.join('\n');
   }
 
   #permissionMenu(channelId) {
@@ -887,6 +776,10 @@ export class DiscordControlPlane {
         ? await this.gatewayHealth().catch(() => ({ ok: false, detail: 'error' }))
         : null;
       await message.reply({ content: clip(this.#statusLine(message.channelId, gateway)), components: [permissionMenuButton()] });
+      return;
+    }
+    if (text === '!doctor') {
+      await message.reply(clip(await this.#doctorText()));
       return;
     }
     if (text === '!config') {
@@ -1243,6 +1136,24 @@ export class DiscordControlPlane {
 
     console.log(`[work-thread] created thread=${thread.id} parent=${parentId} cwd=${parent.cwd}`);
     await message.reply(`🛠 已创建 Work 线程 <#${thread.id}>，任务已在线程中开始。父频道保持 Chat。`);
+
+    // P2.2C: one compact parent summary card for the Work chain. The parent
+    // stays Chat; the thread carries the verbose progress card.
+    {
+      const chain = this.#chain(thread.id);
+      chain.channelTitle = workTitle(task);
+      chain.threadId = thread.id;
+      chain.parentChannelId = parentId;
+      chain.guildId = message.guildId ?? null;
+      if (message.channel?.send) {
+        const card = this.#renderParentCard(thread.id);
+        if (card) {
+          await message.channel.send({ content: card.content, components: card.components })
+            .then((sent) => { chain.parentCard = sent; })
+            .catch((error) => console.warn(`[work-card] could not post the parent summary card: ${redact(error?.message || error)}`));
+        }
+      }
+    }
 
     const threadMessage = {
       channelId: thread.id,
@@ -1725,6 +1636,7 @@ export class DiscordControlPlane {
     const killed = (runner && await runner.stop({ reason: 'stopped by owner (!stop)' })) || { killed: false, pid: null };
     this.runners.delete(channelId);
     if (task) await task.finish();
+    await this.#refreshParentCard(channelId, { finalState: true }).catch(() => {});
     return [
       killed.pid
         ? `⛔ 已停止 Agent 进程树（pid ${killed.pid}）。`
@@ -1740,7 +1652,8 @@ export class DiscordControlPlane {
   #chain(channelId) {
     let chain = this.workChains.get(channelId);
     if (!chain) {
-      chain = { channelId, activeRunId: null, followUps: [], dedupe: new Set(), channel: null, queuedNotice: null, queuedRunId: null };
+      chain = { channelId, activeRunId: null, followUps: [], dedupe: new Set(), channel: null, queuedNotice: null, queuedRunId: null,
+        channelTitle: null, cardStartedAt: null, threadId: null, parentChannelId: null, guildId: null, parentCard: null };
       this.workChains.set(channelId, chain);
     }
     return chain;
@@ -1776,8 +1689,83 @@ export class DiscordControlPlane {
     const count = chain.followUps.length;
     chain.followUps = [];
     chain.dedupe.clear();
+    try { this.durableStore?.followUpsClear(channelId, { state: 'CANCELLED' }); } catch { /* audit-only */ }
     if (this.tasks.get(channelId)) this.#refreshWorkCard(channelId);
     return count;
+  }
+
+  // ---- P2.2C parent-channel Work summary card ------------------------------
+
+  /** Card state tuple from the live task progress (or workspace scheduler). */
+  #cardState(channelId) {
+    const task = this.tasks.get(channelId);
+    const progressState = task?.progress?.state;
+    if (progressState) {
+      const map = {
+        [STATE.RUNNING]: ['🟡', 'RUNNING'],
+        [STATE.PLANNING]: ['🟡', 'RUNNING'],
+        [STATE.TESTING]: ['🟡', 'RUNNING'],
+        [STATE.WAITING_APPROVAL]: ['🟡', 'RUNNING'],
+        [STATE.DONE]: ['🟢', 'DONE'],
+        [STATE.FAILED]: ['🔴', 'FAILED'],
+        [STATE.CANCELLED]: ['⚪', 'CANCELLED'],
+        [STATE.TIMEOUT]: ['🔴', 'TIMEOUT'],
+      };
+      const [icon, label] = map[progressState] ?? ['🟡', 'RUNNING'];
+      return [icon, label, progressState];
+    }
+    const work = this.scheduler?.stateFor(channelId);
+    if (work?.state === 'queued') return ['⏳', 'QUEUED', work.state];
+    if (work?.state === 'running') return ['🟡', 'RUNNING', work.state];
+    return ['🟢', 'IDLE', 'idle'];
+  }
+
+  /**
+   * Compact parent summary: state + elapsed + model + workspace. Controls are
+   * bound to the LIVE run id, so a stale parent card can never stop/append to a
+   * newer run (same shared workctl paths as the thread card).
+   */
+  #renderParentCard(channelId) {
+    const chain = this.workChains.get(channelId);
+    if (!chain) return null;
+    const [icon, label, progressState] = this.#cardState(channelId);
+    const s = this.sessionManager.get(channelId);
+    const task = this.tasks.get(channelId);
+    const model = task?.progress?.model || s.model || 'unknown';
+    const finished = ['DONE', 'FAILED', 'CANCELLED', 'TIMEOUT'].includes(progressState ?? '');
+    const workedMs = Math.max(0, Date.now() - (chain.cardStartedAt || Date.now()));
+    const stateLine = finished ? `${icon} ${label}` : `${icon} ${label} · ${formatUptime(workedMs)}`;
+    const content = [
+      `🛠 Work · ${clip(String(chain.channelTitle ?? '任务'), 60)}`,
+      stateLine,
+      `🤖 ${model}`,
+      `📁 ${s.cwd}`,
+      ...(chain.followUps.length ? [`➕ 待执行追加需求：${chain.followUps.length}`] : []),
+    ].join('\n');
+    const rows = [];
+    if (chain.threadId && chain.guildId) {
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setURL(`https://discord.com/channels/${chain.guildId}/${chain.threadId}`)
+          .setLabel('打开 Work')
+          .setStyle(ButtonStyle.Link),
+      ));
+    }
+    const runId = chain.activeRunId || chain.queuedRunId || null;
+    if (runId && !finished) rows.push(...workControlRows(runId));
+    return { content, components: rows };
+  }
+
+  /** Update the single parent card message; best-effort, no throttle needed. */
+  async #refreshParentCard(channelId, { finalState = null } = {}) {
+    const chain = this.workChains.get(channelId);
+    if (!chain?.parentCard || typeof chain.parentCard.edit !== 'function') return;
+    const card = this.#renderParentCard(channelId);
+    if (card) {
+      await chain.parentCard.edit({ content: card.content, components: card.components })
+        .catch((error) => console.warn(`[work-card] edit failed: ${redact(error?.message || error)}`));
+    }
+    if (finalState) chain.parentCard = null; // keep the last summary as a history pointer
   }
 
   #appendModal(runId) {
@@ -1816,9 +1804,20 @@ export class DiscordControlPlane {
         console.warn(`[followup] attachment prepare failed: ${redact(error?.message || error)}`);
       }
     }
-    chain.followUps.push({ prompt: prepared, channelId, guildId, channel, createdAt: Date.now() });
+    const durableId = `${channelId}:${Date.now()}:${chain.followUps.length + 1}`;
+    chain.followUps.push({ prompt: prepared, channelId, guildId, channel, durableId, createdAt: Date.now() });
     chain.channel = channel || chain.channel;
+    try {
+      this.durableStore?.followUpAdd({
+        id: durableId,
+        runId: chain.activeRunId ?? null,
+        channelId,
+        position: chain.followUps.length,
+        prompt: clip(String(prepared ?? ''), 500),
+      });
+    } catch { /* audit-only */ }
     this.#refreshWorkCard(channelId);
+    await this.#refreshParentCard(channelId).catch(() => {});
     return { ok: true, position: chain.followUps.length };
   }
 
@@ -1859,6 +1858,7 @@ export class DiscordControlPlane {
     }
     if (!chain.followUps.length) return;
     const next = chain.followUps.shift();
+    try { this.durableStore?.followUpRemove(next.durableId, { state: 'EXECUTED' }); } catch { /* audit-only */ }
     const target = next.channel || chain.channel;
     if (!target?.send) return;
     const message = {
@@ -1908,6 +1908,7 @@ export class DiscordControlPlane {
     if (name === 'permission') { await this.#edit(interaction, this.#permissionMenu(channelId)); return; }
     if (name === 'help') { await this.#edit(interaction, this.#panelHelp()); return; }
     if (name === 'status') { await this.#edit(interaction, await this.#panelStatus(channelId)); return; }
+    if (name === 'doctor') { await this.#edit(interaction, { content: clip(await this.#doctorText()) }); return; }
     if (name === 'new') { await this.#edit(interaction, { content: clip(this.#newChat(channelId)) }); return; }
     if (name === 'compact') { await this.#edit(interaction, { content: clip(await this.#compactChat(channelId)) }); return; }
     if (name === 'stop') { await this.#edit(interaction, { content: clip(await this.#stopChannel(channelId)) }); return; }
@@ -1999,6 +2000,26 @@ export class DiscordControlPlane {
     }
 
     const run = this.#beginRun(message);
+    // P2.2D durable run record: persisted BEFORE the workspace queue so a
+    // pending record explains what a restart interrupted (never auto-resumed).
+    try {
+      this.durableStore?.runStart({
+        runId: run.id,
+        chainId: channelId,
+        channelId,
+        threadId: this.#isWorkThread(channelId) ? channelId : null,
+        parentChannelId: this.state.getChannel(channelId, this.config.defaultCwd).parentChannelId ?? null,
+        workspace,
+        title: clip(String(taskPrompt ?? '').replace(/\s+/g, ' ').trim(), 120),
+        prompt: clip(String(prompt ?? ''), 2000),
+        executorId: chState.executorId,
+        providerId: chState.providerId,
+        model: chState.model,
+        permissionLevel: this.permissionManager.getLevel(channelId),
+      });
+    } catch (error) { console.warn(`[store] runStart failed: ${redact(error?.message || error)}`); }
+    const chainForCard = this.workChains.get(channelId);
+    if (chainForCard) chainForCard.channelTitle = chainForCard.channelTitle || workTitle(taskPrompt);
     const entry = this.scheduler.submit({
       workspace,
       channelId,
@@ -2009,7 +2030,13 @@ export class DiscordControlPlane {
         console.log(`[queue] start channel=${channelId} workspace=${key}`);
         run.state = 'running';
         const chain = this.workChains.get(channelId);
-        if (chain) { chain.queuedNotice = null; chain.queuedRunId = null; }
+        if (chain) {
+          chain.queuedNotice = null;
+          chain.queuedRunId = null;
+          if (!chain.cardStartedAt) chain.cardStartedAt = Date.now();
+        }
+        // P2.2C: repaint the parent summary card as soon as the lock is held.
+        await this.#refreshParentCard(channelId).catch(() => {});
         const notice = this.queuedNotices.get(channelId);
         if (!notice) return;
         this.queuedNotices.delete(channelId);
@@ -2018,6 +2045,8 @@ export class DiscordControlPlane {
     });
     await entry.done.catch(() => {});
     this.#drainFollowUps(channelId, run);
+    // P2.2C: final compact summary card refresh (DONE/FAILED/CANCELLED/...).
+    await this.#refreshParentCard(channelId, { finalState: true }).catch(() => {});
   }
 
   async #notifyQueued(message, workspace, position, active, run = null) {
@@ -2086,6 +2115,7 @@ export class DiscordControlPlane {
       runLog,
       cancelled: false,
       finished: false,
+      startedAt: Date.now(),
       watchdog: null,
       schedule: () => editor.submit(progress.render(), activeComponents()),
       finish: async () => {
@@ -2095,8 +2125,21 @@ export class DiscordControlPlane {
         if (task.watchdog) { clearInterval(task.watchdog); task.watchdog = null; }
         editor.dispose();
         runLog.close();
+        // P2.2C: final parent card render WHILE the task is still present so the
+        // terminal state (DONE/FAILED/CANCELLED) is what the owner last sees.
+        await this.#refreshParentCard(channelId, { finalState: true }).catch(() => {});
         this.tasks.delete(channelId);
         this.#endRun(run);
+        // P2.2D terminal durable record for this run.
+        try {
+          this.durableStore?.runFinish(run?.id ?? null, {
+            state: (progress.state || 'DONE').toUpperCase(),
+            durationMs: Date.now() - (task.startedAt ?? Date.now()),
+            costUsd: progress.costUsd ?? null,
+            sessionId: this.state.getChannel(channelId, this.config.defaultCwd).sessionId ?? null,
+            tests: progress.tests ?? null,
+          });
+        } catch { /* audit-only, never breaks the run */ }
       },
     };
     this.tasks.set(channelId, task);
@@ -2119,6 +2162,8 @@ export class DiscordControlPlane {
     const watchEveryMs = Math.max(1000, Math.min(5000, Math.floor(stallNoticeMs / 6)));
     task.watchdog = setInterval(() => {
       if (task.finished) return;
+      // P2.2C parent card heartbeat: cheap, model-free, failures swallowed.
+      this.#refreshParentCard(channelId).catch(() => {});
       const idleMs = Number.isFinite(runner.idleMs) ? runner.idleMs : 0;
       if (idleMs < stallNoticeMs) return;
       progress.markStalled(idleMs);

@@ -14,7 +14,7 @@ const CHAT_INPUT = 1;
 const STRING = 3;
 
 export const COMMAND_NAMES = Object.freeze([
-  'panel', 'work', 'model', 'settings', 'permission', 'status', 'stop', 'new', 'compact', 'help',
+  'panel', 'work', 'model', 'settings', 'permission', 'status', 'doctor', 'stop', 'new', 'compact', 'help',
 ]);
 
 function simple(name, description) {
@@ -37,6 +37,7 @@ export function buildCommandPayloads() {
     simple('settings', '打开 Jarvis 设置'),
     simple('permission', '设置权限档位'),
     simple('status', '查看 Jarvis 状态'),
+    simple('doctor', '本地健康诊断（无模型调用）'),
     simple('stop', '停止当前 Work 任务'),
     simple('new', '开始新的 Chat 对话（只清空本频道上下文）'),
     simple('compact', '压缩当前 Chat 上下文'),

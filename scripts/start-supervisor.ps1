@@ -22,14 +22,23 @@ param(
   [int]$InitialDelaySec = 3,
   [int]$MaxDelaySec = 30,
   [int]$SuccessWindowSec = 60,
-  [string]$LogDir = "$PSScriptRoot\..\logs",
+  [string]$LogDir = '',
   [string]$Node = 'node',
-  [string]$Entry = "$PSScriptRoot\..\src\index.mjs",
-  [int]$GatewayPort = 4000,
-  [switch]$NoGateway
+[string]$Entry = '',
+[int]$GatewayPort = 4000,
+[switch]$NoGateway
 )
 
 $ErrorActionPreference = 'Continue'
+# $PSScriptRoot can be empty in some Task Scheduler contexts; resolve the
+# script location from $MyInvocation so absolute LogDir paths survive.
+if (-not $PSScriptRoot) {
+  $myScript = $MyInvocation.MyCommand.Definition
+  if (-not $myScript) { $myScript = $env:JARVIS_SUPERVISOR_SCRIPT }
+  if ($myScript) { $PSScriptRoot = Split-Path -Parent $myScript }
+}
+if (-not $LogDir -and $PSScriptRoot) { $LogDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'logs' }
+if (-not $Entry -and $PSScriptRoot) { $Entry = Join-Path (Split-Path -Parent $PSScriptRoot) 'src\index.mjs' }
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $logFile = Join-Path $LogDir 'supervisor.log'
 

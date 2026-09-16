@@ -6,28 +6,39 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 `jarvis-v4-p2-2-hardening`
 
-This is a stacked follow-up branch based on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. P2/P2.1 PR #4 is still Draft/open; do not merge P2.2 to `main` before P2/P2.1 is accepted and merged.
+Stacked on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. P2/P2.1 PR #4 is still the parent functional PR; do not merge P2.2 to `main` before P2/P2.1 is accepted and merged.
 
 ## Milestone
 
-Jarvis V4 P2.2 — hardening, durable runtime metadata, parent Work controls, CI/doctor, and Windows autostart.
+Jarvis V4 P2.2 — hardening: single-instance guard, Windows logon autostart, durable SQLite store, parent Work summary card, `discord-ui.mjs` extraction, CI + `/doctor`.
 
-Active spec: `docs/JARVIS_V4_P2_2_HARDENING_TASK.md`.
+Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOKE.md`.
 
-## Stable baseline
+## P2.2 delivered
 
-P0/P0.5 and P1 are merged to `main`.
+1. `src/instance-guard.mjs` + `src/build-identity.mjs` — exclusive instance lock (`data/jarvis-instance.lock`) with PID/startedAt/repoRoot/branch/commit/instanceId; second live instance fails fast with exit 1 before Discord login; stale/corrupt locks reclaimed only when no live pid owns them; graceful release. Identity exposed in `/status` (`Build:` / `Runtime:` / `Instance:`).
+2. `scripts/install-autostart.ps1` / `uninstall-autostart.ps1` / `start-supervisor-autostart.cmd` — one canonical per-user logon task `Jarvis Discord Agent Control` that starts the existing supervisor (never raw `node src/index.mjs`); idempotent re-install; `-DryRun`/`-Status`; uninstall touches only that task. npm: `autostart:install|status|remove`.
+3. `src/durable-store.mjs` — SQLite WAL store at `data/jarvis.db` (built-in `node:sqlite`), `PRAGMA user_version` schema v1, idempotent open/migrate; startup marks stale `RUNNING`/`QUEUED` runs `INTERRUPTED` (no auto-resume); follow-up queue audit rows; no secrets migrated.
+4. Parent-channel compact Work summary card (one per chain, updated in place, terminal state kept, controls bound to the live runId) + `打开 Work` thread link.
+5. `src/discord/renderers.mjs` — pure rows/labels extracted from `discord-ui.mjs` (behavior-preserving; controller extraction deliberately deferred).
+6. `.github/workflows/ci.yml` (windows-latest required + cheap linux portability) and deterministic `/doctor` + `!doctor` (identity, lock, store, Discord, LiteLLM, executors, autostart; no model call).
 
-P2/P2.1 are the direct functional baseline for this branch and are machine-verified at branch point:
+## Verified at this commit
 
-- `npm test` 244/0
-- `npm run check` 85/0
+- `npm test` 266/0
+- `npm run check` 95/0
 - `npm run smoke:p2` 11/11
-- real `/work` interaction ACK lifecycle fixed on the live bridge
+- `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
+- Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
 
-P2/P2.1 final owner smoke/PR #4 merge may still be pending. Do not redo their implementation in P2.2.
+## Pending (owner-only)
 
-Preserve these invariants:
+- `PENDING_OWNER_REBOOT_SMOKE`: reboot Windows, confirm Jarvis returns online after logon.
+- `PENDING_OWNER_DISCORD_SMOKE`: parent summary card `打开 Work` / `追加需求` / `Stop`, and `/status` + `/doctor` live output.
+
+Never reboot the owner machine automatically.
+
+## Preserved invariants
 
 - ordinary Chat never starts an Agent
 - LiteLLM primary + OpenCode Go direct fallback
@@ -36,41 +47,15 @@ Preserve these invariants:
 - guild Work runs in a permanent Work thread; parent remains Chat
 - one canonical workspace has at most one active Jarvis Work task; same-workspace tasks FIFO
 - queued Work never starts an Agent before lock acquisition
-- P2.1 follow-ups are later turns in the same Work session; no mid-process stdin injection
-- real stop kills active process trees, cancels queued work, and clears pending follow-ups
+- real stop kills active process trees, cancels queued work, clears pending follow-ups
 - stale cards/runIds cannot control newer work
-- permission/approval/session/secret safety remains intact
+- supervisor remains the only restart owner for Jarvis + LiteLLM
+- `state.json` / `providers.json` / credential store unchanged; no secret in SQLite or logs
 
-## P2.2 scope
+## Not in P2.2
 
-1. single-instance lock + real PID/branch/commit/uptime/instance identity
-2. Windows Task Scheduler autostart at user logon, launching the existing supervisor (and therefore LiteLLM + bridge), with install/remove/status/idempotency
-3. compact parent-channel Work summary card: open thread / append / stop
-4. local SQLite WAL durable operational store for run/session/queue metadata; no secret migration and no surprise auto-resume after restart
-5. incremental split of the oversized `discord-ui.mjs`; no big-bang rewrite
-6. Windows GitHub CI + local deterministic `/doctor`
-
-Explicitly not P2.2: market monitoring, web dashboard, Redis/Postgres, Agent swarm/worktrees, new real Codex/OpenCode adapters, voice.
-
-## Key autostart decision
-
-“开机自启” means: after Windows starts and the owner logs into the user profile, Task Scheduler starts `scripts/start-supervisor.ps1` from the current checkout. Do not build a Windows service in this milestone. Do not start `node src/index.mjs` directly. The supervisor remains the only restart owner for Jarvis + LiteLLM.
-
-A single-instance guard must make manual launch + scheduled launch safe. The scheduled task installer must be idempotent and update the canonical task to the current checkout rather than create duplicates.
-
-Never reboot the owner machine automatically. Real reboot acceptance remains `PENDING_OWNER_REBOOT_SMOKE` until the owner explicitly restarts and confirms Jarvis returns.
+market monitoring, web dashboard, Redis/Postgres, Agent swarm/worktrees, new Codex/OpenCode adapters, voice.
 
 ## Next action
 
-Read `AGENTS.md`, this file, `docs/AI_HANDOFF.md`, `docs/tasks/CURRENT.md`, then execute `docs/JARVIS_V4_P2_2_HARDENING_TASK.md` in the specified order. Use targeted tests while coding and full regression at milestones. Do not rescan/replan P2/P2.1.
-
-## Minimal relevant files first
-
-- `scripts/start-supervisor.ps1`
-- `src/index.mjs`
-- `src/discord-ui.mjs`
-- `src/workspace-scheduler.mjs`
-- `src/state.mjs`
-- `src/session-manager.mjs`
-- `src/progress.mjs`
-- `package.json`
+After P2/P2.1 PR #4 is accepted, merge P2.2. Remaining work is owner-run smoke only (reboot + Discord card/doctor check). Do not redo the P2.2 implementation.

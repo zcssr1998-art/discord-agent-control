@@ -29,12 +29,36 @@ import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import { loadLiteLLMConfig, checkLiteLLMHealth, readOpenCodeGoKey } from './litellm.mjs';
 import { cleanupInbox } from './attachments.mjs';
 import { redactSecrets } from './secrets.mjs';
+import { InstanceGuard } from './instance-guard.mjs';
+import { resolveBuildIdentity, describeBuild } from './build-identity.mjs';
+import { DurableStore } from './durable-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 async function main() {
+  const buildIdentity = resolveBuildIdentity(root);
+  // The lock lives under git-ignored runtime data. A test/harness may isolate it
+  // with JARVIS_INSTANCE_LOCK so the real entry point can be exercised without
+  // fighting a real running bridge.
+  const lockFile = process.env.JARVIS_INSTANCE_LOCK ? path.resolve(process.env.JARVIS_INSTANCE_LOCK) : null;
+  const guard = new InstanceGuard({ root, build: buildIdentity, lockFile });
+  const lockResult = guard.acquire();
+  if (!lockResult.ok) {
+    const holder = lockResult.holder;
+    if (lockResult.reason === 'already-running' && holder) {
+      console.error(`[instance] another live Jarvis bridge already holds the instance lock (pid=${holder.pid}, started=${holder.startedAt}${holder.branch ? ` ${holder.branch}@${String(holder.commit).slice(0, 7)}` : ''}).`);
+      console.error('[instance] Refusing to start a second bridge. Stop the existing instance first, or run scripts/uninstall-autostart.ps1 if a scheduled launch is stale. The other process was NOT killed.');
+    } else {
+      console.error(`[instance] could not acquire the instance lock: ${lockResult.reason}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`[instance] acquired lock pid=${process.pid} build=${describeBuild(buildIdentity)} instance=${lockResult.info.instanceId}`);
+
   const config = loadConfig();
+
   const stateFile = path.join(root, 'data', 'state.json');
   const state = new StateStore(stateFile);
   // Log the effective per-channel routing on startup so the live bridge state is
@@ -46,6 +70,14 @@ async function main() {
     console.log(`[state] channel=${channelId} mode=${channel.mode} executor=${channel.executorId} provider=${channel.providerId} model=${channel.model ?? 'none'} cwd=${channel.cwd}${channel.workThread ? ` workThread=parent:${channel.parentChannelId}` : ''}`);
   }
   const credentials = new CredentialStore(path.join(root, 'data', 'credentials.json'));
+
+  // ---- P2.2D durable operational store (SQLite WAL) -------------------------
+  const durableStore = new DurableStore({ file: path.join(root, 'data', 'jarvis.db') });
+  try {
+    durableStore.open();
+  } catch (error) {
+    console.warn(`[store] durable store unavailable (${redactSecrets(error?.message || error)}); run history this session is memory-only`);
+  }
   const providers = new ProviderManager({
     file: path.join(root, 'data', 'providers.json'),
     credentialStore: credentials,
@@ -307,6 +339,8 @@ async function main() {
     gatewayHealth,
     workspaceScheduler,
     attachmentInbox,
+    runtimeIdentity: { guard, build: buildIdentity, describe: describeBuild(buildIdentity) },
+    durableStore,
     extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });
@@ -337,6 +371,7 @@ async function main() {
     try { await discord.stopAll({ reason: `bridge shutdown (${signal})` }); } catch { /* best effort */ }
     try { hookServer.close(); } catch { /* best effort */ }
     try { await discord.client.destroy(); } catch { /* best effort */ }
+    guard.release();
     process.exitCode = 0;
   };
   process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });
