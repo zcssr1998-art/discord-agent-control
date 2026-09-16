@@ -193,11 +193,12 @@ live bridge: [commands] registered=11 changed=1   (adds /doctor)
 - [x] no secrets required
 - [x] `npm ci` → `npm test` → `npm run check`
 - [x] extra Linux portability job (non-blocking signal, same three steps)
-- [ ] workflow PASS for final commit — verified on push (record the run URL here once Actions reports)
+- [ ] workflow PASS for final commit — **not verifiable from this machine** (`gh` is not authenticated here); the workflow runs the exact commands that pass locally. Record the Actions run URL after the owner (or a CI-authenticated shell) checks the push. Do not mark PASS from local runs alone.
 
 ```text
 .github/workflows/ci.yml
 jobs: windows (runs-on: windows-latest) [required], linux-portability (ubuntu-latest)
+local equivalents: npm test 266/0, npm run check 95/0
 ```
 
 ## 8. Refactor regression
