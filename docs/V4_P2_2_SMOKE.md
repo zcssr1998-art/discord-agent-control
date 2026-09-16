@@ -400,12 +400,109 @@ smoke:p2 11/11
 
 Note: this milestone extracted the pure helper/row layer only. Further controller extraction is intentionally deferred to keep the change behavior-preserving; the class now routes to `src/discord/renderers.mjs` for all row/label building.
 
+## 9. P2.2.2 Chat model selection + placeholder repair
+
+Bug: a persisted literal documentation placeholder `opencode-go / <model-id>`
+survived reboot and pinned ordinary Chat to an impossible manual route without
+any validation. Fixed with one shared validator + a fail-closed persistence
+boundary + automatic state repair.
+
+Implementation:
+
+- `src/model-selection.mjs` — `isPlaceholderId` (angle-bracket `<...>`, empty and
+  the obvious `model-id`/`provider-id`/`model`/`provider` tokens; real IDs with
+  hyphens/dots/slashes/colons are accepted), `normalizeChatSelection`,
+  `needsChatSelectionRepair`.
+- `SessionManager.setChatSelection()` throws `INVALID_CHAT_SELECTION` for
+  placeholder input; `resolveChatSelection()` requires an exact match when the
+  provider exposes a model list and still accepts providers that genuinely
+  cannot enumerate models.
+- `StateStore.load()` repairs a persisted placeholder Chat selection to
+  `AUTO/null`, persists it, and logs
+  `[state] repaired invalid Chat selection for channel=<id> -> AUTO`; Work
+  model / cwd / session fields are untouched.
+- `/model` → Chat, `!chatmodel`, panel (`panelchat:*`, `panelchatm:*`) and
+  settings (`set:chatauto`) all funnel through `#applyChatSelection`.
+- `/status` shows `路由：AUTO` or `路由：手动固定 · provider/model`; the Chat menu
+  shows `AUTO（自动选择）` or `<Provider> / <model>（手动固定）`.
+
+Deterministic gates:
+
+```text
+npm test       鈫?328 pass / 0 fail (adds tests/v4-p222-chat-selection.test.mjs, 12 tests)
+npm run check  鈫?108 files, 0 failed
+npm run smoke:p2   鈫?11/11
+npm run smoke:p22  鈫?10/10
+v4-p221-recovery   鈫?5/5 (supervisor regression unchanged)
+```
+
+`tests/v4-p222-chat-selection.test.mjs` covers: fresh Chat = AUTO/null; manual
+persistence; switch back to AUTO; `<model-id>` / `<provider-id>` rejected and not
+persisted; a persisted `opencode-go / <model-id>` repaired with unrelated fields
+preserved; the Chat menu offers AUTO + eligible providers + real models; a stale
+panel placeholder id fails closed; unknown model rejected without clobbering the
+previous pin; non-enumerable providers accepted; AUTO picks a healthy route;
+manual pin never falls back; AUTO prefers the LiteLLM alias.
+
+Real-machine smoke (`npm run smoke:p222`, `scripts/p222-chat-selection-e2e.mjs`):
+real ProviderManager + CredentialStore + ChatRuntime against the live LiteLLM
+gateway / OpenCode Go, with a fresh node process per phase for a genuine restart.
+The exact owner-reported persisted value is reproduced in a COPY of the real
+state; the real file is never edited by the smoke.
+
+```text
+PASS historical <model-id> pin was present in the fixture · {"providerId":"opencode-go","model":"<model-id>"}
+PASS load repaired the placeholder to AUTO/null · {"providerId":"auto","model":null}
+PASS the repair was persisted to disk · {"providerId":"auto","model":null}
+PASS repair preserved cwd/Work/session fields · {"cwd":"D:\\deepseeek","workProvider":"opencode-go","sessionId":null}
+PASS 你好 succeeds in AUTO · LiteLLM Gateway · chat-fast 鈫?opencode-go/deepseek-v4.1-flash · 1.8s
+PASS /status shows AUTO after repair · AUTO
+PASS Chat never started an Agent
+PASS manual real model pin is accepted · ✅ Chat 模型已固定为 `opencode-go / deepseek-v4.1-flash`
+PASS 你好 succeeds with the manual pin · OpenCode Go · deepseek-v4.1-flash · 5.7s
+PASS /status shows the manual pin · 手动固定 · OpenCode Go / deepseek-v4.1-flash
+PASS restart restored the manual pin · {"providerId":"opencode-go","model":"deepseek-v4.1-flash"}
+PASS restarted bridge still chats with the pin · OpenCode Go · deepseek-v4.1-flash · 2.0s
+PASS switch back to AUTO clears the pin · {"providerId":"auto","model":null}
+PASS 你好 succeeds after switching back to AUTO · LiteLLM Gateway · chat-fast 鈫?opencode-go/deepseek-v4.1-flash
+PASS /status shows AUTO again · AUTO
+PASS restart restored AUTO/null · {"providerId":"auto","model":null}
+PASS restarted bridge chats in AUTO · LiteLLM Gateway · chat-fast 鈫?opencode-go/deepseek-v4.1-flash
+
+P2.2.2 chat-selection smoke: 25/25 checks passed
+```
+
+Live supervised bridge restart on this machine:
+
+- the exact historical `opencode-go / <model-id>` was re-seeded into the real
+  `data/state.json` (backup kept outside the repo);
+- the bridge was hard-killed; the supervisor recovered it
+  (`[2026-09-16 20:02:11] Bridge UP pid=16504`, new code) with exactly one bridge
+  owning the instance lock;
+- `logs/bridge.log` recorded
+  `[state] repaired invalid Chat selection for channel=1033760247598288908 -> AUTO`
+  and `[chat] mode=CHAT(default) route=AUTO`;
+- the on-disk channel became `{chatProviderId:'auto', chatModel:null}` while
+  `cwd=D:\deepseeek`, Work `providerId=opencode-go` and `sessionId` were preserved;
+- `[discord] control plane ready` confirms the live bridge came back online.
+
+Owner-typed Discord interaction could not be automated (the bridge ignores bot
+authors and the worker has no owner account), so the live proof is the supervised
+restart + real-provider runtime smoke above; the owner can confirm end-to-end by
+typing `你好`, `/model` → Chat, `!chatmodel opencode-go deepseek-v4.1-flash`,
+`!status`, `!chatmodel auto` in Discord.
+
+
+
 ## Final verdict
 
 ```text
 P2.2.1: PASS (deterministic + real Windows kill/recovery smoke); owner reboot smoke pending owner action
-commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2.1 supervisor/autostart recovery)
-tests: 316/0 · check 105/0 · smoke:p2 11/11 · smoke:p22 10/10 · smoke-supervisor-recovery 23/23
+P2.2.2: PASS (Chat AUTO default + placeholder repair + manual pin/switch-back)
+commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2.2 Chat model selection)
+tests: 328/0 · check 108/0 · smoke:p2 11/11 · smoke:p22 10/10 · smoke:p222 25/25 · p221-recovery 5/5
+chat-auto: fresh/default=AUTO/null; persisted opencode-go/<model-id> auto-repaired and persisted; 你好 ok (LiteLLM chat-fast -> opencode-go/deepseek-v4.1-flash)
+chat-manual: opencode-go/deepseek-v4.1-flash pin ok + persisted across restart + /status shows 手动固定; switch back AUTO ok
 windows-smoke: kill bridge -> supervisor survives + new bridge UP; kill LiteLLM -> auto-recovered; kill supervisor -> Task Scheduler watchdog restarts it and the bridge returns
 autostart: task 'Jarvis Discord Agent Control' · AtLogOn(PT15S) + watchdog PT1M · RestartCount=999/RestartInterval=PT1M · ExecutionTimeLimit=unlimited · StartWhenAvailable · IgnoreNew
 reboot-smoke: PENDING_OWNER_REBOOT_SMOKE (worker never reboots the machine)

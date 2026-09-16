@@ -28,6 +28,7 @@ import { PermissionManager, LEVEL } from './permission-manager.mjs';
 import { helpText, readyText, formatStatus, APPROVAL_BUTTONS, PERM_LABEL, PERM_SHORT, redact } from './i18n.mjs';
 import { PROTOCOL, TRANSPORT, normalizeBaseUrl, providerErrorMessage } from './provider-manager.mjs';
 import { SessionManager } from './session-manager.mjs';
+import { isPlaceholderId } from './model-selection.mjs';
 import { MODE, parseModeCommand, stripSelfMention } from './mode-router.mjs';
 import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import {
@@ -215,6 +216,13 @@ export class DiscordControlPlane {
       approvalManager,
       defaultCwd: config.defaultCwd,
       isRunning: (channelId) => this.tasks.has(channelId) || Boolean(this.runners.get(channelId)?.busy),
+      // Chat manual pins are validated against the provider's real model list
+      // when one is available; placeholder syntax is always rejected.
+      chatModelResolver: async (providerId) => {
+        if (!this.modelManager) return null;
+        const result = await this.modelManager.list(providerId);
+        return Array.isArray(result) ? result : result?.models ?? null;
+      },
       stopRunner: async (channelId, reason) => {
         const runner = this.runners.get(channelId);
         const sessionId = this.sessionManager?.get(channelId).sessionId;
@@ -1518,7 +1526,17 @@ export class DiscordControlPlane {
     const providerId = selection.chatProviderId || 'auto';
     if (providerId === 'auto') return 'AUTO';
     const provider = this.providerManager?.get(providerId);
-    return `${provider?.displayName || providerId}${selection.chatModel ? ` · ${selection.chatModel}` : ''}`;
+    const name = provider?.displayName || providerId;
+    return selection.chatModel ? `手动固定 · ${name} / ${selection.chatModel}` : `手动固定 · ${name}`;
+  }
+
+  /** Verbose label for menus: makes AUTO vs manual pin explicit. */
+  #chatRouteLabel(channelId) {
+    const selection = this.sessionManager.get(channelId);
+    const providerId = selection.chatProviderId || 'auto';
+    if (providerId === 'auto') return 'AUTO（自动选择）';
+    const provider = this.providerManager?.get(providerId);
+    return `${provider?.displayName || providerId} / ${selection.chatModel}（手动固定）`;
   }
 
   #chatActualText(channelId) {
@@ -1829,12 +1847,12 @@ export class DiscordControlPlane {
     rows.push(panelBackRow());
     if (rows.length > 5) {
       return {
-        content: '💬 **Chat 模型**\n当前：AUTO 或 Provider → model\n⚠️ Provider 较多，请使用 `!chatmodel <provider-id> <model-id>`。',
+        content: `💬 **Chat 模型**\n当前：${this.#chatRouteLabel(channelId)}\n⚠️ Provider 较多，请使用 \`!chatmodel <provider-id> <model-id>\`。`,
         components: [rows[0], panelBackRow()],
       };
     }
     return {
-      content: `💬 **Chat 模型**\n当前：${this.#chatRouteText(channelId)}\n选择 AUTO，或选择 Provider 后再选模型。手动固定后不会自动回退。`,
+      content: `💬 **Chat 模型**\n当前：${this.#chatRouteLabel(channelId)}\n选择 AUTO，或选择 Provider 后再选模型。手动固定后不会自动回退。`,
       components: rows,
     };
   }
@@ -2395,9 +2413,46 @@ export class DiscordControlPlane {
     return `${notes.join('\n\n')}\n\n---\n任务：\n${prompt}`;
   }
 
+  /**
+   * The single Chat-selection entry point for every Discord surface: the
+   * `!chatmodel` text command, the control-panel buttons and the settings
+   * panel. It validates the provider, delegates to the shared SessionManager
+   * boundary (placeholder rejection + real-model match) and never mutates
+   * persisted state on failure.
+   */
+  async #applyChatSelection(channelId, { providerId = 'auto', model = null } = {}) {
+    const normalizedProvider = providerId == null ? 'auto' : String(providerId).trim();
+    const isAuto = !normalizedProvider || normalizedProvider.toLowerCase() === 'auto';
+    const normalizedModel = model == null ? null : String(model).trim();
+    // Reject placeholder syntax before any provider lookup, so `<provider-id>`
+    // is reported as an invalid selection instead of a vague unknown provider.
+    if (!isAuto && (isPlaceholderId(normalizedProvider) || isPlaceholderId(normalizedModel))) {
+      return { ok: false, message: this.#invalidChatSelectionText(isPlaceholderId(normalizedProvider) ? normalizedProvider : normalizedModel) };
+    }
+    if (!isAuto) {
+      const provider = this.providerManager?.get(normalizedProvider);
+      if (!provider) return { ok: false, message: `❌ 未知 Provider：\`${normalizedProvider}\`。` };
+      if (provider.protocol === PROTOCOL.WORKBUDDY) return { ok: false, message: '❌ WorkBuddy 不是 Chat Provider。' };
+      if (!this.providerManager.hasCredential(provider)) return { ok: false, message: `❌ Provider \`${normalizedProvider}\` 缺少 credential。` };
+    }
+    try {
+      const selection = await this.sessionManager.resolveChatSelection(channelId, { providerId: normalizedProvider, model });
+      return { ok: true, selection };
+    } catch (error) {
+      if (error?.code === 'INVALID_CHAT_SELECTION') {
+        const shown = error.field === 'providerId' ? normalizedProvider : model;
+        return { ok: false, message: this.#invalidChatSelectionText(shown) };
+      }
+      return { ok: false, message: `❌ 无法保存 Chat 模型选择：${redact(error?.message || error)}` };
+    }
+  }
+
+  #invalidChatSelectionText(value) {
+    return `❌ 无效的 Chat 模型选择：\`${String(value ?? '').trim() || '空'}\`。\n占位符（如 \`<model-id>\`）不会被保存；请选择 AUTO 或真实的 Provider/model。`;
+  }
+
   async #chatModelCommand(channelId, argument) {
     if (!argument) {
-      const selection = this.sessionManager.get(channelId);
       const actual = this.#chatActualText(channelId);
       return [
         '💬 **Chat 模型**',
@@ -2409,17 +2464,17 @@ export class DiscordControlPlane {
       ].join('\n');
     }
     if (argument.toLowerCase() === 'auto') {
-      this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
-      return '✅ Chat 路由已设为 **AUTO**（优先 LiteLLM `chat-fast`；网关不可用时回退 OpenCode Go 直连，再到其他健康免费/订阅模型）。';
+      const result = await this.#applyChatSelection(channelId, { providerId: 'auto', model: null });
+      return result.ok
+        ? '✅ Chat 路由已设为 **AUTO**（优先 LiteLLM `chat-fast`；网关不可用时回退 OpenCode Go 直连，再到其他健康免费/订阅模型）。'
+        : result.message;
     }
     const [providerId, modelId] = argument.split(/\s+/);
-    const provider = this.providerManager?.get(providerId);
-    if (!provider) return `❌ 未知 Provider：\`${providerId}\`。`;
-    if (provider.protocol === PROTOCOL.WORKBUDDY) return '❌ WorkBuddy 不是 Chat Provider。';
-    if (!this.providerManager.hasCredential(provider)) return `❌ Provider \`${providerId}\` 缺少 credential。`;
     if (!modelId) return `❌ 请同时指定 model：\`!chatmodel ${providerId} <model-id>\`。`;
-    this.sessionManager.setChatSelection(channelId, { providerId, model: modelId });
-    return `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`。\n该选择不会自动回退到其他模型。`;
+    const result = await this.#applyChatSelection(channelId, { providerId, model: modelId });
+    return result.ok
+      ? `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`。\n该选择不会自动回退到其他模型。`
+      : result.message;
   }
 
   /**
@@ -2823,7 +2878,7 @@ export class DiscordControlPlane {
     }
     if (prefix === 'panelchat') {
       if (id === 'auto') {
-        this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
+        await this.#applyChatSelection(channelId, { providerId: 'auto', model: null });
         await this.#edit(interaction, this.#chatModelMenu(channelId));
         return;
       }
@@ -2837,11 +2892,13 @@ export class DiscordControlPlane {
     if (prefix === 'panelchatm') {
       const providerId = parts[1];
       const modelId = parts.slice(2).join(':');
-      this.sessionManager.setChatSelection(channelId, { providerId, model: modelId });
-      await this.#edit(interaction, {
-        content: `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`（不会自动回退）。`,
-        components: [panelBackRow()],
-      });
+      const result = await this.#applyChatSelection(channelId, { providerId, model: modelId });
+      await this.#edit(interaction, result.ok
+        ? {
+          content: `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`（不会自动回退）。`,
+          components: [panelBackRow()],
+        }
+        : { content: clip(result.message), components: [panelBackRow()] });
       return;
     }
     if (prefix === 'panelworkp') {
@@ -2884,7 +2941,7 @@ export class DiscordControlPlane {
     }
     if (prefix === 'set') {
       if (id === 'chatauto') {
-        this.sessionManager.setChatSelection(channelId, { providerId: 'auto', model: null });
+        await this.#applyChatSelection(channelId, { providerId: 'auto', model: null });
         await this.#edit(interaction, this.#settingsPanel(channelId));
         return;
       }

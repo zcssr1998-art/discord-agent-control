@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { needsChatSelectionRepair } from './model-selection.mjs';
 
 export function defaultChannelState(defaultCwd) {
   return {
@@ -41,6 +42,7 @@ export class StateStore {
     }
     catch { this.data = { channels: {}, workspaces: {}, preferences: {} }; }
     this.#backfillWorkModels();
+    this.#repairChatSelections();
   }
   save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -154,6 +156,26 @@ export class StateStore {
       this.data.preferences = this.data.preferences ?? {};
       this.data.preferences.lastWorkModel = last;
       changed = true;
+    }
+    if (changed) this.save();
+  }
+
+  /**
+   * One-time-per-load repair for the P2.2.2 bug: a documentation placeholder
+   * (`<model-id>` / `<provider-id>` / ...) must never stay a persisted Chat pin.
+   * Only the Chat selection fields are touched; Work model, workspace, history,
+   * permissions and session fields are preserved. The repaired state is written
+   * back immediately so the bug cannot reappear after the next reboot.
+   */
+  #repairChatSelections() {
+    const channels = this.data.channels ?? {};
+    let changed = false;
+    for (const [channelId, value] of Object.entries(channels)) {
+      if (!value || typeof value !== 'object') continue;
+      if (!needsChatSelectionRepair({ providerId: value.chatProviderId, model: value.chatModel })) continue;
+      channels[channelId] = { ...value, chatProviderId: 'auto', chatModel: null };
+      changed = true;
+      console.log(`[state] repaired invalid Chat selection for channel=${channelId} -> AUTO`);
     }
     if (changed) this.save();
   }

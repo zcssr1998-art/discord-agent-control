@@ -13,6 +13,7 @@
     "smoke:p1": "node scripts/p1-e2e.mjs",
     "smoke:p2": "node scripts/p2-e2e.mjs",
     "smoke:p22": "node scripts/p22-e2e.mjs",
+    "smoke:p222": "node scripts/p222-chat-selection-e2e.mjs",
     "smoke:p22-insert": "node scripts/p22-live-insert-e2e.mjs",
     "smoke:p22-model": "node scripts/p22-model-restart-e2e.mjs",
     "smoke:p22-workspace": "node scripts/p22-workspace-e2e.mjs",

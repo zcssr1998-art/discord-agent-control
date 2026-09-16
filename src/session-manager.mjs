@@ -1,11 +1,14 @@
+import { normalizeChatSelection } from './model-selection.mjs';
+
 export class SessionManager {
-  constructor({ state, permissionManager, approvalManager, defaultCwd, stopRunner = async () => {}, isRunning = () => false }) {
+  constructor({ state, permissionManager, approvalManager, defaultCwd, stopRunner = async () => {}, isRunning = () => false, chatModelResolver = null }) {
     this.state = state;
     this.permissions = permissionManager;
     this.approvals = approvalManager;
     this.defaultCwd = defaultCwd;
     this.stopRunner = stopRunner;
     this.isRunning = isRunning;
+    this.chatModelResolver = chatModelResolver;
   }
 
   get(channelId) {
@@ -33,7 +36,44 @@ export class SessionManager {
   }
 
   setChatSelection(channelId, { providerId = 'auto', model = null } = {}) {
-    return this.state.patchChannel(channelId, { chatProviderId: providerId, chatModel: model }, this.defaultCwd);
+    const selection = normalizeChatSelection({ providerId, model });
+    return this.state.patchChannel(channelId, { chatProviderId: selection.providerId, chatModel: selection.model }, this.defaultCwd);
+  }
+
+  /**
+   * The single Chat-selection entry point for UI commands/panel buttons. It runs
+   * the same syntactic placeholder validation as `setChatSelection` and, when the
+   * provider can actually enumerate models, requires an exact model match before
+   * persisting. A provider that genuinely cannot enumerate models is still
+   * accepted (custom OpenAI/Anthropic-compatible providers), but placeholder
+   * syntax is always rejected.
+   */
+  async resolveChatSelection(channelId, { providerId = 'auto', model = null } = {}) {
+    const selection = normalizeChatSelection({ providerId, model });
+    if (selection.providerId !== 'auto' && this.chatModelResolver) {
+      const models = await this.#listChatModels(selection.providerId);
+      if (Array.isArray(models) && models.length) {
+        const found = models.some((entry) => {
+          const id = typeof entry === 'string' ? entry : (entry?.id ?? entry?.displayName);
+          const name = typeof entry === 'string' ? entry : entry?.displayName;
+          return id === selection.model || name === selection.model;
+        });
+        if (!found) {
+          throw Object.assign(new Error('chat model is not offered by the provider'), {
+            code: 'INVALID_CHAT_SELECTION', field: 'model', value: selection.model,
+          });
+        }
+      }
+    }
+    return this.setChatSelection(channelId, selection);
+  }
+
+  async #listChatModels(providerId) {
+    try {
+      const result = await this.chatModelResolver(providerId);
+      if (Array.isArray(result)) return result;
+      return Array.isArray(result?.models) ? result.models : null;
+    } catch { return null; }
   }
 
   bindExecutorSession(channelId, executorSessionId) {
