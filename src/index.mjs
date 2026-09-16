@@ -71,6 +71,14 @@ async function main() {
   }
   const credentials = new CredentialStore(path.join(root, 'data', 'credentials.json'));
 
+  // P2.2 model persistence: the restored model selection is logged so a
+  // post-restart run is verifiable from the bridge log instead of assumed.
+  {
+    const lastModel = state.getLastWorkModel();
+    const workspaces = state.savedWorkspaceModelCount();
+    console.log(`[state] restored model selection: workspaces=${workspaces} lastWorkModel=${lastModel ? `${lastModel.providerId ?? '?'}/${lastModel.model}` : 'none'}`);
+  }
+
   // ---- P2.2D durable operational store (SQLite WAL) -------------------------
   const durableStore = new DurableStore({ file: path.join(root, 'data', 'jarvis.db') });
   try {

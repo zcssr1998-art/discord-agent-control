@@ -347,11 +347,16 @@ export class DiscordControlPlane {
       }
       const credential = provider.credentialRef ? this.credentialStore.get(provider.credentialRef) : null;
       if (provider.credentialRef && !credential) throw Object.assign(new Error('Provider credential missing'), { code: 'INVALID_CREDENTIAL' });
-      const model = chState.model || (provider.protocol === PROTOCOL.WORKBUDDY ? provider.models?.[0]?.id : null);
-      if (!model) throw Object.assign(new Error('请先使用 !model <model-id> 选择模型'), { code: 'MODEL_REQUIRED' });
+      const resolved = this.#resolveWorkModel(channelId, chState, provider);
+      if (!resolved.model) {
+        throw Object.assign(new Error('请先使用 !model <model-id> 选择模型'), { code: 'MODEL_REQUIRED' });
+      }
       runner = await this.executorManager.createRunner({
-        executorId: chState.executorId, provider, credential, model, ...common,
+        executorId: chState.executorId, provider, credential, model: resolved.model, ...common,
       });
+      if (resolved.source !== 'channel') {
+        console.log(`[model] restored channel=${channelId} provider=${provider.id} model=${resolved.model} source=${resolved.source}`);
+      }
     } else {
       runner = new ClaudeRunner({
         command: this.config.claudeCommand, extraEnv: this.extraEnv, envUnset: this.envUnset, ...common,
@@ -359,6 +364,47 @@ export class DiscordControlPlane {
     }
     this.runners.set(channelId, runner);
     return runner;
+  }
+
+  /**
+   * Which Work model to use for a channel, in order of specificity:
+   *   1. the channel/thread's own explicit selection
+   *   2. the project directory's saved selection (same provider)
+   *   3. the last model the owner selected anywhere (same provider)
+   *   4. an explicit configured default (config.defaultWorkModel)
+   *   5. the pre-existing WorkBuddy first-model behavior
+   * A saved/configured model that the provider no longer offers fails loudly
+   * (MODEL_UNAVAILABLE) instead of silently switching to a different model.
+   */
+  #resolveWorkModel(channelId, chState, provider) {
+    const models = Array.isArray(provider?.models) ? provider.models : [];
+    const known = models.length ? new Set(models.map((m) => m.id)) : null;
+    const configuredDefault = this.config.defaultWorkModel || null;
+
+    const candidates = [];
+    if (chState.model) candidates.push({ model: chState.model, source: 'channel' });
+    for (const saved of this.sessionManager.savedModelCandidates(channelId) ?? []) {
+      if (!saved?.model || saved.model === chState.model) continue;
+      // A saved selection from a different provider is not applicable to this
+      // route: the owner changed the provider explicitly, so fall through.
+      if (saved.providerId && provider?.id && saved.providerId !== provider.id) continue;
+      candidates.push({ model: saved.model, source: 'saved' });
+    }
+    if (configuredDefault) candidates.push({ model: configuredDefault, source: 'default' });
+
+    for (const candidate of candidates) {
+      if (!known || known.has(candidate.model)) return candidate;
+      // A stale selection must fail loudly, never silently switch the model.
+      throw Object.assign(
+        new Error(`已保存模型 ${candidate.model} 当前不可用，请重新使用 !model 选择模型。`),
+        { code: 'MODEL_UNAVAILABLE', model: candidate.model },
+      );
+    }
+
+    if (provider?.protocol === PROTOCOL.WORKBUDDY && models.length) {
+      return { model: models[0].id, source: 'builtin' };
+    }
+    return { model: null, source: 'none' };
   }
 
   onRunnerEvent(channelId, event) {
@@ -370,6 +416,11 @@ export class DiscordControlPlane {
     if (event.type === 'model') {
       const chState = this.state.getChannel(channelId, this.config.defaultCwd);
       if (chState.model !== event.model) this.state.patchChannel(channelId, { model: event.model }, this.config.defaultCwd);
+      // Learn from the model the Agent actually used so the next Work thread in
+      // this project (and the next process start) restores it automatically.
+      if (event.model) {
+        this.sessionManager.rememberWorkModel(channelId, { providerId: chState.providerId, executorId: chState.executorId, model: event.model });
+      }
     }
     if (event.type === 'init') this.#noteBackend(channelId, event);
 
@@ -687,6 +738,7 @@ export class DiscordControlPlane {
     }
     const model = provider.protocol === PROTOCOL.WORKBUDDY ? provider.models?.[0]?.id || null : null;
     await this.sessionManager.change(channelId, { providerId, model }, 'provider changed');
+    if (model) this.sessionManager.rememberWorkModel(channelId, { providerId, executorId: state.executorId, model });
     const hint = provider.protocol === PROTOCOL.OPENCODE_GO
       ? '\n请使用 `!models` 选择模型；只有当前执行器兼容的协议才能被选中。'
       : '\n请使用 `!models` 选择模型。';
@@ -704,6 +756,9 @@ export class DiscordControlPlane {
       return `❌ 当前执行器不支持此模型协议（${transportLabel(transport)}）。\n请改用兼容模型，或先用 \`!provider\` 选择兼容 Provider。`;
     }
     await this.sessionManager.change(channelId, { model: modelId }, 'model changed');
+    // Persist the selection beyond the ephemeral Discord channel: a new Work
+    // thread, a bridge restart or a fresh process must restore it.
+    this.sessionManager.rememberWorkModel(channelId, { providerId: state.providerId, executorId: state.executorId, model: modelId });
     return `✅ 已切换模型：\`${modelId}\`\n已创建新安全 Session，权限恢复为 🛡️ 标准。`;
   }
 
@@ -2306,8 +2361,9 @@ export class DiscordControlPlane {
     try { runner = await this.getRunner(channelId); }
     catch (error) {
       if (run) run.drainable = false;
-      const text = ['INVALID_CREDENTIAL', 'PROVIDER_NOT_FOUND', 'WORKBUDDY_QUOTA', 'WORKBUDDY_UNAVAILABLE', 'INCOMPATIBLE'].includes(error.code)
-        ? providerErrorMessage(error)
+      const text = ['INVALID_CREDENTIAL', 'PROVIDER_NOT_FOUND', 'WORKBUDDY_QUOTA', 'WORKBUDDY_UNAVAILABLE', 'INCOMPATIBLE',
+        'MODEL_REQUIRED', 'MODEL_UNAVAILABLE'].includes(error.code)
+        ? (error.code === 'MODEL_UNAVAILABLE' ? `❌ ${redact(error.message)}` : providerErrorMessage(error))
         : `❌ 无法启动 Agent：${redact(error.message || error)}`;
       await message.reply(text);
       return;

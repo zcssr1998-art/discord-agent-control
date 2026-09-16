@@ -14,6 +14,7 @@
     "smoke:p2": "node scripts/p2-e2e.mjs",
     "smoke:p22": "node scripts/p22-e2e.mjs",
     "smoke:p22-insert": "node scripts/p22-live-insert-e2e.mjs",
+    "smoke:p22-model": "node scripts/p22-model-restart-e2e.mjs",
     "autostart:install": "powershell -ExecutionPolicy Bypass -File scripts/install-autostart.ps1",
     "autostart:status": "powershell -ExecutionPolicy Bypass -File scripts/install-autostart.ps1 -Status",
     "autostart:remove": "powershell -ExecutionPolicy Bypass -File scripts/uninstall-autostart.ps1",

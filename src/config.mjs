@@ -77,6 +77,9 @@ export function loadConfig() {
     // image turn fails clearly instead of being sent to a text-only alias.
     chatVisionProviderId: process.env.CHAT_VISION_PROVIDER_ID || null,
     chatVisionModel: process.env.CHAT_VISION_MODEL || null,
+    // Optional explicit default Work model for a workspace that has never
+    // selected one. Never inferred from a provider's model list.
+    defaultWorkModel: process.env.DEFAULT_WORK_MODEL || process.env.JARVIS_DEFAULT_WORK_MODEL || null,
     // Wall-clock cap on one direct Chat request.
     chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
 

@@ -41,6 +41,27 @@ export class SessionManager {
     this.permissions.syncSession(executorSessionId, channelId);
   }
 
+  /**
+   * Remember a Work model selection at channel + workspace + last-known scope so
+   * a bridge restart, a new Work thread, or a brand-new channel in the same
+   * project restores it without asking the owner to run `!model` again.
+   */
+  rememberWorkModel(channelId, { providerId = null, executorId = null, model } = {}) {
+    if (!model) return null;
+    const cwd = this.get(channelId).cwd;
+    return this.state.rememberWorkModel({ channelId, cwd, providerId, executorId, model });
+  }
+
+  /**
+   * The persisted model candidates for a channel, most specific first:
+   * workspace (same project directory) then the last selection anywhere.
+   * Entries carry their provider so a stale route can never be applied blindly.
+   */
+  savedModelCandidates(channelId) {
+    const cwd = this.get(channelId).cwd;
+    return [this.state.getWorkspaceModel(cwd), this.state.getLastWorkModel()].filter(Boolean);
+  }
+
   async change(channelId, patch, reason) {
     if (this.isRunning(channelId)) throw Object.assign(new Error('task is running'), { code: 'RUNNING' });
     const current = this.get(channelId);
