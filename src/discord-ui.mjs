@@ -1500,9 +1500,11 @@ export class DiscordControlPlane {
   }
 
   async #handlePanelInteraction(interaction, id, channelId) {
-    // `newwork` shows a modal and must be handled before the immediate ACK.
+    // `newwork` shows a modal and is handled before the immediate ACK. Kept here
+    // too so a direct call still gets the never-swallow ACK path.
     if (id === 'newwork') {
-      await interaction.showModal(this.#newWorkModal());
+      const modalAck = await this.#showModalAck(interaction, this.#newWorkModal());
+      if (!modalAck.ok) this.#abortAfterFailedAck(modalAck.label, modalAck, 'showModal (panel new Work)');
       return;
     }
     if (id === 'models') {
