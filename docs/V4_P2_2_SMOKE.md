@@ -11,13 +11,13 @@ Do not mark an item PASS from unit tests alone. Items below record what was actu
 ## 1. Baseline regression
 
 - [x] `npm test` 鈥?266 pass / 0 fail
-- [x] `npm run check` 鈥?97 files, 0 failed
+- [x] `npm run check` 鈥?100 files, 0 failed
 - [x] `npm run smoke:p2` 鈥?11/11 passed (includes a real Agent run in a panel Work thread, 9.8s)
 - [x] `npm run smoke:p22` 鈥?10/10 checks passed (new P2.2 machine smoke)
 
 ```text
 > npm test        鈫?tests 266, pass 266, fail 0
-> npm run check   鈫?checked 97 file(s), 0 failed
+> npm run check   鈫?checked 100 file(s), 0 failed
 > npm run smoke:p2 鈫?=== summary: 11/11 passed ===
 > npm run smoke:p22 鈫?P2.2 smoke: 10/10 checks passed
 ```
@@ -219,7 +219,7 @@ Implemented:
 - `Stop` clears unconsumed inserts/continuations and reports `已清空 N 条未处理的插入需求。`
 - Same runId, same sessionId, no second Agent, no re-acquired workspace lock, one final DONE.
 
-Deterministic: `tests/v4-p22-insert.test.mjs` (10 tests) + updated P2.1/P2.2 suites (`npm test` 284/0).
+Deterministic: `tests/v4-p22-insert.test.mjs` (10 tests) + updated P2.1/P2.2 suites (`npm test` 293/0).
 
 Real-machine smoke: `npm run smoke:p22-insert` (`scripts/p22-live-insert-e2e.mjs`) — real Agent process, real provider route, real filesystem, real hook server, real durable store. A ~35s task was inserted into while RUNNING.
 
@@ -281,7 +281,7 @@ live bridge: [commands] registered=11 changed=1   (adds /doctor)
 ```text
 .github/workflows/ci.yml
 jobs: windows (runs-on: windows-latest) [required], linux-portability (ubuntu-latest)
-local equivalents: npm test 284/0, npm run check 97/0
+local equivalents: npm test 293/0, npm run check 100/0
 ```
 
 ## 8. Refactor regression
@@ -297,7 +297,7 @@ local equivalents: npm test 284/0, npm run check 97/0
 - [x] no parallel replacement state/control implementation introduced (single source of truth kept in `DiscordControlPlane`)
 
 ```text
-tests 284 pass / 0 fail after extraction + ACK hardening + live-insert steering (baseline at branch point: 244 pass / 0 fail)
+tests 293 pass / 0 fail after extraction + ACK hardening + live-insert steering (baseline at branch point: 244 pass / 0 fail)
 check 95 files / 0 failed
 smoke:p2 11/11
 ```
@@ -309,7 +309,7 @@ Note: this milestone extracted the pure helper/row layer only. Further controlle
 ```text
 P2.2: PASS (deterministic + Windows real-machine); owner Discord smoke + owner reboot smoke pending owner action
 commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2 implementation + ACK hardening)
-tests: 284/0 · check 97/0 · smoke:p2 11/11 · smoke:p22 10/10 · smoke:p22-insert 14/14
+tests: 293/0 · check 100/0 · smoke:p2 11/11 · smoke:p22 10/10 · smoke:p22-insert 14/14 · smoke:p22-model 5/5
 windows-smoke: scheduled task 鈫?supervisor 鈫?LiteLLM(UP) 鈫?bridge online; second launch refused pre-login (exit 1)
 autostart: installed (task 'Jarvis Discord Agent Control', Ready) 路 PENDING_OWNER_REBOOT_SMOKE
 blocker: real /work ACK timeout previously reproduced twice and has been fixed (see 搂5b); owner re-test pending

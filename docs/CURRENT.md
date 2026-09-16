@@ -31,6 +31,20 @@ Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOK
 - `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
 - Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
 
+## Model selection persistence (restart fix)
+
+Real failure: after a bridge/process restart, a Discord task answered `请先使用 !model <model-id> 选择模型` although a model had been selected before.
+
+Cause: the selection lived only on the ephemeral Discord channel/thread entry; per-task Work threads inherited the parent's `null` model, so the channel entry fell through to `MODEL_REQUIRED`.
+
+Fixed (reuses `state.json`, no second store):
+
+- selection persisted on `channel`, `workspaces[<cwd>]` and `preferences.lastWorkModel` in one atomic write; a one-time backfill upgrades existing state files
+- resolution order: channel → workspace (same provider) → last selection (same provider) → explicit `DEFAULT_WORK_MODEL` → existing WorkBuddy behavior
+- stale saved model → `MODEL_UNAVAILABLE` (`已保存模型 xxx 当前不可用，请重新使用 !model 选择模型。`), no silent switch; a saved model for another provider is ignored
+- startup logs the restored selection: `[state] restored model selection: workspaces=N lastWorkModel=<provider>/<model>`
+- evidence: `tests/v4-p22-model-persist.test.mjs` (9) + `npm run smoke:p22-model` (5/5 real processes); the owner's previously failing channel now resolves its model with no `!model`
+
 ## Live insert / steering (semantics correction)
 
 `➕ 插入需求` (formerly `追加需求`) now steers the RUNNING turn instead of queueing a next turn:

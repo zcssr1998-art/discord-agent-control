@@ -25,8 +25,8 @@ P2.2 implementation is complete and verified. Evidence: `docs/V4_P2_2_SMOKE.md`.
 ## Verification used
 
 ```text
-npm test         284/0
-npm run check    97/0
+npm test         293/0
+npm run check    100/0
 npm run smoke:p2 11/11
 npm run smoke:p22 10/10
 ```
