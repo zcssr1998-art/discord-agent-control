@@ -58,6 +58,11 @@ async function main() {
   console.log(`[instance] acquired lock pid=${process.pid} build=${describeBuild(buildIdentity)} instance=${lockResult.info.instanceId}`);
 
   const config = loadConfig();
+  // The Jarvis checkout root is the last-resort default workspace; it is never
+  // inferred from process.cwd() or a model/history directory.
+  config.repoRoot = config.repoRoot || root;
+  config.defaultWorkspace = config.defaultWorkspace || config.repoRoot;
+  console.log(`[workspace] default=${config.defaultWorkspace} (repoRoot=${config.repoRoot})`);
 
   const stateFile = path.join(root, 'data', 'state.json');
   const state = new StateStore(stateFile);

@@ -44,6 +44,13 @@ export function loadConfig() {
     channelId: process.env.DISCORD_CHANNEL_ID || null,
     claudeCommand: resolveExecutor(process.env.CLAUDE_COMMAND),
     defaultCwd: path.resolve(process.env.DEFAULT_CWD || process.cwd()),
+    // The default Agent task directory, resolved without ever relying on the
+    // process cwd: DEFAULT_WORKSPACE → DEFAULT_CWD → repo root (set by index.mjs).
+    defaultWorkspace: process.env.DEFAULT_WORKSPACE
+      ? path.resolve(process.env.DEFAULT_WORKSPACE)
+      : (process.env.DEFAULT_CWD ? path.resolve(process.env.DEFAULT_CWD) : null),
+    // Set by index.mjs to the actual checkout root; the last-resort fallback.
+    repoRoot: process.env.JARVIS_REPO_ROOT ? path.resolve(process.env.JARVIS_REPO_ROOT) : null,
     // Explicit proxy for Discord, or null to fall back to the Windows system
     // proxy (see win-env.resolveDiscordProxy). 'off' disables both.
     discordProxy: process.env.DISCORD_PROXY ?? null,

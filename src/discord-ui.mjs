@@ -117,7 +117,8 @@ export const PANEL_HELP_TEXT = [
   '',
   '`work` → 当前频道切到 Work，下一条普通消息作为任务',
   '`chat` → 切回 Chat（永久 Work 线程里禁止切 Chat）',
-  '`!cwd <绝对路径>` → 绑定项目目录',
+  '`!cwd <绝对路径>` → 绑定当前频道项目目录',
+  '`!workspace [<绝对路径>|reset]` → 查看/切换/恢复默认工作目录',
   '',
   '**快速开始**',
   '1. 点 ⚙️ 设置：Work = Claude Code + OpenCode Go + deepseek-v4.1-flash',
@@ -370,6 +371,55 @@ export class DiscordControlPlane {
   }
 
   /**
+   * `!workspace` — show the effective Agent working directory, its source and
+   * whether it is persisted; `!workspace <abs dir>` — explicitly select and
+   * persist it; `!workspace reset` — drop the selection and fall back to the
+   * configured default / repo root. A run's temporary directory never changes it.
+   */
+  async #workspaceCommand(channelId, argument) {
+    const saved = this.state.getGlobalWorkspace();
+    const label = (source) => ({ channel: 'channel', saved: 'saved', config: 'config', 'repo-fallback': 'repo-fallback', explicit: 'explicit', none: 'none' }[source] ?? source);
+
+    if (!argument) {
+      const state = this.effectiveRuntimeState({ channelId });
+      const globalState = this.effectiveRuntimeState({});
+      const lines = [
+        `📁 当前工作目录：\`${state.workspace ?? '未配置'}\``,
+        `来源：${label(state.workspaceSource)}`,
+        `持久化：${saved ? 'yes' : 'no'}`,
+      ];
+      if (globalState.workspace && globalState.workspace !== state.workspace) {
+        lines.push(`全局默认：\`${globalState.workspace}\`（来源：${label(globalState.workspaceSource)}）`);
+      }
+      lines.push('', '切换：`!workspace <绝对路径>` · 恢复默认：`!workspace reset`');
+      return lines.join('\n');
+    }
+
+    if (/^reset$/i.test(argument)) {
+      if (this.#busy(channelId)) return '⚠️ 当前任务正在执行。请等待任务完成或使用 `!stop`。';
+      this.state.clearGlobalWorkspace();
+      const fallback = this.config.defaultWorkspace || this.config.repoRoot || this.config.defaultCwd;
+      await this.sessionManager.change(channelId, { cwd: fallback }, 'workspace reset');
+      console.log(`[workspace] reset channel=${channelId} fallback=${fallback}`);
+      return `✅ 已恢复默认工作目录：\`${fallback}\`\n来源：${this.config.defaultWorkspace ? 'config' : 'repo-fallback'}`;
+    }
+
+    // Explicit selection: must be an existing absolute directory.
+    if (!path.isAbsolute(argument)) return '❌ 工作目录必须是绝对路径。';
+    if (!fs.existsSync(argument)) return `❌ 工作目录不存在：\`${argument}\``;
+    let stats;
+    try { stats = fs.statSync(argument); } catch { return `❌ 无法访问该路径：\`${argument}\``; }
+    if (!stats.isDirectory()) return `❌ 不是目录：\`${argument}\``;
+    if (this.#busy(channelId)) return '⚠️ 当前任务正在执行。请等待任务完成或使用 `!stop`。';
+
+    const resolved = path.resolve(argument);
+    this.state.setGlobalWorkspace(resolved);
+    await this.sessionManager.change(channelId, { cwd: resolved }, 'workspace changed');
+    console.log(`[workspace] selected channel=${channelId} workspace=${resolved}`);
+    return `✅ 已切换并持久化工作目录：\`${resolved}\`\n会话已清除，权限已恢复为 🛡️ 标准。重启后会恢复该目录。`;
+  }
+
+  /**
    * Which Work model to use for a channel, in order of specificity:
    *   1. the channel/thread's own explicit selection
    *   2. the project directory's saved selection (same provider)
@@ -454,14 +504,22 @@ export class DiscordControlPlane {
     }
 
     const last = this.state.getLastWorkModel();
-    const latestRun = channelId ? null : this.durableStore?.latestRun?.() ?? null;
     const base = channelId
       ? this.sessionManager.get(channelId)
-      : { cwd: cwd || latestRun?.workspace || last?.cwd || this.config.defaultCwd, executorId: last?.executorId ?? null, providerId: last?.providerId ?? null, model: null };
-    const workspace = cwd || base.cwd || latestRun?.workspace || last?.cwd || this.config.defaultCwd;
-    const workspaceSource = cwd ? 'explicit'
-      : (latestRun?.workspace && latestRun.workspace === workspace) ? 'recent-run'
-        : (last?.cwd === workspace) ? 'restored' : 'config';
+      : { cwd: null, executorId: last?.executorId ?? null, providerId: last?.providerId ?? null, model: null };
+    // Workspace priority: explicit arg → channel's persisted cwd → the user's
+    // global selection → configured DEFAULT_WORKSPACE/CWD → the Jarvis repo root.
+    // A previous run's directory is NEVER a workspace source: a task executed in
+    // a temporary folder must not permanently move the default workspace.
+    const savedWorkspace = channelId ? null : this.state.getGlobalWorkspace();
+    const configuredDefault = this.config.defaultWorkspace || this.config.repoRoot || this.config.defaultCwd || null;
+    let workspace;
+    let workspaceSource;
+    if (cwd) { workspace = cwd; workspaceSource = 'explicit'; }
+    else if (channelId && base.cwd) { workspace = base.cwd; workspaceSource = 'channel'; }
+    else if (savedWorkspace?.path) { workspace = savedWorkspace.path; workspaceSource = 'saved'; }
+    else if (configuredDefault) { workspace = configuredDefault; workspaceSource = this.config.defaultWorkspace ? 'config' : 'repo-fallback'; }
+    else { workspace = null; workspaceSource = 'none'; }
     const providerId = base.providerId || (channelId ? null : last?.providerId) || null;
     const provider = providerId ? this.providerManager?.get(providerId) ?? null : null;
     const executorId = base.executorId || (channelId ? null : last?.executorId) || null;
@@ -1147,6 +1205,11 @@ export class DiscordControlPlane {
         '```',
       ];
       await message.reply(clip(lines.join('\n')));
+      return;
+    }
+    if (/^!workspace(?:\s+.*)?$/i.test(text)) {
+      const argument = text.replace(/^!workspace\s*/i, '').trim().replace(/^"(.*)"$/s, '$1');
+      await message.reply(await this.#workspaceCommand(message.channelId, argument));
       return;
     }
     if (text.startsWith('!cwd ')) {

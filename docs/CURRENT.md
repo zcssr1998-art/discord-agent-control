@@ -25,11 +25,25 @@ Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOK
 
 ## Verified at this commit
 
-- `npm test` 302/0
-- `npm run check` 102/0
+- `npm test` 311/0
+- `npm run check` 104/0
 - `npm run smoke:p2` 11/11
 - `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
 - Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
+
+## Workspace (task working directory) separation
+
+A historical run directory (`latestRun.workspace`) had been used as the workspace fallback, so a task once executed in `D:\deepseek` made the startup card show it forever.
+
+Fixed — workspace is a first-class, explicitly-owned value:
+
+- resolution: explicit arg → **channel persisted cwd** → **user global selection** (`!workspace <dir>`, `preferences.workspace` in `state.json`) → **config `DEFAULT_WORKSPACE`/`DEFAULT_CWD`** → **Jarvis repo root** (never `process.cwd()`, a model dir, a log dir or a previous run)
+- a run's own directory stays a run record only (`runs.workspace`, audit) and can never move the workspace
+- `!workspace` shows the effective directory + source + persisted flag; `!workspace <abs dir>` validates (exists / is a directory / absolute) and persists; `!workspace reset` clears the selection back to the default
+- `index.mjs` sets `config.repoRoot` to the checkout root and logs `[workspace] default=…`
+- ready card / `/status` / task launch keep using the single `effectiveRuntimeState()`; the log reports `workspace=… source=channel|saved|config|repo-fallback`
+
+Evidence: `tests/v4-p22-workspace.test.mjs` (9) + `npm run smoke:p22-workspace` (8/8 real processes, incl. a real Agent run whose cwd equals the card workspace).
 
 ## Startup card fidelity (effective runtime state)
 

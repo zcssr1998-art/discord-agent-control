@@ -179,11 +179,19 @@ test('!status and the startup card agree on model/provider/executor/workspace', 
   assert.doesNotMatch(status, /fast-model/);
 });
 
-test('the card resolves the workspace from the restored selection before the config default', async (t) => {
+test('a model selection cwd never becomes the workspace; only !workspace does', async (t) => {
   const stateFile = tmpState(t);
-  const restored = 'D:\\proj\\restored';
+  const modelCwd = 'D:\\proj\\model-selection-dir';
   const { fake, plane, state } = makePlane(stateFile);
-  setupRestoredSelection(state, restored);
+  // The model selection records a cwd for audit, but it is not a workspace choice.
+  setupRestoredSelection(state, modelCwd);
   await plane.start();
-  assert.match(readyDm(fake), new RegExp(`工作目录：\`${restored.replace(/\\/g, '\\\\')}\``));
+  const card = readyDm(fake);
+  assert.match(card, new RegExp(`工作目录：\`${WS.replace(/\\/g, '\\\\')}\``), 'the card must use the configured default workspace');
+  assert.doesNotMatch(card, /model-selection-dir/);
+
+  // An explicit !workspace selection is what persists and shows up.
+  state.setGlobalWorkspace(modelCwd);
+  assert.equal(plane.effectiveRuntimeState({}).workspace, modelCwd);
+  assert.equal(plane.effectiveRuntimeState({}).workspaceSource, 'saved');
 });

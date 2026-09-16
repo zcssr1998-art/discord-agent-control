@@ -100,6 +100,33 @@ export class StateStore {
     return Object.keys(this.data.workspaces ?? {}).length;
   }
 
+  // ---- global workspace (user-chosen default task directory) ----------------
+  // Separate from work models and from per-run directories: a run in a temporary
+  // folder must never rewrite this. Only `!workspace <path>` writes it.
+
+  /** The user-selected persistent workspace, or null. */
+  getGlobalWorkspace() {
+    const entry = this.data.preferences?.workspace ?? null;
+    return entry?.path ? entry : null;
+  }
+
+  /** Persist the user-selected workspace (validated by the caller). */
+  setGlobalWorkspace(workspacePath, { at = new Date().toISOString() } = {}) {
+    if (!workspacePath) return null;
+    this.data.preferences = this.data.preferences ?? {};
+    this.data.preferences.workspace = { path: workspacePath, source: 'user', updatedAt: at };
+    this.save();
+    return this.data.preferences.workspace;
+  }
+
+  /** Forget the user-selected workspace so the config/repo default applies. */
+  clearGlobalWorkspace() {
+    if (!this.data.preferences?.workspace) return false;
+    delete this.data.preferences.workspace;
+    this.save();
+    return true;
+  }
+
   /**
    * One-time upgrade for existing state files: derive workspace + last-known
    * selections from channels that already carry a model, so a bridge that had a
