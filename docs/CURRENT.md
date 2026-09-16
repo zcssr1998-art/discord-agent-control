@@ -6,125 +6,93 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 `jarvis-v4-p2-2-hardening`
 
-Stacked on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. P2/P2.1 PR #4 is still the parent functional PR; do not merge P2.2 to `main` before P2/P2.1 is accepted and merged.
+Stacked on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. Do not merge P2.2 to `main` before P2/P2.1 PR #4 is accepted/merged.
 
-## Milestone
+## Current milestone
 
-Jarvis V4 P2.2 — hardening: single-instance guard, Windows logon autostart, durable SQLite store, parent Work summary card, `discord-ui.mjs` extraction, CI + `/doctor`.
+Jarvis V4 P2.2.1 — Supervisor / Autostart recovery hardening.
 
-Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOKE.md`.
+Active spec:
 
-## P2.2 delivered
+`docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md`
 
-1. `src/instance-guard.mjs` + `src/build-identity.mjs` — exclusive instance lock (`data/jarvis-instance.lock`) with PID/startedAt/repoRoot/branch/commit/instanceId; second live instance fails fast with exit 1 before Discord login; stale/corrupt locks reclaimed only when no live pid owns them; graceful release. Identity exposed in `/status` (`Build:` / `Runtime:` / `Instance:`).
-2. `scripts/install-autostart.ps1` / `uninstall-autostart.ps1` / `start-supervisor-autostart.cmd` — one canonical per-user logon task `Jarvis Discord Agent Control` that starts the existing supervisor (never raw `node src/index.mjs`); idempotent re-install; `-DryRun`/`-Status`; uninstall touches only that task. npm: `autostart:install|status|remove`.
-3. `src/durable-store.mjs` — SQLite WAL store at `data/jarvis.db` (built-in `node:sqlite`), `PRAGMA user_version` schema v1, idempotent open/migrate; startup marks stale `RUNNING`/`QUEUED` runs `INTERRUPTED` (no auto-resume); follow-up queue audit rows; no secrets migrated.
-4. Parent-channel compact Work summary card (one per chain, updated in place, terminal state kept, controls bound to the live runId) + `打开 Work` thread link.
-5. `src/discord/renderers.mjs` — pure rows/labels extracted from `discord-ui.mjs` (behavior-preserving; controller extraction deliberately deferred).
-6. `.github/workflows/ci.yml` (windows-latest required + cheap linux portability) and deterministic `/doctor` + `!doctor` (identity, lock, store, Discord, LiteLLM, executors, autostart; no model call).
+## Why P2.2.1 exists
 
-## Verified at this commit
+P2.2 implementation passed earlier deterministic and machine smoke, but the owner's first real reboot smoke exposed a production reliability failure.
 
-- `npm test` 311/0
-- `npm run check` 104/0
-- `npm run smoke:p2` 11/11
-- `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
-- Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
+Real sequence:
 
-## Workspace (task working directory) separation
+- Windows logon task fired successfully and Jarvis initially reached Discord ready;
+- LiteLLM was healthy and the Bridge ran for ~2503.5s;
+- Bridge then exited;
+- Supervisor logged `Restarting in 2s...` but never logged another `Starting bridge`;
+- Scheduled Task returned to `Ready` and Jarvis remained OFFLINE;
+- `Get-ScheduledTaskInfo` reported `LastTaskResult = 3221225786` (`0xC000013A`, control-exit class result).
 
-A historical run directory (`latestRun.workspace`) had been used as the workspace fallback, so a task once executed in `D:\deepseek` made the startup card show it forever.
+TaskScheduler Operational logs around the failure did not establish the exact source of the control event. Do not block the fix on proving that source: the established defect is that both Bridge and Supervisor can disappear without recovery.
 
-Fixed — workspace is a first-class, explicitly-owned value:
+The previous owner reboot gate is therefore **FAIL until repaired and re-tested**.
 
-- resolution: explicit arg → **channel persisted cwd** → **user global selection** (`!workspace <dir>`, `preferences.workspace` in `state.json`) → **config `DEFAULT_WORKSPACE`/`DEFAULT_CWD`** → **Jarvis repo root** (never `process.cwd()`, a model dir, a log dir or a previous run)
-- a run's own directory stays a run record only (`runs.workspace`, audit) and can never move the workspace
-- `!workspace` shows the effective directory + source + persisted flag; `!workspace <abs dir>` validates (exists / is a directory / absolute) and persists; `!workspace reset` clears the selection back to the default
-- `index.mjs` sets `config.repoRoot` to the checkout root and logs `[workspace] default=…`
-- ready card / `/status` / task launch keep using the single `effectiveRuntimeState()`; the log reports `workspace=… source=channel|saved|config|repo-fallback`
+## Required recovery model
 
-Evidence: `tests/v4-p22-workspace.test.mjs` (9) + `npm run smoke:p22-workspace` (8/8 real processes, incl. a real Agent run whose cwd equals the card workspace).
+Use the existing lightweight stack only:
 
-## Startup card fidelity (effective runtime state)
+```text
+Windows Task Scheduler  (Level 2: recover Supervisor)
+        ↓
+Persistent Supervisor   (Level 1: recover Bridge + LiteLLM)
+   ├── Jarvis Bridge
+   └── LiteLLM
+```
 
-The `✅ Bridge 已就绪` card used to be assembled from WorkBuddy defaults, the WorkBuddy probe result and `config.defaultCwd`, so after a restart it showed `WorkBuddy / WorkBuddy Free · 当前不可用 / WorkBuddy Native / fast-model`.
+Production behavior must not permanently give up after five failures. Use bounded backoff and continue recovering while the logged-in Windows session is alive.
 
-Fixed by one shared source, `DiscordControlPlane.effectiveRuntimeState()` — used by the startup card, `/status` (`#statusLine`) and task launch (`getRunner`) through the same model resolver:
+## P2.2 baseline to preserve
 
-- executor/provider/protocol come from the active provider route (or the observed backend in direct-runner mode)
-- model is the restored selection; a stale saved model is reported, never replaced
-- billing/paid-fallback only appear for the WorkBuddy route; unknown → omitted
-- workspace follows the most recent real run → restored selection → config default, and is labelled by source
-- if the active route cannot work, the header is `⚠️ Bridge 已启动，但当前 Provider 不可用` instead of a fake "ready"
-- run records now store the RESOLVED model/provider, so the DB matches the real runtime
+Already implemented and not to be redone:
 
-Evidence: `tests/v4-p22-startup-card.test.mjs` (8) + `tests/v4-p22-workspace-source.test.mjs` + `npm run smoke:p22-model` (6/6, asserts the rendered card equals the restored route).
+- single-instance guard + runtime/build identity;
+- Windows logon autostart scripts;
+- SQLite WAL durable operational store;
+- parent Work summary/control card;
+- `/doctor` + CI;
+- first-class workspace resolution;
+- model-selection persistence;
+- live Work insert/steering;
+- Discord interaction ACK hardening.
 
-## Model selection persistence (restart fix)
+Existing regression evidence before this recovery fix included `npm test` 311/0, `npm run check` 104/0, `npm run smoke:p2` 11/11, `npm run smoke:p22` 10/10. Re-run required gates after changes; do not assume old evidence proves the new recovery path.
 
-Real failure: after a bridge/process restart, a Discord task answered `请先使用 !model <model-id> 选择模型` although a model had been selected before.
+## Acceptance focus
 
-Cause: the selection lived only on the ephemeral Discord channel/thread entry; per-task Work threads inherited the parent's `null` model, so the channel entry fell through to `MODEL_REQUIRED`.
+P2.2.1 is not complete until real Windows smoke proves:
 
-Fixed (reuses `state.json`, no second store):
+- Scheduled Task starts Supervisor → LiteLLM + Bridge;
+- killing Bridge only causes automatic Bridge recovery with Supervisor PID preserved;
+- killing LiteLLM only causes automatic LiteLLM recovery;
+- killing Supervisor only causes Task Scheduler to restart it without a manual startup command;
+- >5 simulated startup failures do not permanently strand production recovery;
+- the actual installed scheduled task has effective restart-on-failure settings;
+- no duplicate Jarvis instance or orphan runtime processes remain.
 
-- selection persisted on `channel`, `workspaces[<cwd>]` and `preferences.lastWorkModel` in one atomic write; a one-time backfill upgrades existing state files
-- resolution order: channel → workspace (same provider) → last selection (same provider) → explicit `DEFAULT_WORK_MODEL` → existing WorkBuddy behavior
-- stale saved model → `MODEL_UNAVAILABLE` (`已保存模型 xxx 当前不可用，请重新使用 !model 选择模型。`), no silent switch; a saved model for another provider is ignored
-- startup logs the restored selection: `[state] restored model selection: workspaces=N lastWorkModel=<provider>/<model>`
-- evidence: `tests/v4-p22-model-persist.test.mjs` (9) + `npm run smoke:p22-model` (5/5 real processes); the owner's previously failing channel now resolves its model with no `!model`
-
-## Live insert / steering (semantics correction)
-
-`➕ 插入需求` (formerly `追加需求`) now steers the RUNNING turn instead of queueing a next turn:
-
-- `ClaudeRunner.injectRequirement(prompt)` writes a stream-json user message into the live child's stdin (verified on the real CLI: injected during a 14s tool call, executed after it, one `result`); `send()` keeps next-turn semantics.
-- no second Agent, no re-acquired workspace lock, no new run, same runId/sessionId, single final DONE
-- owner text while RUNNING steers too; the follow-up queue remains only for Work that is queued and not yet started
-- race/unsupported paths are honest (`当前轮刚结束，已转为同 Session 继续执行。` / `⚠️ 当前执行器不支持运行中插入，将在当前轮后继续。`)
-- Stop clears unconsumed inserts (`已清空 N 条未处理的插入需求。`)
-- evidence: `tests/v4-p22-insert.test.mjs` (10) + `npm run smoke:p22-insert` 14/14 real-agent
-
-## Interaction ACK hardening (real `/work` FAIL fix)
-
-Real machine reproduced twice: `/work` showed Discord "该应用程序未响应" while the backend still created the Work thread. Cause: `#acknowledge()` swallowed `deferReply`/`deferUpdate` errors and continued into side effects.
-
-Fixed in `src/discord-ui.mjs`:
-
-- `#acknowledge()` / `#showModalAck()` return `{ ok, result, method, latencyMs, reason }`; nothing is swallowed
-- `onInteraction` aborts on failed ACK — no thread, no filesystem write, no Agent start
-- `/work` both paths covered (modal ACK, and `deferReply` before thread create) plus modal submit and append-follow-up
-- real failure classification (`UnknownInteraction(10062)`, `InteractionAlreadyAcknowledged(40060)`, `InteractionAlreadyReplied`, `DiscordAPIError(code)`)
-- ACK timing observation + log line `[interaction] /work ACK PASS 84ms method=deferReply`
-- tests: `tests/v4-p22-ack.test.mjs` (8 tests, incl. failure injection)
-
-Owner must re-test `/work` once on the live bridge.
-
-## Pending (owner-only)
-
-- `PENDING_OWNER_REBOOT_SMOKE`: reboot Windows, confirm Jarvis returns online after logon.
-- `PENDING_OWNER_DISCORD_SMOKE`: parent summary card `打开 Work` / `追加需求` / `Stop`, and `/status` + `/doctor` live output.
-
-Never reboot the owner machine automatically.
+Worker must never reboot the owner's PC. After all machine gates pass, leave a fresh `PENDING_OWNER_REBOOT_SMOKE` for the owner.
 
 ## Preserved invariants
 
-- ordinary Chat never starts an Agent
-- LiteLLM primary + OpenCode Go direct fallback
-- manual Chat pin never silently falls back
-- AUTO never surprises the owner with metered routes
-- guild Work runs in a permanent Work thread; parent remains Chat
-- one canonical workspace has at most one active Jarvis Work task; same-workspace tasks FIFO
-- queued Work never starts an Agent before lock acquisition
-- real stop kills active process trees, cancels queued work, clears pending follow-ups
-- stale cards/runIds cannot control newer work
-- supervisor remains the only restart owner for Jarvis + LiteLLM
-- `state.json` / `providers.json` / credential store unchanged; no secret in SQLite or logs
+- ordinary Chat never starts an Agent;
+- LiteLLM primary + OpenCode Go direct fallback;
+- manual Chat pin never silently falls back;
+- AUTO never surprises the owner with metered routes;
+- guild Work remains isolated in its Work thread;
+- one canonical workspace has at most one active Jarvis Work task;
+- stop/approval/session/model/workspace behavior must not regress;
+- single-instance guard remains authoritative;
+- no secret in repo/logs/SQLite.
 
-## Not in P2.2
+## Non-goals
 
-market monitoring, web dashboard, Redis/Postgres, Agent swarm/worktrees, new Codex/OpenCode adapters, voice.
+No P3 market monitoring, Longbridge/Futu, web dashboard, Redis/Postgres, Agent swarm/worktrees, new provider/model work, voice, Windows Service/NSSM/PM2/Docker, or unrelated UI refactor.
 
 ## Next action
 
-After P2/P2.1 PR #4 is accepted, merge P2.2. Remaining work is owner-run smoke only (reboot + Discord card/doctor check). Do not redo the P2.2 implementation.
+Execute `docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md`, verify the real Windows recovery paths, update evidence/state, commit + push. Do not merge P2.2 before this recovery task is accepted.
