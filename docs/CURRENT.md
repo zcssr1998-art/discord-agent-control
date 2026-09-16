@@ -10,58 +10,64 @@ Stacked on P2/P2.1. Do not merge P2.2 yet.
 
 ## Current milestone
 
-Jarvis V4 P2.2.2 — Chat model selection + invalid placeholder repair: **COMPLETE**.
+Jarvis V4 P2.2.3 — repository-wide stabilization / full bug bash.
 
-Spec: `docs/JARVIS_V4_P2_2_2_CHAT_MODEL_SELECTION_TASK.md`
-Evidence: `docs/V4_P2_2_SMOKE.md` (section 9).
+Authoritative spec:
 
-## What changed (P2.2.2)
+`docs/JARVIS_V4_P2_2_3_REPOSITORY_STABILIZATION_TASK.md`
 
-- `src/model-selection.mjs` — the one shared placeholder validator/normalizer
-  (`isPlaceholderId` / `normalizeChatSelection` / `needsChatSelectionRepair`).
-- `SessionManager.setChatSelection()` is now the fail-closed persistence
-  boundary (placeholder input throws `INVALID_CHAT_SELECTION`); new
-  `resolveChatSelection()` additionally requires an exact match against the
-  provider's real model list when one is available.
-- `StateStore.load()` auto-repairs a persisted placeholder Chat selection to
-  `AUTO/null` and persists it; only chat fields are touched.
-- Discord `/model` → Chat, `!chatmodel`, the panel and settings buttons all
-  funnel through one `#applyChatSelection`; `/status` shows `AUTO` or
-  `手动固定 · provider/model`.
+## Why this milestone exists
 
-## P2.2.1 recovery baseline (unchanged, must stay intact)
+P2.2.1 Supervisor/autostart recovery and P2.2.2 Chat model selection are complete and verified, but owner validation immediately exposed further adjacent product bugs. Instead of continuing one-off fixes, P2.2.3 is one structured pass across every implemented Jarvis surface with a feature matrix, regression tests, real-machine smoke and a compact bug ledger.
 
-Supervisor/autostart recovery is implemented and real-machine verified at/after
-`c83751b`; the owner's reboot auto-started successfully. `npm test` still runs
-`tests/v4-p221-recovery.test.mjs` green. The P2.2.2 live smoke also recovered the
-bridge through the supervisor after a hard kill.
+Known mandatory findings already reproduced:
 
-## Owner-required Chat semantics (now implemented)
+- `/model` on a provider with many models still instructs `!chatmodel opencode-go <model-id>` even though `<model-id>` is intentionally rejected; this must become a real selectable/paginated model path.
+- previously observed Discord `该应用程序未响应` requires systematic ACK/defer verification for all slash/button/modal interactions.
+- Help/control-panel text must not reference controls as clickable when the controls are not actually present in the current view.
 
-- fresh/default Chat = `AUTO` (`chatProviderId=auto`, `chatModel=null`);
-- AUTO is safe automatic routing, not a lock: a real Provider/model can be
-  chosen from `/model` / panel / `!chatmodel`;
-- a manual real pin persists across restart and stays a true no-fallback pin;
-- switching back to AUTO is one explicit action;
-- placeholder/example IDs (`<model-id>` / `<provider-id>` / ...) can never be
-  persisted;
-- an existing bad persisted placeholder is repaired automatically to `AUTO/null`
-  without deleting unrelated state.
+## Baselines to preserve
+
+P2.2.1 recovery:
+
+- persistent Supervisor with unlimited bounded-backoff recovery;
+- Bridge process isolation;
+- LiteLLM continuous health/recovery;
+- Task Scheduler AtLogOn + 1-minute watchdog recovery;
+- single-instance/process cleanup invariants.
+
+P2.2.2 Chat selection:
+
+- fresh/default Chat = AUTO/null;
+- AUTO is selectable default, not a lock;
+- real manual Provider/model pin persists and never silently falls back;
+- explicit switch back to AUTO;
+- placeholder IDs cannot persist and old bad state repairs to AUTO/null;
+- Chat and Work model selections remain independent.
+
+## Audit scope
+
+The active task covers existing product behavior only: native commands, text commands, control-panel/button/modal UX, Chat routing, Work orchestration, permissions/approvals, workspace/session/state persistence, attachments/context controls, queue/stop/live insert, startup/recovery/LiteLLM/process lifecycle, failure handling, help/status/diagnostics consistency.
+
+Every reproducible in-scope bug found by the matrix must be fixed, explicitly blocked by an external limitation, or proven to be a new out-of-scope feature request. Release-blocking bugs may not be silently deferred.
+
+## Required evidence
+
+Maintain `docs/P2_2_3_BUG_BASH.md` as the compact bug ledger. Run deterministic regression plus focused real Windows/Discord/provider E2E as defined by the taskbook. Do not fabricate owner-only Discord interaction evidence if the worker cannot impersonate the owner.
 
 ## Preserve
 
 - ordinary Chat never starts an Agent;
-- Work model selection/persistence is independent from Chat;
+- Work model selection/persistence independent from Chat;
 - LiteLLM primary + OpenCode Go direct architecture;
 - AUTO does not unexpectedly use disallowed metered routes;
-- single-instance/recovery/watchdog behavior remains intact;
-- no secrets in repo/logs/state evidence.
+- permissions/approval/stop control the real session/process;
+- no secrets in repo/logs/evidence.
 
 ## Non-goals
 
-No P3/finance/Longbridge, Supervisor redesign, new provider architecture, web
-dashboard, Agent teams, or broad Discord UI refactor.
+No P3 finance/market monitoring, Longbridge/Futu, new provider architecture, voice, web dashboard, Agent-swarm product feature, Redis/Postgres, Windows Service/NSSM/PM2/Docker, or speculative rewrite.
 
 ## Next action
 
-P2.2.2 is done. Await the owner's next task; do not start P3.
+Execute `docs/JARVIS_V4_P2_2_3_REPOSITORY_STABILIZATION_TASK.md`, fix all reproducible in-scope bugs, verify the complete matrix, commit + push, then stop.
