@@ -74,8 +74,16 @@ class FakeMessage {
 }
 
 export class FakeDiscord {
-  constructor({ ownerId = 'owner-1', channelId = 'chan-1', threadCapable = false, threadFailure = false, threadDelayMs = 0 } = {}) {
+  constructor({
+    ownerId = 'owner-1', channelId = 'chan-1', threadCapable = false, threadFailure = false, threadDelayMs = 0,
+    ackFailure = null,
+  } = {}) {
     this.threadDelayMs = threadDelayMs;
+    // Failure injection for the real ACK calls:
+    // { method: 'deferReply'|'deferUpdate'|'showModal', error }. A missing error
+    // defaults to a realistic "Unknown interaction" DiscordAPIError, so tests
+    // can prove no side effect runs when Discord never acknowledged.
+    this.ackFailure = ackFailure;
     this.ownerId = ownerId;
     this.channelId = channelId;
     this.messages = [];
@@ -115,6 +123,21 @@ export class FakeDiscord {
       on: (event, handler) => self.handlers.set(event, handler),
       login: async () => { self.loginCalled = true; return 'bot-1'; },
     };
+  }
+
+  /**
+   * Inject an ACK-level failure for the real discord.js methods. This exists so
+   * tests can prove the control plane refuses to run side effects (thread /
+   * filesystem / Agent start) when Discord never acknowledged the interaction.
+   */
+  #ackFail(method) {
+    const failure = this.ackFailure;
+    if (!failure) return;
+    const methods = Array.isArray(failure.method) ? failure.method : [failure.method];
+    if (!methods.includes(method)) return;
+    throw failure.error ?? Object.assign(new Error('Unknown interaction'), {
+      name: 'DiscordAPIError', code: 10062, status: 404,
+    });
   }
 
   /** Register an extra channel (e.g. a second independent Work context). */
@@ -233,9 +256,9 @@ export class FakeDiscord {
       deferred: false,
       replied: null,
       followedUp: [],
-      async showModal(builder) { modal = builder; self.lastModal = builder; },
-      async deferUpdate() { this.deferred = true; },
-      async deferReply() { this.deferred = true; },
+      async showModal(builder) { self.#ackFail('showModal'); modal = builder; self.lastModal = builder; },
+      async deferUpdate() { self.#ackFail('deferUpdate'); this.deferred = true; },
+      async deferReply() { self.#ackFail('deferReply'); this.deferred = true; },
       async reply(payload) { this.replied = payload; return null; },
       async editReply(payload) {
         this.deferred = false;
@@ -269,6 +292,7 @@ export class FakeDiscord {
   async submitModal(customId, { values = {}, userId = this.ownerId, channelId = this.channelId, guildId = null } = {}) {
     const handler = this.handlers.get('interactionCreate');
     if (!handler) throw new Error('control plane has not been started');
+    const self = this;
     const channel = this.channelsById.get(channelId) ?? this.channel;
     let replied = null;
     const followedUp = [];
@@ -287,8 +311,8 @@ export class FakeDiscord {
       deferred: false,
       replied: null,
       followedUp,
-      async deferUpdate() { this.deferred = true; },
-      async deferReply() { this.deferred = true; },
+      async deferUpdate() { self.#ackFail('deferUpdate'); this.deferred = true; },
+      async deferReply() { self.#ackFail('deferReply'); this.deferred = true; },
       async reply(payload) { this.replied = payload; replied = payload; return null; },
       async editReply(payload) {
         this.deferred = false;
@@ -344,8 +368,8 @@ export class FakeDiscord {
         this.replied = replied;
         return channel.send(replied);
       },
-      async deferUpdate() { this.deferred = true; deferred = true; },
-      async deferReply() { this.deferred = true; deferred = true; },
+      async deferUpdate() { self.#ackFail('deferUpdate'); this.deferred = true; deferred = true; },
+      async deferReply() { self.#ackFail('deferReply'); this.deferred = true; deferred = true; },
       async editReply(payload) {
         this.deferred = false;
         replied = typeof payload === 'string' ? { content: payload } : payload;
@@ -357,7 +381,7 @@ export class FakeDiscord {
         if (!this.replied) { replied = body; this.replied = body; }
         return channel.send(body);
       },
-      async showModal(builder) { modal = builder; self.lastModal = builder; },
+      async showModal(builder) { self.#ackFail('showModal'); modal = builder; self.lastModal = builder; },
       async update(payload) { replied = payload; this.replied = payload; },
     };
     this.lastInteraction = interaction;

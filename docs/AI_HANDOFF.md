@@ -12,6 +12,8 @@ P2.2 implementation is complete and verified. Evidence: `docs/V4_P2_2_SMOKE.md`.
 
 ## What a next worker must know
 
+- Interaction ACK failures are never swallowed: `#acknowledge()`/`#showModalAck()` in `src/discord-ui.mjs` return a result, `onInteraction` aborts on failure, and every interaction logs `[interaction] <label> ACK PASS|FAIL|SKIP <ms>ms method=…` with `requestReceivedAt/ackStartedAt/ackCompletedAt`. Do not re-introduce a bare `catch {}` around defer/showModal: that caused Discord "该应用程序未响应" while the backend still created the Work thread.
+
 - The single-instance lock is `data/jarvis-instance.lock` (git-ignored). A live holder is never killed; a second instance exits 1 before Discord login. `JARVIS_INSTANCE_LOCK` isolates the lock for tests.
 - Autostart is a per-user Task Scheduler task (`Jarvis Discord Agent Control`) running `scripts/start-supervisor-autostart.cmd` → `scripts/start-supervisor.ps1`. The supervisor stays the only restart owner for the bridge and LiteLLM. The task must never call `node src/index.mjs` directly.
 - `scripts/start-supervisor.ps1` resolves `$LogDir`/`$Entry` independently of `$PSScriptRoot`, because Task Scheduler contexts can leave `$PSScriptRoot` empty (that bug silently swallowed early logs once).
@@ -22,8 +24,8 @@ P2.2 implementation is complete and verified. Evidence: `docs/V4_P2_2_SMOKE.md`.
 ## Verification used
 
 ```text
-npm test         266/0
-npm run check    95/0
+npm test         274/0
+npm run check    96/0
 npm run smoke:p2 11/11
 npm run smoke:p22 10/10
 ```

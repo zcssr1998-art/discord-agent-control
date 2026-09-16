@@ -16,13 +16,14 @@ Delivered (in the spec's order):
 4. parent-channel compact Work summary/control card reusing the existing thread/follow-up/stop paths
 5. incremental `discord-ui.mjs` extraction into `src/discord/renderers.mjs` (pure helpers only, no rewrite)
 6. minimal Windows CI + deterministic local `/doctor` (and `!doctor`)
-7. full regression `npm test` 266/0 · `npm run check` 95/0 · `npm run smoke:p2` 11/11 · `npm run smoke:p22` 10/10
+7. full regression `npm test` 274/0 · `npm run check` 96/0 · `npm run smoke:p2` 11/11 · `npm run smoke:p22` 10/10
 8. Windows real-machine smoke: scheduled task → supervisor → LiteLLM UP → bridge online; second launch refused pre-login
+9. interaction ACK hardening after a real `/work` FAIL (Discord "该应用程序未响应" while the thread was still created): failed ACK now aborts before any side effect, with real cause classification + timing log; `tests/v4-p22-ack.test.mjs`
 
 Remaining (owner-only, do not fabricate):
 
+- `PENDING_OWNER_DISCORD_SMOKE` — re-test `/work` once on the live bridge (expect `[interaction] /work ACK PASS <ms>ms method=deferReply`), plus parent card `打开 Work` / `追加需求` / `Stop`, live `/status` and `/doctor`.
 - `PENDING_OWNER_REBOOT_SMOKE` — owner restarts Windows and confirms logon autostart brings Jarvis back.
-- `PENDING_OWNER_DISCORD_SMOKE` — parent card `打开 Work` / `追加需求` / `Stop`, live `/status` and `/doctor`.
 
 Worker instructions:
 

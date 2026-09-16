@@ -10,16 +10,16 @@ Do not mark an item PASS from unit tests alone. Items below record what was actu
 
 ## 1. Baseline regression
 
-- [x] `npm test` — 266 pass / 0 fail
-- [x] `npm run check` — 95 files, 0 failed
-- [x] `npm run smoke:p2` — 11/11 passed (includes a real Agent run in a panel Work thread, 9.8s)
-- [x] `npm run smoke:p22` — 10/10 checks passed (new P2.2 machine smoke)
+- [x] `npm test` 鈥?266 pass / 0 fail
+- [x] `npm run check` 鈥?96 files, 0 failed
+- [x] `npm run smoke:p2` 鈥?11/11 passed (includes a real Agent run in a panel Work thread, 9.8s)
+- [x] `npm run smoke:p22` 鈥?10/10 checks passed (new P2.2 machine smoke)
 
 ```text
-> npm test        → tests 266, pass 266, fail 0
-> npm run check   → checked 95 file(s), 0 failed
-> npm run smoke:p2 → === summary: 11/11 passed ===
-> npm run smoke:p22 → P2.2 smoke: 10/10 checks passed
+> npm test        鈫?tests 266, pass 266, fail 0
+> npm run check   鈫?checked 96 file(s), 0 failed
+> npm run smoke:p2 鈫?=== summary: 11/11 passed ===
+> npm run smoke:p22 鈫?P2.2 smoke: 10/10 checks passed
 ```
 
 ## 2. Single-instance guard
@@ -53,18 +53,18 @@ lock: data/jarvis-instance.lock
 exit=1   (no Discord login attempted)
 
 smoke:p22:
-PASS build identity matches git · live=jarvis-v4-p2-2-hardening@3fc0c35 git=jarvis-v4-p2-2-hardening@3fc0c35
+PASS build identity matches git 路 live=jarvis-v4-p2-2-hardening@3fc0c35 git=jarvis-v4-p2-2-hardening@3fc0c35
 PASS first (live child) instance acquires
 PASS lock metadata readable, foreign pid
 PASS second live holder refused, not killed
 ```
 
-Unit tests: `tests/v4-p22-instance.test.mjs` (8 checks) — acquire, refuse, stale reclaim, corrupt reclaim, release, metadata, build identity.
+Unit tests: `tests/v4-p22-instance.test.mjs` (8 checks) 鈥?acquire, refuse, stale reclaim, corrupt reclaim, release, metadata, build identity.
 
 ## 3. Windows autostart
 
 - [x] install script creates exactly one Jarvis-owned current-user Task Scheduler entry
-- [x] re-running installer updates/reuses the same task (no duplicate) — verified by running install twice
+- [x] re-running installer updates/reuses the same task (no duplicate) 鈥?verified by running install twice
 - [x] task action points at this checkout's supervisor (never raw node)
 - [x] task state/status can be queried without secrets (`-Status`, `npm run autostart:status`)
 - [x] manual scheduled-task start brings supervisor + Jarvis online
@@ -87,7 +87,7 @@ State:    Ready
 Action:   C:\WINDOWS\System32\cmd.exe /c ""C:\...\scripts\start-supervisor-autostart.cmd""
 
 > Start-ScheduledTask -TaskName 'Jarvis Discord Agent Control'
-(supervisor → LiteLLM → bridge, all started by the scheduled task)
+(supervisor 鈫?LiteLLM 鈫?bridge, all started by the scheduled task)
 
 logs\wrapper.log (tail):
 [executor] workbuddy=PASS version=2.137.1
@@ -100,7 +100,7 @@ logs\wrapper.log (tail):
 [discord] control plane ready | ... default cwd=D:\deepseeek
 
 LiteLLM process owned by the supervisor: pid 5360 (litellm.exe)
-Supervisor auto-restart proof: bridge pid 46524 killed → supervisor restarted it as pid 50220
+Supervisor auto-restart proof: bridge pid 46524 killed 鈫?supervisor restarted it as pid 50220
 without any manual step; lock + login re-established.
 ```
 
@@ -108,7 +108,7 @@ Scheduled task action never runs `node src/index.mjs`: it runs `scripts/start-su
 
 ### Owner reboot smoke
 
-**PENDING_OWNER_REBOOT_SMOKE** — the worker did not reboot the machine (and must not). After the owner explicitly restarts Windows and logs in, record:
+**PENDING_OWNER_REBOOT_SMOKE** 鈥?the worker did not reboot the machine (and must not). After the owner explicitly restarts Windows and logs in, record:
 
 - reboot/logon timestamp
 - time until Jarvis online
@@ -131,14 +131,14 @@ Expected result from the current machine state: after logon the task starts the 
 ```text
 data\jarvis.db       40960 bytes
 data\jarvis.db-shm   32768 bytes
-data\jarvis.db-wal       0 bytes      → WAL journal active
+data\jarvis.db-wal       0 bytes      鈫?WAL journal active
 
 smoke:p22:
 PASS durable store opens with WAL
 PASS restart marks stale running run interrupted (no auto-resume)
 ```
 
-Unit tests: `tests/v4-p22-durable-store.test.mjs` (6 tests) — schema/WAL, run lifecycle, interrupted-on-reopen, follow-up audit trail, no auto-resume.
+Unit tests: `tests/v4-p22-durable-store.test.mjs` (6 tests) 鈥?schema/WAL, run lifecycle, interrupted-on-reopen, follow-up audit trail, no auto-resume.
 
 ## 5. Parent Work summary card
 
@@ -147,23 +147,60 @@ Deterministic evidence (`tests/v4-p22-controls.test.mjs`, 4 tests):
 - [x] parent remains Chat; the thread stays the detailed progress site
 - [x] exactly one compact parent card per Work chain (updated in place, not spammed)
 - [x] controls bound to the live runId (`workctl:append:<runId>` / `workctl:stop:<runId>`)
-- [x] card carries an `打开 Work` link row to the existing thread
+- [x] card carries an `鎵撳紑 Work` link row to the existing thread
 - [x] final card shows the terminal state and drops the run controls (stale card cannot affect newer work)
-- [x] `追加需求` delegates to the same P2.1 follow-up queue; `Stop` delegates to the shared stop path
+- [x] `杩藉姞闇€姹俙 delegates to the same P2.1 follow-up queue; `Stop` delegates to the shared stop path
 
 Owner Discord smoke (still owner-run):
 
 1. Start one guild Work task.
 2. Parent channel remains Chat.
 3. Parent gets/updates one compact Work summary card.
-4. `打开 Work` opens the existing Work thread.
-5. `追加需求` reaches the same P2.1 follow-up queue.
+4. `鎵撳紑 Work` opens the existing Work thread.
+5. `杩藉姞闇€姹俙 reaches the same P2.1 follow-up queue.
 6. `Stop` stops the same active run/process tree.
 7. An old/stale card cannot stop or append to a newer run.
 8. Final card shows DONE/FAILED/CANCELLED without parent-channel spam.
 
 ```text
 PENDING_OWNER_DISCORD_SMOKE
+```
+
+## 5b. Interaction ACK hardening (real `/work` FAIL fix)
+
+Reported real-machine failure: `/work` 鈫?Discord showed "璇ュ簲鐢ㄧ▼搴忔湭鍝嶅簲" while the backend still created the Work thread. Root cause: `#acknowledge()` wrapped `deferReply`/`deferUpdate` in `try { 鈥?} catch { /* swallowed */ }`, so a failed ACK continued into thread creation and Agent start.
+
+Fixed:
+
+- failed ACK is never swallowed; `#acknowledge()`/`#showModalAck()` return a result and `onInteraction` aborts before any side effect
+- `showModal` is treated as an ACK too (`/work` without task, panel new Work, append follow-up)
+- modal-submit `deferReply` must succeed before thread/filesystem/Agent work
+- real cause is classified: `UnknownInteraction(10062)`, `InteractionAlreadyAcknowledged(40060)`, `InteractionAlreadyReplied`, `DiscordAPIError(<code>)`
+- timing observation on every interaction: request received 鈫?ACK start 鈫?ACK complete 鈫?latency 鈫?PASS/FAIL
+- live log format: `[interaction] /work ACK PASS 84ms method=deferReply`
+
+```text
+tests/v4-p22-ack.test.mjs (8 tests):
+PASS classifyInteractionError names the real Discord cause
+PASS /work with a task: a rejected deferReply creates no thread and starts no Agent
+PASS /work with a task: a successful ACK logs PASS with latency, then creates the thread
+PASS /work without a task: a rejected showModal performs no side effect
+PASS /work without a task: a successful showModal is the ACK (PASS) and shows the modal
+PASS modal submit: a rejected deferReply creates no thread and starts no Agent
+PASS modal submit: a successful deferReply allows the Work thread
+PASS an already acknowledged interaction is skipped, not treated as a failure
+
+failure-injection view (deferReply 鈫?DiscordAPIError 10062 Unknown interaction):
+[interaction] /work ACK FAIL 0ms method=deferReply code=10062 type=UnknownInteraction error=Unknown interaction
+[interaction] /work ABORTED after failed ACK at defer: type=UnknownInteraction code=10062 ...
+[interaction] /work no Work thread, no filesystem write, no Agent start performed.
+鈫?fake.threads.length = 0, runner starts = 0
+```
+
+Real owner Discord smoke (must be re-run by the owner, expected log):
+
+```text
+PENDING_OWNER_DISCORD_SMOKE  (expect: [interaction] /work ACK PASS <ms> method=deferReply)
 ```
 
 ## 6. `/doctor`
@@ -191,14 +228,14 @@ live bridge: [commands] registered=11 changed=1   (adds /doctor)
 
 - [x] Windows workflow exists (`.github/workflows/ci.yml`, `windows-latest`, Node 24)
 - [x] no secrets required
-- [x] `npm ci` → `npm test` → `npm run check`
+- [x] `npm ci` 鈫?`npm test` 鈫?`npm run check`
 - [x] extra Linux portability job (non-blocking signal, same three steps)
-- [ ] workflow PASS for final commit — **not verifiable from this machine** (`gh` is not authenticated here); the workflow runs the exact commands that pass locally. Record the Actions run URL after the owner (or a CI-authenticated shell) checks the push. Do not mark PASS from local runs alone.
+- [ ] workflow PASS for final commit 鈥?**not verifiable from this machine** (`gh` is not authenticated here); the workflow runs the exact commands that pass locally. Record the Actions run URL after the owner (or a CI-authenticated shell) checks the push. Do not mark PASS from local runs alone.
 
 ```text
 .github/workflows/ci.yml
 jobs: windows (runs-on: windows-latest) [required], linux-portability (ubuntu-latest)
-local equivalents: npm test 266/0, npm run check 95/0
+local equivalents: npm test 274/0, npm run check 96/0
 ```
 
 ## 8. Refactor regression
@@ -214,7 +251,7 @@ local equivalents: npm test 266/0, npm run check 95/0
 - [x] no parallel replacement state/control implementation introduced (single source of truth kept in `DiscordControlPlane`)
 
 ```text
-tests 266 pass / 0 fail after extraction (baseline at branch point: 244 pass / 0 fail)
+tests 274 pass / 0 fail after extraction + ACK hardening (baseline at branch point: 244 pass / 0 fail)
 check 95 files / 0 failed
 smoke:p2 11/11
 ```
@@ -225,9 +262,9 @@ Note: this milestone extracted the pure helper/row layer only. Further controlle
 
 ```text
 P2.2: PASS (deterministic + Windows real-machine); owner Discord smoke + owner reboot smoke pending owner action
-commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2 implementation)
-tests: 266/0 · check 95/0 · smoke:p2 11/11 · smoke:p22 10/10
-windows-smoke: scheduled task → supervisor → LiteLLM(UP) → bridge online; second launch refused pre-login (exit 1)
-autostart: installed (task 'Jarvis Discord Agent Control', Ready) · PENDING_OWNER_REBOOT_SMOKE
-blocker: none
+commit: branch jarvis-v4-p2-2-hardening HEAD (P2.2 implementation + ACK hardening)
+tests: 274/0 路 check 96/0 路 smoke:p2 11/11 路 smoke:p22 10/10
+windows-smoke: scheduled task 鈫?supervisor 鈫?LiteLLM(UP) 鈫?bridge online; second launch refused pre-login (exit 1)
+autostart: installed (task 'Jarvis Discord Agent Control', Ready) 路 PENDING_OWNER_REBOOT_SMOKE
+blocker: real /work ACK timeout previously reproduced twice and has been fixed (see 搂5b); owner re-test pending
 ```

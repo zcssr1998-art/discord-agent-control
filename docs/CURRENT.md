@@ -25,11 +25,26 @@ Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOK
 
 ## Verified at this commit
 
-- `npm test` 266/0
-- `npm run check` 95/0
+- `npm test` 274/0
+- `npm run check` 96/0
 - `npm run smoke:p2` 11/11
 - `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
 - Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
+
+## Interaction ACK hardening (real `/work` FAIL fix)
+
+Real machine reproduced twice: `/work` showed Discord "该应用程序未响应" while the backend still created the Work thread. Cause: `#acknowledge()` swallowed `deferReply`/`deferUpdate` errors and continued into side effects.
+
+Fixed in `src/discord-ui.mjs`:
+
+- `#acknowledge()` / `#showModalAck()` return `{ ok, result, method, latencyMs, reason }`; nothing is swallowed
+- `onInteraction` aborts on failed ACK — no thread, no filesystem write, no Agent start
+- `/work` both paths covered (modal ACK, and `deferReply` before thread create) plus modal submit and append-follow-up
+- real failure classification (`UnknownInteraction(10062)`, `InteractionAlreadyAcknowledged(40060)`, `InteractionAlreadyReplied`, `DiscordAPIError(code)`)
+- ACK timing observation + log line `[interaction] /work ACK PASS 84ms method=deferReply`
+- tests: `tests/v4-p22-ack.test.mjs` (8 tests, incl. failure injection)
+
+Owner must re-test `/work` once on the live bridge.
 
 ## Pending (owner-only)
 

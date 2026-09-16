@@ -70,6 +70,28 @@ export function wsStatusText(status) {
   return map[status] ?? `ws status ${status}`;
 }
 
+/**
+ * P2.2 ACK fix: classify a failed interaction acknowledgement with the real
+ * Discord cause instead of a generic swallow. Codes:
+ *   10062 Unknown interaction · 40060 already acknowledged · 50027 invalid webhook.
+ */
+export function classifyInteractionError(error) {
+  const name = String(error?.name || 'Error');
+  const code = error?.code ?? error?.status ?? null;
+  const byCode = {
+    10062: 'UnknownInteraction',
+    10015: 'UnknownWebhook',
+    40060: 'InteractionAlreadyAcknowledged',
+    50027: 'InvalidWebhookToken',
+  };
+  let type;
+  if (name === 'DiscordAPIError') type = byCode[code] || `DiscordAPIError(${code ?? '?'})`;
+  else if (name === 'InteractionAlreadyReplied') type = 'InteractionAlreadyReplied';
+  else if (name === 'InteractionNotReplied') type = 'InteractionNotReplied';
+  else type = name;
+  return { type, code, name, message: String(error?.message || error) };
+}
+
 export const PANEL_HELP_TEXT = [
   '📖 **Jarvis 使用说明**',
   '',
@@ -1293,22 +1315,104 @@ export class DiscordControlPlane {
   /**
    * Immediately ACK an interaction so Discord never shows "该应用程序未响应".
    * Must run before any slow work (thread create, filesystem, Agent start,
-   * provider/model check, workspace queue, network). `showModal` is its own
-   * ACK and is handled by the caller before this is reached.
+   * provider/model check, workspace queue, network).
+   *
+   * A failed ACK is NEVER swallowed. If Discord did not acknowledge, the caller
+   * must abort before any side effect: otherwise Discord shows the timeout while
+   * the backend still creates a Work thread / starts an Agent (the real /work
+   * bug). Returns a record with latency + real failure classification.
    */
-  async #acknowledge(interaction) {
-    if (interaction.deferred || interaction.replied) return;
+  async #acknowledge(interaction, { label = null, receivedAt = null } = {}) {
+    const startedAt = Date.now();
+    const ackLabel = label || this.#interactionLabel(interaction);
+    if (interaction.deferred || interaction.replied) {
+      return this.#recordAck(ackLabel, { ok: true, skipped: true, method: 'skip', startedAt, receivedAt });
+    }
+    const isButton = typeof interaction.isButton === 'function' && interaction.isButton();
+    const isModal = typeof interaction.isModalSubmit === 'function' && interaction.isModalSubmit();
+    const method = isButton ? 'deferUpdate' : isModal ? 'deferReply(ephemeral)' : 'deferReply';
     try {
-      if (typeof interaction.isButton === 'function' && interaction.isButton()) {
-        await interaction.deferUpdate();
-        return;
-      }
-      if (typeof interaction.isModalSubmit === 'function' && interaction.isModalSubmit()) {
-        await interaction.deferReply({ ephemeral: true });
-        return;
-      }
-      await interaction.deferReply();
-    } catch { /* an already-acked interaction must never break the handler */ }
+      if (isButton) await interaction.deferUpdate();
+      else if (isModal) await interaction.deferReply({ ephemeral: true });
+      else await interaction.deferReply();
+      return this.#recordAck(ackLabel, { ok: true, method, startedAt, receivedAt });
+    } catch (error) {
+      return this.#recordAck(ackLabel, { ok: false, method, startedAt, receivedAt, error });
+    }
+  }
+
+  /** A human label for logs: `/work`, `button:panel:status`, `modal:workmodal:task`. */
+  #interactionLabel(interaction) {
+    if (typeof interaction.isChatInputCommand === 'function' && interaction.isChatInputCommand()) {
+      return `/${interaction.commandName ?? '?'}`;
+    }
+    if (typeof interaction.isModalSubmit === 'function' && interaction.isModalSubmit()) {
+      return `modal:${interaction.customId ?? '?'}`;
+    }
+    return `button:${interaction.customId ?? '?'}`;
+  }
+
+  /** Emit the ACK observation and return the record for the caller to gate on. */
+  #recordAck(label, { ok, skipped = false, method, startedAt, receivedAt = null, error = null }) {
+    const completedAt = Date.now();
+    const latencyMs = Math.max(0, completedAt - startedAt);
+    const result = skipped ? 'SKIP' : ok ? 'PASS' : 'FAIL';
+    const reason = error ? classifyInteractionError(error) : null;
+    const suffix = reason
+      ? ` code=${reason.code ?? '-'} type=${reason.type} error=${redact(reason.message).slice(0, 180)}`
+      : skipped ? ' (already acknowledged)' : '';
+    const line = `[interaction] ${label} ACK ${result} ${latencyMs}ms method=${method}${suffix}`;
+    if (ok || skipped) console.log(line);
+    else console.error(line);
+    const record = {
+      label, result, method,
+      // Timing observation: request received → ACK started → ACK completed.
+      requestReceivedAt: receivedAt,
+      ackStartedAt: startedAt,
+      ackCompletedAt: completedAt,
+      reachMs: receivedAt ? startedAt - receivedAt : null,
+      latencyMs,
+      reason, at: completedAt,
+    };
+    this.lastAck = record;
+    this.ackLog = this.ackLog ?? [];
+    this.ackLog.push(record);
+    return { ok, skipped, ...record, error };
+  }
+
+  /**
+   * `showModal` is itself the ACK (it cannot follow a defer). It must therefore
+   * be checked the same way: a rejected modal means no Work side effect at all.
+   */
+  async #showModalAck(interaction, modal, { label = null, receivedAt = null } = {}) {
+    const startedAt = Date.now();
+    const ackLabel = label || this.#interactionLabel(interaction);
+    if (interaction.deferred || interaction.replied) {
+      return this.#recordAck(ackLabel, { ok: true, skipped: true, method: 'showModal', startedAt, receivedAt });
+    }
+    try {
+      await interaction.showModal(modal);
+      return this.#recordAck(ackLabel, { ok: true, method: 'showModal', startedAt, receivedAt });
+    } catch (error) {
+      return this.#recordAck(ackLabel, { ok: false, method: 'showModal', startedAt, receivedAt, error });
+    }
+  }
+
+  /**
+   * A failed ACK must abort the interaction before any side effect. Log the real
+   * cause (DiscordAPIError/Unknown interaction/AlreadyAcknowledged) with the
+   * interaction type, command/customId, and latency so a live /work failure is
+   * diagnosable instead of appearing as a silent Discord timeout.
+   */
+  #abortAfterFailedAck(label, ack, stage) {
+    const reason = ack?.reason ?? {};
+    console.error(
+      `[interaction] ${label} ABORTED after failed ACK at ${stage}: type=${reason.type ?? 'unknown'}`
+      + ` code=${reason.code ?? '-'} latency=${ack?.latencyMs ?? '-'}ms`
+      + ` method=${ack?.method ?? '-'} error=${redact(reason.message || 'unknown')}`,
+    );
+    console.error(`[interaction] ${label} no Work thread, no filesystem write, no Agent start performed.`);
+    return false;
   }
 
   /** Send/update an interaction result regardless of deferred/replied state. */
@@ -2282,6 +2386,7 @@ export class DiscordControlPlane {
   }
 
   async onInteraction(interaction) {
+    const receivedAt = Date.now();
     const isButton = typeof interaction.isButton === 'function' && interaction.isButton();
     const isModal = typeof interaction.isModalSubmit === 'function' && interaction.isModalSubmit();
     const isCommand = typeof interaction.isChatInputCommand === 'function' && interaction.isChatInputCommand();
@@ -2292,6 +2397,7 @@ export class DiscordControlPlane {
       await this.#ephemeral(interaction, '无权执行此操作。');
       return;
     }
+    const label = this.#interactionLabel(interaction);
     const parts = String(interaction.customId ?? '').split(':');
     const prefix = parts[0];
     const id = parts[1];
@@ -2299,16 +2405,18 @@ export class DiscordControlPlane {
     const channelId = interaction.channelId || interaction.message?.channelId;
 
     // These three respond by showing a Modal, which is its own immediate ACK
-    // and cannot follow a defer. Everything else is ACKed before any slow work.
+    // and cannot follow a defer. A rejected modal must NOT create a Work thread.
     if (isCommand && interaction.commandName === 'work') {
       const task = typeof interaction.options?.getString === 'function' ? interaction.options.getString('task') : null;
       if (!task || !String(task).trim()) {
-        await interaction.showModal(this.#newWorkModal());
+        const modalAck = await this.#showModalAck(interaction, this.#newWorkModal(), { label, receivedAt });
+        if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (new Work)');
         return;
       }
     }
     if (isButton && prefix === 'panel' && id === 'newwork') {
-      await interaction.showModal(this.#newWorkModal());
+      const modalAck = await this.#showModalAck(interaction, this.#newWorkModal(), { label, receivedAt });
+      if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (panel new Work)');
       return;
     }
     if (isButton && prefix === 'workctl' && id === 'append') {
@@ -2318,14 +2426,19 @@ export class DiscordControlPlane {
         await this.#ephemeral(interaction, '该任务已结束。');
         return;
       }
-      await interaction.showModal(this.#appendModal(action));
+      const modalAck = await this.#showModalAck(interaction, this.#appendModal(action), { label, receivedAt });
+      if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (append follow-up)');
       return;
     }
 
     // Immediate ACK before thread create / filesystem / Agent start / provider
-    // check / workspace queue / network.
-    await this.#acknowledge(interaction);
-
+    // check / workspace queue / network. A failed ACK aborts the interaction:
+    // no thread, no Agent, no filesystem side effect.
+    const ack = await this.#acknowledge(interaction, { label, receivedAt });
+    if (!ack.ok) {
+      this.#abortAfterFailedAck(label, ack, 'defer');
+      return;
+    }
     if (isCommand) { await this.#handleApplicationCommand(interaction); return; }
     if (isModal) { await this.#handleModalSubmit(interaction, parts); return; }
     if (prefix === 'panel') {
@@ -2535,9 +2648,9 @@ export class DiscordControlPlane {
       await this.#ephemeral(interaction, '审批请求已过期或已处理。');
       return;
     }
-    const label = { 'allow-once': APPROVAL_BUTTONS.ALLOW_ONCE, 'allow-session': APPROVAL_BUTTONS.ALLOW_SESSION, deny: APPROVAL_BUTTONS.DENY }[action] || action;
+    const decisionLabel = { 'allow-once': APPROVAL_BUTTONS.ALLOW_ONCE, 'allow-session': APPROVAL_BUTTONS.ALLOW_SESSION, deny: APPROVAL_BUTTONS.DENY }[action] || action;
     await this.#edit(interaction, {
-      content: clip(`${interaction.message.content}\n\n**处理结果：${label}** — <@${interaction.user.id}>`),
+      content: clip(`${interaction.message.content}\n\n**处理结果：${decisionLabel}** — <@${interaction.user.id}>`),
       components: [],
     });
   }
