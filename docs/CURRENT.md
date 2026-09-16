@@ -6,61 +6,75 @@ Keep this file compact. It is the first project-state file a new worker should r
 
 `jarvis-v4-p2-2-hardening`
 
-Stacked on P2/P2.1 head `6d7f60af241ef65b226b6ebfc602593b797b5231`. Do not merge P2.2 to `main` before P2/P2.1 PR #4 is accepted/merged.
+Stacked on P2/P2.1. Do not merge P2.2 yet.
 
 ## Current milestone
 
-Jarvis V4 P2.2.1 — Supervisor / Autostart recovery hardening. **Implemented and verified on the real machine.**
+Jarvis V4 P2.2.2 — Chat model selection + invalid placeholder repair.
 
-Spec (authoritative):
+Authoritative spec:
 
-`docs/JARVIS_V4_P2_2_1_SUPERVISOR_RECOVERY_TASK.md`
+`docs/JARVIS_V4_P2_2_2_CHAT_MODEL_SELECTION_TASK.md`
 
-Evidence:
+## P2.2.1 recovery baseline
 
-`docs/V4_P2_2_SMOKE.md` §0 (real Windows kill/recovery smoke, 23/23).
+Supervisor/autostart recovery is implemented and real-machine verified at/after `c83751b`:
 
-## Verified recovery model
+- persistent Supervisor, unlimited production retries with bounded backoff;
+- Bridge isolated in its own hidden console;
+- LiteLLM continuously health-checked/recovered;
+- Task Scheduler AtLogOn + 1-minute watchdog trigger recovers Supervisor;
+- real kill/recovery smoke passed for Bridge, LiteLLM, Supervisor and >5 startup failures.
+
+The owner then performed the real reboot. Jarvis **did auto-start successfully**, so keep the P2.2.1 recovery implementation intact.
+
+## New real post-reboot failure
+
+After reboot, ordinary Chat failed with a persisted literal documentation placeholder:
 
 ```text
-Windows Task Scheduler  (Level 2: AtLogOn + 1-min watchdog trigger restarts Supervisor)
-        ↓
-Persistent Supervisor   (Level 1: recovers Bridge + LiteLLM, never gives up)
-   ├── Jarvis Bridge  (own hidden console, logs/bridge.log)
-   └── LiteLLM
+provider=opencode-go model=<model-id>
 ```
 
-- Supervisor production default is unlimited; backoff `2s → 5s → 10s → 30s → 60s → 120s`; a `>= 60s` run resets the counter.
-- The bridge runs in its own hidden console so a bridge/control event cannot kill the supervisor.
-- LiteLLM is re-probed every 30s and recovered while the bridge runs.
-- Task Scheduler restart-on-failure is configured (`RestartCount=999`, `RestartInterval=PT1M`) but Windows did **not** honor it for an externally killed action process; the reliable Level-2 path is the `RepetitionInterval PT1M` watchdog trigger with `MultipleInstances=IgnoreNew`. Both remain configured.
-- Supervisor pid file + orphan-bridge reclaim keep exactly one supervised bridge.
+Current Chat selection persistence can accept arbitrary model text, so `<model-id>` survived reboot and pinned Chat to an impossible manual route.
 
-## Verified gates (2026-09-16, real Windows)
+Owner-required Chat semantics:
 
-- `npm test` 316/0 · `npm run check` 105/0 · `smoke:p2` 11/11 · `smoke:p22` 10/10.
-- `scripts/smoke-supervisor-recovery.ps1` 23/23: G1 scheduled-task start → LiteLLM + bridge + Discord ready; G2 kill bridge → supervisor survives + new bridge; G3 kill LiteLLM → auto-recovered; G4 kill supervisor → watchdog restarts it + bridge restored; G5 >5 failures still retrying.
+- default = `AUTO`;
+- AUTO remains safe automatic routing, not a hardcoded model;
+- owner can explicitly choose a real Provider/model from Discord;
+- manual choice persists and remains a true no-fallback pin;
+- owner can switch back to AUTO at any time;
+- placeholder/example IDs must never persist;
+- existing bad persisted placeholder state must repair automatically to `AUTO/null` without deleting unrelated state.
 
-## Pending
+## Acceptance focus
 
-- `PENDING_OWNER_REBOOT_SMOKE` — owner reboots Windows and confirms Jarvis returns ONLINE. The worker must never reboot the machine.
+P2.2.2 is complete only when:
 
-## Preserved invariants
+- fresh Chat defaults to AUTO/null;
+- `<model-id>` / `<provider-id>` style placeholders are rejected at one shared persistence boundary;
+- existing persisted bad pin is automatically repaired and persisted as AUTO/null;
+- `/model` / panel offers AUTO plus actual eligible Providers and actual models;
+- manual real pin works, survives restart, and does not silently fallback;
+- switch back to AUTO works;
+- `/status` clearly distinguishes AUTO vs manual pin;
+- live Discord smoke proves AUTO chat → manual pin → switch back AUTO;
+- P2.2.1 recovery regressions remain green.
+
+## Preserve
 
 - ordinary Chat never starts an Agent;
-- LiteLLM primary + OpenCode Go direct fallback;
-- manual Chat pin never silently falls back;
-- AUTO never surprises the owner with metered routes;
-- guild Work remains isolated in its Work thread;
-- one canonical workspace has at most one active Jarvis Work task;
-- stop/approval/session/model/workspace behavior must not regress;
-- single-instance guard remains authoritative;
-- no secret in repo/logs/SQLite.
+- Work model selection/persistence is independent from Chat;
+- LiteLLM primary + OpenCode Go direct architecture;
+- AUTO does not unexpectedly use disallowed metered routes;
+- single-instance/recovery/watchdog behavior remains intact;
+- no secrets in repo/logs/state evidence.
 
 ## Non-goals
 
-No P3 market monitoring, Longbridge/Futu, web dashboard, Redis/Postgres, Agent swarm/worktrees, new provider/model work, voice, Windows Service/NSSM/PM2/Docker, or unrelated UI refactor.
+No P3/finance/Longbridge, Supervisor redesign, new provider architecture, web dashboard, Agent teams, or broad Discord UI refactor.
 
 ## Next action
 
-Owner: run the reboot smoke and, if it passes, proceed to the P2.2 → P2/P2.1 merge decision. Do not start P3 or an unrelated refactor.
+Execute `docs/JARVIS_V4_P2_2_2_CHAT_MODEL_SELECTION_TASK.md`, run deterministic + live Discord smoke, update evidence/state, commit + push, then stop.
