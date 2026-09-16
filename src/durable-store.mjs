@@ -170,6 +170,19 @@ export class DurableStore {
     return this.db.prepare('SELECT run_id, state, started_at, finished_at FROM runs ORDER BY started_at DESC LIMIT ?').all(limit);
   }
 
+  /**
+   * The newest run recorded by this workspace, used as evidence for the current
+   * effective workspace on the startup card (never a historical default path).
+   */
+  latestRun() {
+    if (!this.db) return null;
+    try {
+      return this.db.prepare(
+        'SELECT run_id, channel_id, workspace, model, provider_id, state, started_at FROM runs ORDER BY started_at DESC LIMIT 1',
+      ).get() ?? null;
+    } catch { return null; }
+  }
+
   status() {
     if (!this.db) return { open: false, file: this.file };
     const [{ user_version: version }] = this.db.prepare('PRAGMA user_version').all();

@@ -58,8 +58,19 @@ export class SessionManager {
    * Entries carry their provider so a stale route can never be applied blindly.
    */
   savedModelCandidates(channelId) {
-    const cwd = this.get(channelId).cwd;
-    return [this.state.getWorkspaceModel(cwd), this.state.getLastWorkModel()].filter(Boolean);
+    return this.savedModelCandidatesForCwd(this.get(channelId).cwd);
+  }
+
+  /** Same as savedModelCandidates() for a bare directory (startup card, /status). */
+  savedModelCandidatesForCwd(cwd) {
+    const candidates = [this.state.getWorkspaceModel(cwd), this.state.getLastWorkModel()].filter(Boolean);
+    const seen = new Set();
+    return candidates.filter((entry) => {
+      const key = `${entry.providerId ?? '?'}:${entry.model}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   async change(channelId, patch, reason) {

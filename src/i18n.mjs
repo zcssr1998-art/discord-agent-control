@@ -122,19 +122,31 @@ export function helpText() {
 }
 
 /** 启动通知。 */
-export function readyText({ executor, provider, protocol, backend, model, billingRoute, paidFallback, defaultCwd, permissionLabel }) {
-  return [
-    '✅ **Bridge 已就绪**',
-    `执行器：${executor ?? 'WorkBuddy'}`,
-    `${provider ? 'Provider' : '后端'}：${provider ?? backend ?? 'unknown'}`,
-    `协议：${protocol ?? 'workbuddy'}`,
-    `模型：${model ?? 'unknown'}`,
-    `计费线路：${billingRoute ?? 'unknown'}`,
-    `付费回退：${paidFallback ? '已启用' : '已禁用'}`,
-    `权限：${permissionLabel ?? '🛡️ 标准'}`,
-    `默认目录：\`${defaultCwd}\``,
-    '发送任务开始，或输入 `!help` 查看指令。',
-  ].join('\n');
+/**
+ * Startup card. Every field comes from the resolved runtime state (the same
+ * source as task launch and `!status`); unknown values are omitted or marked
+ * 未配置 instead of falling back to a historical WorkBuddy/fast-model default.
+ */
+export function readyText({ ok = true, executor, provider, backend, protocol, adapter, model, billingType, paidFallback, workspace, permissionLabel, note = null }) {
+  const lines = [
+    ok ? '✅ **Bridge 已就绪**' : '⚠️ **Bridge 已启动，但当前 Provider 不可用**',
+    `执行器：${executor || '未配置'}`,
+    // A provider route is shown when one is configured; otherwise the actually
+    // observed backend of the direct runner is reported (never a historical default).
+    provider ? `Provider：${provider}` : (backend ? `后端：${backend}` : null),
+    `协议：${protocol || '未标注'}`,
+    ...(adapter ? [`兼容层：${adapter}`] : []),
+    `模型：${model || '未配置'}`,
+    // Only shown when the active route actually has billing metadata.
+    ...(billingType ? [`计费：${billingType}`] : []),
+    // Only meaningful for the WorkBuddy route; omitted otherwise.
+    ...(paidFallback == null ? [] : [`付费回退：${paidFallback ? '已启用' : '已禁用'}`]),
+    `权限：${permissionLabel ?? '未配置'}`,
+    `工作目录：\`${workspace ?? '未配置'}\``,
+  ].filter(Boolean);
+  if (note) lines.push(`⚠️ ${note}`);
+  lines.push('发送任务开始，或输入 `!help` 查看指令。');
+  return lines.join('\n');
 }
 
 /** 格式化 !status 输出。 */

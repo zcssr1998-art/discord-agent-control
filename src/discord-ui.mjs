@@ -291,23 +291,26 @@ export class DiscordControlPlane {
   async notifyReady() {
     const owner = await this.client.users.fetch(this.config.ownerId).catch(() => null);
     if (!owner) return;
-    const backend = this.backendState?.backend ?? null;
-    const workbuddyProfile = this.providerManager?.get('workbuddy-free');
-    const workbuddyStatus = this.backendState?.workbuddyStatus;
-    const workbuddySuffix = workbuddyStatus && workbuddyStatus !== 'PASS'
-      ? ` · ${workbuddyStatus === 'BLOCKED_BY_QUOTA' ? '额度不足' : '当前不可用'}` : '';
-    const permLabel = PERM_SHORT[this.permissionManager.getLevel(null)] || PERM_SHORT.standard;
+    // The card renders the SAME resolved runtime state that a task launch uses:
+    // restored model, active provider/executor route, restored workspace. No
+    // WorkBuddy/fast-model/config-default fallbacks.
+    const state = this.effectiveRuntimeState({});
+    const permLabel = PERM_SHORT[state.permissionLevel] || state.permissionLevel || null;
     const text = readyText({
-      executor: this.executorManager?.get('workbuddy')?.displayName,
-      provider: workbuddyProfile ? `${workbuddyProfile.displayName}${workbuddySuffix}` : undefined,
-      protocol: protocolLabel(this.providerManager?.get('workbuddy-free')?.protocol),
-      backend: backend?.label ?? 'unknown',
-      model: backend?.model ?? 'unknown',
-      billingRoute: backend ? billingRoute(backend) : 'unknown',
-      paidFallback: this.config.allowPaidFallback,
-      defaultCwd: this.config.defaultCwd,
+      ok: state.ok,
+      executor: state.executor?.displayName ?? state.executor?.id ?? null,
+      provider: state.provider ? (state.provider.displayName ?? state.provider.id) : null,
+      backend: state.backend ?? null,
+      protocol: state.protocol,
+      adapter: state.adapter,
+      model: state.model,
+      billingType: state.billingType ? billingLabel(state.billingType) : (state.billingRoute ?? null),
+      paidFallback: state.paidFallback,
+      workspace: state.workspace,
       permissionLabel: permLabel,
+      note: state.problem,
     });
+    console.log(`[bridge] ready card: ok=${state.ok} executor=${state.executor?.id ?? '-'} provider=${state.provider?.id ?? '-'} model=${state.model ?? '-'} workspace=${state.workspace} source=${state.modelSource}/${state.workspaceSource}`);
     try { await owner.send(text); } catch (error) { console.warn(`[discord] could not send the ready DM: ${redact(error?.message)}`); }
   }
 
@@ -377,18 +380,26 @@ export class DiscordControlPlane {
    * (MODEL_UNAVAILABLE) instead of silently switching to a different model.
    */
   #resolveWorkModel(channelId, chState, provider) {
+    return this.#resolveWorkModelFor({ channelId, cwd: chState.cwd, model: chState.model }, provider);
+  }
+
+  /** Resolver core shared by task launch, `/status` and the startup card. */
+  #resolveWorkModelFor({ channelId = null, cwd = null, model = null }, provider) {
     const models = Array.isArray(provider?.models) ? provider.models : [];
     const known = models.length ? new Set(models.map((m) => m.id)) : null;
     const configuredDefault = this.config.defaultWorkModel || null;
 
     const candidates = [];
-    if (chState.model) candidates.push({ model: chState.model, source: 'channel' });
-    for (const saved of this.sessionManager.savedModelCandidates(channelId) ?? []) {
-      if (!saved?.model || saved.model === chState.model) continue;
+    if (model) candidates.push({ model, source: 'channel' });
+    const saved = channelId
+      ? this.sessionManager.savedModelCandidates(channelId)
+      : this.sessionManager.savedModelCandidatesForCwd(cwd);
+    for (const entry of saved ?? []) {
+      if (!entry?.model || entry.model === model) continue;
       // A saved selection from a different provider is not applicable to this
       // route: the owner changed the provider explicitly, so fall through.
-      if (saved.providerId && provider?.id && saved.providerId !== provider.id) continue;
-      candidates.push({ model: saved.model, source: 'saved' });
+      if (entry.providerId && provider?.id && entry.providerId !== provider.id) continue;
+      candidates.push({ model: entry.model, source: 'saved' });
     }
     if (configuredDefault) candidates.push({ model: configuredDefault, source: 'default' });
 
@@ -405,6 +416,104 @@ export class DiscordControlPlane {
       return { model: models[0].id, source: 'builtin' };
     }
     return { model: null, source: 'none' };
+  }
+
+  /**
+   * The ONE resolved runtime state behind task launch, `/status` and the startup
+   * card. It reads config → durable state → restored selection → provider route →
+   * workspace, and never falls back to a historical WorkBuddy/fast-model default.
+   * Unknown values are reported as null so callers can omit them.
+   */
+  effectiveRuntimeState({ channelId = null, cwd = null } = {}) {
+    // Direct-runner mode (no provider registry configured, e.g. a minimal
+    // harness): the observed backend IS the runtime, so it is reported as such
+    // instead of being dressed up as a provider route.
+    if (!this.providerManager) {
+      const backend = this.backendState?.backend ?? null;
+      const executor = this.executorManager?.get?.('workbuddy') ?? null;
+      return {
+        mode: 'direct',
+        ok: Boolean(backend),
+        executor: { id: executor?.id ?? null, displayName: executor?.displayName ?? null, ready: true },
+        provider: null,
+        backend: backend?.label ?? null,
+        protocol: null,
+        adapter: null,
+        transport: null,
+        model: backend?.model ?? null,
+        modelSource: backend ? 'backend' : 'none',
+        billingType: null,
+        billingRoute: this.backendState?.billingRoute ?? null,
+        paidFallback: this.config.allowPaidFallback ?? null,
+        permissionLevel: this.permissionManager.getLevel(channelId),
+        workspace: cwd || this.config.defaultCwd,
+        workspaceSource: 'config',
+        credentialOk: true,
+        problem: null,
+      };
+    }
+
+    const last = this.state.getLastWorkModel();
+    const latestRun = channelId ? null : this.durableStore?.latestRun?.() ?? null;
+    const base = channelId
+      ? this.sessionManager.get(channelId)
+      : { cwd: cwd || latestRun?.workspace || last?.cwd || this.config.defaultCwd, executorId: last?.executorId ?? null, providerId: last?.providerId ?? null, model: null };
+    const workspace = cwd || base.cwd || latestRun?.workspace || last?.cwd || this.config.defaultCwd;
+    const workspaceSource = cwd ? 'explicit'
+      : (latestRun?.workspace && latestRun.workspace === workspace) ? 'recent-run'
+        : (last?.cwd === workspace) ? 'restored' : 'config';
+    const providerId = base.providerId || (channelId ? null : last?.providerId) || null;
+    const provider = providerId ? this.providerManager?.get(providerId) ?? null : null;
+    const executorId = base.executorId || (channelId ? null : last?.executorId) || null;
+    const executor = executorId ? this.executorManager?.get(executorId) ?? null : null;
+
+    let model = null;
+    let modelSource = 'none';
+    let problem = null;
+    if (provider) {
+      try {
+        const resolved = this.#resolveWorkModelFor({ channelId, cwd: workspace, model: base.model ?? null }, provider);
+        model = resolved.model;
+        modelSource = resolved.source;
+      } catch (error) {
+        problem = error.code === 'MODEL_UNAVAILABLE' ? error.message : `模型解析失败：${redact(error.message)}`;
+      }
+    } else if (providerId) {
+      problem = `Provider ${providerId} 未注册`;
+    }
+
+    const transport = provider?.protocol === PROTOCOL.OPENCODE_GO
+      ? this.executorManager?.resolveTransport(provider, model)
+      : null;
+    const protocol = provider
+      ? (provider.protocol === PROTOCOL.OPENCODE_GO ? transportLabel(transport) : protocolLabel(provider.protocol))
+      : null;
+    const adapter = provider ? this.executorManager?.adapterLabel(provider.protocol, transport) ?? null : null;
+    const credentialOk = provider ? Boolean(this.providerManager?.hasCredential(provider)) : false;
+    const executorReady = executor ? executor.available !== false && executor.adapterReady !== false : false;
+
+    return {
+      mode: 'provider',
+      ok: Boolean(provider && model && credentialOk && executorReady && !problem),
+      executor: { id: executorId, displayName: executor?.displayName ?? null, ready: executorReady },
+      provider: provider
+        ? { id: provider.id, displayName: provider.displayName ?? null, billingType: provider.billingType ?? null }
+        : (providerId ? { id: providerId, displayName: null, billingType: null } : null),
+      protocol,
+      adapter,
+      transport,
+      model,
+      modelSource,
+      // Billing/paid-fallback are only meaningful for the built-in WorkBuddy
+      // route (the only place the concept exists); otherwise report null.
+      billingType: provider?.protocol === PROTOCOL.WORKBUDDY ? provider.billingType ?? 'UNKNOWN' : (provider ? provider.billingType ?? null : null),
+      paidFallback: provider?.protocol === PROTOCOL.WORKBUDDY ? Boolean(this.config.allowPaidFallback) : null,
+      permissionLevel: this.permissionManager.getLevel(channelId),
+      workspace,
+      workspaceSource,
+      credentialOk,
+      problem,
+    };
   }
 
   onRunnerEvent(channelId, event) {
@@ -461,31 +570,25 @@ export class DiscordControlPlane {
   #statusLine(channelId, gateway = null) {
     const s = this.sessionManager.get(channelId);
     const runner = this.runners.get(channelId);
-    const backend = this.backendState?.backend ?? null;
-    const provider = this.providerManager?.get(s.providerId);
-    const executor = this.executorManager?.get(s.executorId);
     const blocked = this.limits?.blocked(channelId);
-    const providerBlocked = provider?.id === 'workbuddy-free'
-      && this.backendState?.workbuddyStatus && this.backendState.workbuddyStatus !== 'PASS'
-      ? (this.backendState.workbuddyStatus === 'BLOCKED_BY_QUOTA' ? 'WorkBuddy 当前额度不足' : 'WorkBuddy 当前不可用')
+    // Same resolved runtime state as the startup card and task launch: this is
+    // what prevents `/status` from drifting back to WorkBuddy/fast-model.
+    const effective = this.effectiveRuntimeState({ channelId });
+    const providerBlocked = effective.provider?.id === 'workbuddy-free' && !effective.ok
+      ? (this.backendState?.workbuddyStatus === 'BLOCKED_BY_QUOTA' ? 'WorkBuddy 当前额度不足' : 'WorkBuddy 当前不可用')
       : null;
-    const permLabel = PERM_SHORT[this.permissionManager.getLevel(channelId)] || PERM_SHORT.standard;
-    const modelId = runner?.model || s.model || null;
-    const transport = provider?.protocol === PROTOCOL.OPENCODE_GO
-      ? this.executorManager?.resolveTransport(provider, modelId)
-      : null;
-    const protocol = provider?.protocol === PROTOCOL.OPENCODE_GO ? transportLabel(transport) : protocolLabel(provider?.protocol);
-    const adapter = provider ? this.executorManager?.adapterLabel(provider.protocol, transport) : null;
+    const permLabel = PERM_SHORT[effective.permissionLevel] || PERM_SHORT.standard;
     const statusText = formatStatus({
-      executor: executor?.displayName ?? this.config.claudeCommand,
-      provider: this.providerManager ? provider?.displayName || '未选择' : undefined,
-      protocol,
-      adapter,
-      backend: backend?.label ?? 'unknown',
-      model: runner?.model || s.model || backend?.model || 'unknown',
-      billingRoute: backend ? billingRoute(backend) : 'unknown',
-      billingType: provider ? billingLabel(provider.billingType) : null,
-      paidFallback: this.config.allowPaidFallback,
+      executor: effective.executor?.displayName ?? effective.executor?.id ?? null,
+      provider: effective.provider ? (effective.provider.displayName || effective.provider.id) : null,
+      protocol: effective.protocol,
+      adapter: effective.adapter,
+      backend: effective.backend ?? (this.backendState?.backend?.label ?? null),
+      // Direct mode: prefer the model the live runner actually reported.
+      model: effective.mode === 'direct' ? (runner?.model ?? effective.model ?? null) : (effective.model ?? runner?.model ?? null),
+      billingRoute: effective.mode === 'direct' ? effective.billingRoute : null,
+      billingType: effective.billingType ? billingLabel(effective.billingType) : null,
+      paidFallback: effective.paidFallback,
       cwd: s.cwd,
       sessionId: s.sessionId,
       state: runner?.busy ? '忙碌' : '空闲',
@@ -2283,7 +2386,10 @@ export class DiscordControlPlane {
     const run = this.#beginRun(message);
     // P2.2D durable run record: persisted BEFORE the workspace queue so a
     // pending record explains what a restart interrupted (never auto-resumed).
+    // The model/provider are the RESOLVED ones, so the record matches the actual
+    // runtime rather than the raw channel entry.
     try {
+      const effective = this.effectiveRuntimeState({ channelId });
       this.durableStore?.runStart({
         runId: run.id,
         chainId: channelId,
@@ -2293,9 +2399,9 @@ export class DiscordControlPlane {
         workspace,
         title: clip(String(taskPrompt ?? '').replace(/\s+/g, ' ').trim(), 120),
         prompt: clip(String(prompt ?? ''), 2000),
-        executorId: chState.executorId,
-        providerId: chState.providerId,
-        model: chState.model,
+        executorId: effective.executor?.id ?? chState.executorId,
+        providerId: effective.provider?.id ?? chState.providerId,
+        model: effective.model ?? chState.model,
         permissionLevel: this.permissionManager.getLevel(channelId),
       });
     } catch (error) { console.warn(`[store] runStart failed: ${redact(error?.message || error)}`); }

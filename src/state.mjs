@@ -82,7 +82,7 @@ export class StateStore {
    */
   rememberWorkModel({ channelId = null, cwd = null, providerId = null, executorId = null, model, at = new Date().toISOString() } = {}) {
     if (!model) return null;
-    const entry = { providerId, executorId, model, updatedAt: at };
+    const entry = { providerId, executorId, model, cwd: cwd ?? null, updatedAt: at };
     if (channelId) {
       const current = this.getChannel(channelId, cwd || process.cwd());
       this.data.channels[channelId] = { ...current, model };
@@ -116,6 +116,7 @@ export class StateStore {
         providerId: value.providerId ?? null,
         executorId: value.executorId ?? null,
         model: value.model,
+        cwd: value.cwd ?? null,
         updatedAt: value.updatedAt ?? null,
       };
       const key = workspaceKey(value.cwd);

@@ -25,11 +25,26 @@ Implementation is **complete on this branch**. Real evidence: `docs/V4_P2_2_SMOK
 
 ## Verified at this commit
 
-- `npm test` 284/0
-- `npm run check` 97/0
+- `npm test` 302/0
+- `npm run check` 102/0
 - `npm run smoke:p2` 11/11
 - `npm run smoke:p22` 10/10 (real Windows single-instance + store + autostart query)
 - Real machine: scheduled task started supervisor → LiteLLM UP → bridge online; supervisor auto-restarted the bridge after a kill; manual second launch refused pre-login
+
+## Startup card fidelity (effective runtime state)
+
+The `✅ Bridge 已就绪` card used to be assembled from WorkBuddy defaults, the WorkBuddy probe result and `config.defaultCwd`, so after a restart it showed `WorkBuddy / WorkBuddy Free · 当前不可用 / WorkBuddy Native / fast-model`.
+
+Fixed by one shared source, `DiscordControlPlane.effectiveRuntimeState()` — used by the startup card, `/status` (`#statusLine`) and task launch (`getRunner`) through the same model resolver:
+
+- executor/provider/protocol come from the active provider route (or the observed backend in direct-runner mode)
+- model is the restored selection; a stale saved model is reported, never replaced
+- billing/paid-fallback only appear for the WorkBuddy route; unknown → omitted
+- workspace follows the most recent real run → restored selection → config default, and is labelled by source
+- if the active route cannot work, the header is `⚠️ Bridge 已启动，但当前 Provider 不可用` instead of a fake "ready"
+- run records now store the RESOLVED model/provider, so the DB matches the real runtime
+
+Evidence: `tests/v4-p22-startup-card.test.mjs` (8) + `tests/v4-p22-workspace-source.test.mjs` + `npm run smoke:p22-model` (6/6, asserts the rendered card equals the restored route).
 
 ## Model selection persistence (restart fix)
 

@@ -57,7 +57,7 @@ if (phase === 'select' || phase === 'resolve' || phase === 'invalid') {
   const plane = new DiscordControlPlane({
     config: {
       ownerId: fake.ownerId, discordToken: 'fake', defaultCwd: workspace, claudeCommand: 'claude',
-      notifyOnStart: false, includePartialMessages: false, progressThrottleMs: 1, stallNoticeMs: 600000,
+      notifyOnStart: true, includePartialMessages: false, progressThrottleMs: 1, stallNoticeMs: 600000,
       allowPaidFallback: false, taskTimeoutMs: 120000, maxWorkFollowUps: 10,
     },
     state,
@@ -98,16 +98,24 @@ if (phase === 'select' || phase === 'resolve' || phase === 'invalid') {
   }
 
   // phase === 'resolve': restore without any !model, then optionally run for real.
+  const readyCard = fake.messagesIn(`dm:${fake.ownerId}`).map((m) => m.content).join('\n');
   let runner;
   try {
     runner = await plane.getRunner(channelId);
   } catch (error) {
-    console.log(JSON.stringify({ phase, restored: false, code: error.code, message: error.message }));
+    console.log(JSON.stringify({ phase, restored: false, code: error.code, message: error.message, card: readyCard }));
     process.exit(1);
   }
 
   if (!doRun) {
-    console.log(JSON.stringify({ phase, restored: true, model: runner.model, channelModel: state.getChannel(channelId, workspace).model }));
+    console.log(JSON.stringify({
+      phase, restored: true, model: runner.model, channelModel: state.getChannel(channelId, workspace).model,
+      cardModel: (readyCard.match(/模型：(.+)/) ?? [])[1] ?? null,
+      cardProvider: (readyCard.match(/Provider：(.+)/) ?? [])[1] ?? null,
+      cardExecutor: (readyCard.match(/执行器：(.+)/) ?? [])[1] ?? null,
+      cardWorkspace: (readyCard.match(/工作目录：`(.+)`/) ?? [])[1] ?? null,
+      cardStale: /fast-model|WorkBuddy Free · 当前不可用/.test(readyCard),
+    }));
     await runner.stop?.({ reason: 'smoke' });
     process.exit(runner.model ? 0 : 1);
   }
@@ -161,6 +169,14 @@ check('TEST 4 restart restores the NEW model', switched);
 if (switched.status === 0 && !switched.stdout.includes(MODEL_B)) {
   console.log(`FAIL TEST 4 restored model mismatch (expected ${MODEL_B}): ${switched.stdout}`);
   results.push({ name: 'TEST 4 restored model matches', ok: false, stdout: switched.stdout });
+}
+
+// The startup card must describe the same restored route (never WorkBuddy/fast-model).
+{
+  const line = (switched.stdout || '').split('\n').find((l) => l.includes('"cardModel"')) ?? '';
+  const ok = switched.status === 0 && line.includes(`"cardModel":"${MODEL_B}"`) && line.includes('"cardStale":false');
+  results.push({ name: 'startup card matches the restored runtime state', ok, stdout: line });
+  console.log(`${ok ? 'PASS' : 'FAIL'} startup card matches the restored runtime state · ${line}`);
 }
 
 // TEST 5: a bogus saved model must fail loudly, not crash or silently switch.

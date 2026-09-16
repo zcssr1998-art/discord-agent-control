@@ -345,8 +345,12 @@ test('the owner is told the bridge is online, because Discord does not replay of
   assert.ok(dm, 'a ready DM must be sent to the owner');
   assert.match(dm.content, /Bridge 已就绪/);
   assert.match(dm.content, /后端：WorkBuddy Free DSF/);
-  assert.match(dm.content, /计费线路：WorkBuddy Free/);
+  assert.match(dm.content, /计费：WorkBuddy Free/);
   assert.match(dm.content, /付费回退：已禁用/);
+  // The card must describe the observed runtime, not a hardcoded WorkBuddy default:
+  // in this direct-runner harness there is no registered executor, so it says so.
+  assert.match(dm.content, /执行器：未配置/);
+  assert.doesNotMatch(dm.content, /默认目录/);
   assert.equal(fake.ownerDmCount, 1, 'exactly one ready DM, not a stream of them');
 });
 
