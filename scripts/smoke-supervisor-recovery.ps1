@@ -216,8 +216,13 @@ if ($supervisorBefore) {
   Write-Result "G4 killing supervisor pid=$supervisorBefore only (no manual restart afterwards)"
   Kill-Tree -ProcessId $supervisorBefore
 }
-Start-Sleep -Seconds 5
-Add-Check 'G4 supervisor really stopped before the restart window' (-not (Get-SupervisorPid))
+# The killed supervisor's own process must exit. The restart timing belongs to
+# Task Scheduler, so a fixed "must observe it stopped" window would race the
+# watchdog; assert the killed PID is really gone instead.
+$killedSupervisorStopped = Wait-For {
+  -not (Get-Process -Id $supervisorBefore -ErrorAction SilentlyContinue)
+} 30 500
+Add-Check 'G4 the killed supervisor process really exited' ([bool]$killedSupervisorStopped) "old=$supervisorBefore"
 
 $supervisorRestarted = Wait-For {
   $p = Get-SupervisorPid

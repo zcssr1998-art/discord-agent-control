@@ -50,18 +50,16 @@ npm run smoke:p224-lifecycle -> 21/21
 npm run smoke:p225-limits    -> 23/23
 npm run smoke:p226-update    -> 49/49
 npm run verify:hook      -> 9/9
-scripts/smoke-supervisor-recovery.ps1 -> 22/23
+scripts/smoke-supervisor-recovery.ps1 -> 23/23
 ```
 
-The one supervisor-recovery miss is a timing race in the test's negative window
-(`G4 supervisor really stopped before the restart window`): Task Scheduler restarted the
-supervisor faster than the 5s assertion window. All substantive G4 checks passed (supervisor
-restarted, bridge restored, exactly one bridge). Not a regression.
+G4 now asserts that the killed supervisor process actually exited instead of racing a fixed
+observation window, so the Task Scheduler restart semantics are verified deterministically.
 
 ## Live runtime
 
 - Existing chain only: Task Scheduler -> `scripts/start-supervisor.ps1` -> Bridge.
-- One Supervisor + one Bridge; live checkout on `main`, running SHA `f938e88`.
+- One Supervisor + one Bridge; live checkout on `main`, running SHA `086899e`.
 - Updater live: `[update] enabled source=origin/main` and
   `check(startup) ... UP_TO_DATE`.
 - Real Discord command fetch-back: `/work task max_length == 6000`, schema matches (0 mismatch).

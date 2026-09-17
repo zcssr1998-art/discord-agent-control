@@ -1031,17 +1031,16 @@ npm run smoke:p225-limits    -> 23/23
 npm run smoke:p226-update    -> 49/49
 npm run verify:hook          -> 9/9
 npm run doctor:discord       -> login OK (Jarvis.#8605, 1 guild); proxy=none in this shell
-scripts/smoke-supervisor-recovery.ps1 -> 22/23
+scripts/smoke-supervisor-recovery.ps1 -> 23/23
 ```
 
 `smoke:p2`, `smoke:p222`, `smoke:p223-full` and `smoke:p224-lifecycle` are the real-machine Chat /
 Work / Stop gates: real Agent and real Windows process tree, only the Discord transport faked.
 `smoke:p224-lifecycle` covers one-shot Stop killing the real tree with no live controls left.
 
-Supervisor-recovery note: the only miss is `G4 supervisor really stopped before the restart
-window` — Task Scheduler restarted the supervisor faster than the smoke's 5-second negative
-assertion, so that check observed a live supervisor. Every substantive G4 check passed
-(`Task Scheduler restarted the supervisor automatically`, `bridge restored`, `exactly one bridge`).
+Supervisor-recovery note (release hygiene): G4 now asserts that the killed supervisor's own
+process really exited, then that Task Scheduler started a new supervisor PID. It no longer races
+a fixed "must observe it stopped" window against the 1-minute watchdog restart.
 
 Post-merge live runtime (unchanged `Task Scheduler -> Supervisor -> Bridge` chain):
 
