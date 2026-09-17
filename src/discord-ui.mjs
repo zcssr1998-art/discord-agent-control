@@ -622,9 +622,15 @@ export class DiscordControlPlane {
     }
 
     const last = this.state.getLastWorkModel();
+    // A scope with no channel id (startup card / DM) still inherits the durable
+    // owner defaults when there is no last-anywhere selection.
+    const owner = this.state?.getOwnerDefaults?.() ?? null;
+    const remembered = last ?? (owner && (owner.executorId || owner.providerId || owner.model)
+      ? { executorId: owner.executorId ?? null, providerId: owner.providerId ?? null, model: owner.model ?? null }
+      : null);
     const base = channelId
       ? this.sessionManager.get(channelId)
-      : { cwd: null, executorId: last?.executorId ?? null, providerId: last?.providerId ?? null, model: null };
+      : { cwd: null, executorId: remembered?.executorId ?? null, providerId: remembered?.providerId ?? null, model: null };
     // Workspace priority: explicit arg → channel's persisted cwd → the user's
     // global selection → configured DEFAULT_WORKSPACE/CWD → the Jarvis repo root.
     // A previous run's directory is NEVER a workspace source: a task executed in
@@ -638,9 +644,9 @@ export class DiscordControlPlane {
     else if (savedWorkspace?.path) { workspace = savedWorkspace.path; workspaceSource = 'saved'; }
     else if (configuredDefault) { workspace = configuredDefault; workspaceSource = this.config.defaultWorkspace ? 'config' : 'repo-fallback'; }
     else { workspace = null; workspaceSource = 'none'; }
-    const providerId = base.providerId || (channelId ? null : last?.providerId) || null;
+    const providerId = base.providerId || (channelId ? null : remembered?.providerId) || null;
     const provider = providerId ? this.providerManager?.get(providerId) ?? null : null;
-    const executorId = base.executorId || (channelId ? null : last?.executorId) || null;
+    const executorId = base.executorId || (channelId ? null : remembered?.executorId) || null;
     const executor = executorId ? this.executorManager?.get(executorId) ?? null : null;
 
     let model = null;

@@ -602,3 +602,17 @@ test('an incompatible executor switch never becomes the durable owner default', 
   assert.equal(fresh.executorId, 'claude');
   assert.equal(fresh.providerId, 'opencode-go');
 });
+
+test('a no-channel scope (startup card / DM) inherits the durable owner defaults', (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const { plane } = makePlane(stateFile, ws, {
+    ownerDefaults: { executorId: 'claude', providerId: 'opencode-go', model: MODEL },
+  });
+  const effective = plane.effectiveRuntimeState({});
+  assert.equal(effective.executor?.id, 'claude');
+  assert.equal(effective.provider?.id, 'opencode-go');
+  assert.equal(effective.model, MODEL);
+});
