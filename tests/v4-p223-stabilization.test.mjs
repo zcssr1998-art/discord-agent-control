@@ -249,7 +249,7 @@ test('help view exposes the controls its copy references', async () => {
 
 test('every registered slash command ACKs before slow work', async () => {
   assert.deepEqual([...COMMAND_NAMES].sort(), [
-    'compact', 'doctor', 'help', 'model', 'new', 'panel', 'permission', 'settings', 'status', 'stop', 'work',
+    'compact', 'doctor', 'help', 'model', 'new', 'panel', 'permission', 'settings', 'status', 'stop', 'update', 'work',
   ]);
   const { fake, plane } = makePlane({ threadCapable: true });
   plane.getRunner = async (channelId) => ({

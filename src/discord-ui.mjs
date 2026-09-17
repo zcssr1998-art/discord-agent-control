@@ -35,7 +35,8 @@ import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import {
   downloadWorkAttachments, buildWorkManifest, readChatAttachments, buildChatContent, buildChatHistoryText,
 } from './attachments.mjs';
-import { registerApplicationCommands, COMMAND_NAMES, MODAL_TASK_MAX_LENGTH } from './commands.mjs';
+import { registerApplicationCommands, verifyApplicationCommands, COMMAND_NAMES, MODAL_TASK_MAX_LENGTH } from './commands.mjs';
+import { shortSha as shortUpdateSha } from './updater.mjs';
 import { autostartSummary } from './autostart.mjs';
 import {
   clip, planResultDelivery,
@@ -180,6 +181,7 @@ export class DiscordControlPlane {
     attachmentInbox = null,
     runtimeIdentity = null,
     durableStore = null,
+    updater = null,
     attachmentFetch = fetch,
     extraEnv = {},
     envUnset = [],
@@ -207,6 +209,10 @@ export class DiscordControlPlane {
     // P2.2D durable store. Both optional so existing test harnesses work.
     this.runtimeIdentity = runtimeIdentity;
     this.durableStore = durableStore;
+    // P2.2.6 safe self-update. All updater access is read-only from the UI; the
+    // updater itself owns the checkout/Supervisor restart lifecycle.
+    this.updater = updater;
+    this.commandSchema = null;
     // Where downloaded Discord attachments land. Null disables attachments so a
     // bare test harness cannot accidentally write to the real data directory.
     this.attachmentInbox = attachmentInbox;
@@ -296,6 +302,86 @@ export class DiscordControlPlane {
       console.warn(`[commands] registration failed: ${redact(error?.message || error)}`);
       return { skipped: true, changed: 0, total: COMMAND_NAMES.length, error };
     }
+  }
+
+  /**
+   * P2.2.6 K7: sync the desired commands, then FETCH THEM BACK from Discord and
+   * compare the real remote schema. `/doctor` reports this PASS/FAIL. A REST
+   * failure is recorded as out-of-sync and never blocks or rolls back the bridge.
+   */
+  async reconcileCommandSchema() {
+    await this.registerCommands().catch(() => null);
+    try {
+      const result = await verifyApplicationCommands({
+        client: this.client,
+        guildId: this.config.commandsGuildId || null,
+        logger: console,
+      });
+      this.commandSchema = result;
+      console.log(`[commands] fetch-back schema ${result.ok ? 'PASS' : 'FAIL'} · /work task max_length=${result.workTaskMaxLength ?? 'unknown'}${result.error ? ` error=${redact(result.error)}` : ''}`);
+      return result;
+    } catch (error) {
+      this.commandSchema = { ok: false, mismatches: [], workTaskMaxLength: null, checkedAt: new Date().toISOString(), error: redact(error?.message || error) };
+      console.warn(`[commands] fetch-back schema FAIL: ${redact(error?.message || error)}`);
+      return this.commandSchema;
+    }
+  }
+
+  /**
+   * P2.2.6 K3: the deterministic safe-to-restart boundary. An update must never
+   * interrupt active/queued Work, a busy Agent runner, a live Work chain, an
+   * in-flight task or a pending approval. Duration alone is never a reason to
+   * stop a healthy Work.
+   */
+  runtimeActivity() {
+    const reasons = [];
+    for (const slot of this.scheduler?.snapshot?.() ?? []) {
+      if (slot.active) reasons.push(`active Work ${slot.active.channelId || slot.workspace}`);
+      if (slot.queueLength) reasons.push(`queued Work x${slot.queueLength}`);
+    }
+    for (const [channelId, runner] of this.runners) {
+      if (runner?.busy) reasons.push(`busy Agent ${channelId}`);
+    }
+    for (const [channelId, chain] of this.workChains) {
+      if (chain?.activeRunId) reasons.push(`active Work chain ${channelId}`);
+    }
+    if (this.tasks.size) reasons.push(`active task x${this.tasks.size}`);
+    const approvals = this.approvalManager?.pending?.size ?? 0;
+    if (approvals) reasons.push(`pending approval x${approvals}`);
+    return { safe: reasons.length === 0, reasons: [...new Set(reasons)] };
+  }
+
+  /** Compact updater line for /status and the startup identity block. */
+  #updateLine() {
+    const view = this.updater?.statusSnapshot?.();
+    if (!view) return null;
+    const parts = [`Update: ${view.status}`, `${shortUpdateSha(view.localSha)}→${shortUpdateSha(view.remoteSha)}`];
+    if (view.pendingSha) parts.push(`pending ${shortUpdateSha(view.pendingSha)}`);
+    if (view.paused) parts.push('paused');
+    return parts.join(' · ');
+  }
+
+  /** Detailed updater + command-schema lines for /doctor. */
+  #updateDoctorLines() {
+    const lines = [];
+    const view = this.updater?.statusSnapshot?.();
+    if (view) {
+      lines.push(`⬆️ Update: ${view.status} · source ${view.remote}/${view.branch}`);
+      lines.push(`   local ${shortUpdateSha(view.localSha)} · remote ${shortUpdateSha(view.remoteSha)}${view.relation && view.relation !== 'unknown' ? ` (${view.relation})` : ''}`);
+      if (view.pendingSha) lines.push(`   pending ${shortUpdateSha(view.pendingSha)}`);
+      if (view.previousGoodSha) lines.push(`   known-good ${shortUpdateSha(view.previousGoodSha)}`);
+      if (view.lastAppliedSha) lines.push(`   last applied ${shortUpdateSha(view.lastAppliedSha)}${view.lastAppliedAt ? ` @ ${view.lastAppliedAt}` : ''}`);
+      if (view.quarantinedSha) lines.push(`   quarantined ${shortUpdateSha(view.quarantinedSha)}`);
+      if (view.lastFailure?.reason) lines.push(`   last failure: ${redact(view.lastFailure.reason)}`);
+      if (view.blockedReason) lines.push(`   blocked: ${redact(view.blockedReason)}`);
+    }
+    const schema = this.commandSchema ?? view?.schema ?? null;
+    if (schema) {
+      lines.push(`🧩 Command schema (fetch-back): ${schema.ok ? 'PASS' : 'FAIL'}`
+        + `${schema.workTaskMaxLength != null ? ` · /work task max_length=${schema.workTaskMaxLength}` : ''}`
+        + `${schema.error ? ` (${redact(schema.error)})` : ''}`);
+    }
+    return lines;
   }
 
   /**
@@ -712,6 +798,8 @@ export class DiscordControlPlane {
     lines.push(`Runtime: PID ${process.pid} · uptime ${formatUptime(process.uptime() * 1000)}`);
     const ownerId = identity?.guard?.info?.instanceId;
     if (ownerId) lines.push(`Instance: ${ownerId.split(':')[0]}`);
+    const updateLine = this.#updateLine();
+    if (updateLine) lines.push(updateLine);
     return lines.length ? `${text}\n\n${lines.join('\n')}` : text;
   }
 
@@ -759,6 +847,7 @@ export class DiscordControlPlane {
         ? `💬 Chat cooldowns: ${cooldowns.map((c) => `${c.providerId}/${c.modelId} ${formatUptime(c.remainingMs)} (${c.lastErrorCode || 'UNKNOWN'})`).join(', ')}`
         : '💬 Chat cooldowns: (none)');
     }
+    lines.push(...this.#updateDoctorLines());
     return lines.join('\n');
   }
 
@@ -2734,10 +2823,41 @@ export class DiscordControlPlane {
     if (name === 'new') { await this.#edit(interaction, { content: clip(this.#newChat(channelId)) }); return; }
     if (name === 'compact') { await this.#edit(interaction, { content: clip(await this.#compactChat(channelId)) }); return; }
     if (name === 'stop') { await this.#edit(interaction, { content: clip(await this.#stopChannel(channelId)) }); return; }
+    if (name === 'update') { await this.#handleUpdateCommand(interaction); return; }
     if (name === 'work') {
       const task = typeof interaction.options?.getString === 'function' ? interaction.options.getString('task') : null;
       if (task && String(task).trim()) await this.#launchWork(this.#interactionContext(interaction), String(task).trim());
     }
+  }
+
+  /**
+   * P2.2.6 K8 owner-only update controls. `status` has no side effects (it never
+   * fetches); `now` forces a check and, when the runtime is safely idle, may
+   * deploy; `pause`/`resume` persist. Busy runtime keeps the update PENDING
+   * instead of killing Work.
+   */
+  async #handleUpdateCommand(interaction) {
+    if (!this.updater) {
+      await this.#edit(interaction, { content: '❌ 自动更新器未启用（AUTO_UPDATE_ENABLED）。' });
+      return;
+    }
+    const action = String(interaction.options?.getString?.('action') ?? 'status').toLowerCase();
+    if (action === 'pause') {
+      this.updater.pause('owner');
+      await this.#edit(interaction, { content: clip(`⏸ 已暂停自动更新。\n\n${this.updater.describe()}`) });
+      return;
+    }
+    if (action === 'resume') {
+      await this.updater.resume().catch(() => null);
+      await this.#edit(interaction, { content: clip(`▶️ 已恢复自动更新。\n\n${this.updater.describe()}`) });
+      return;
+    }
+    if (action === 'now') {
+      await this.updater.refresh({ force: true, reason: 'owner' }).catch((error) => this.updater?.logger?.warn?.(`[update] owner check failed: ${error?.message || error}`));
+      await this.#edit(interaction, { content: clip(`🔄 已立即检查。\n\n${this.updater.describe()}`) });
+      return;
+    }
+    await this.#edit(interaction, { content: clip(`⬆️ **Jarvis 自动更新**\n\n${this.updater.describe()}`) });
   }
 
   /** Reuse the existing Work start paths for a modal/panel-initiated task. */

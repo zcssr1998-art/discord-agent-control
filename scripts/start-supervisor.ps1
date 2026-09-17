@@ -72,6 +72,11 @@ $gatewayExe = Join-Path $repoRoot 'data\litellm\venv\Scripts\litellm.exe'
 $gatewayPidFile = Join-Path $repoRoot 'data\litellm\gateway.pid'
 $gatewayScript = Join-Path $repoRoot 'scripts\start-litellm.ps1'
 $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+# P2.2.6: the bridge exits with this dedicated code after a verified self-update
+# so the supervisor relaunches it immediately without counting a crash.
+$script:UpdateExitCode = 74
+$updateStateFile = Join-Path $RuntimeDir 'update-state.json'
+$updateHelper = Join-Path $repoRoot 'scripts\update-helper.mjs'
 
 function Write-Log {
   param([string]$Message)
@@ -225,6 +230,36 @@ function Stop-Bridge {
   try { taskkill /PID $ProcessId /T /F 2>$null | Out-Null } catch {}
 }
 
+# --- P2.2.6 self-update rollback support ------------------------------------
+# Read the durable update state (BOM-safe). The Supervisor owns the last line of
+# defence: if a just-applied candidate keeps crashing on startup, restore the
+# previous known-good SHA and quarantine the bad one so the restart loop ends.
+function Get-UpdateState {
+  if (-not (Test-Path $updateStateFile)) { return $null }
+  try {
+    $raw = [System.IO.File]::ReadAllText($updateStateFile)
+    if (-not $raw) { return $null }
+    return ($raw.TrimStart([char]0xFEFF) | ConvertFrom-Json)
+  } catch { return $null }
+}
+
+function Invoke-UpdateRollback {
+  if (-not (Test-Path $updateHelper)) {
+    Write-Log 'update rollback requested but scripts\update-helper.mjs is missing'
+    return $false
+  }
+  Write-Log 'rolling back a failed self-update to the previous known-good SHA'
+  try {
+    $out = & $nodeExe $updateHelper rollback --root $RunDirectory --state $updateStateFile 2>&1
+    Write-Log ("update-helper rollback: " + ($out -join ' '))
+  } catch {
+    Write-Log "update-helper rollback failed: $_"
+    return $false
+  }
+  $state = Get-UpdateState
+  return [bool]($state -and $state.restoredSha)
+}
+
 # --- resolve the node executable -------------------------------------------
 $nodeExe = if ($Node) { $Node } else { 'node' }
 if ($nodeExe -eq 'node') {
@@ -262,6 +297,7 @@ try {
 
 $mode = if ($MaxRestarts -gt 0) { "finite(max=$MaxRestarts)" } else { 'production(unlimited)' }
 $consecutiveCrashes = 0
+$postUpdateCrashes = 0
 $bridgePid = $null
 $bridgeProc = $null
 $shuttingDown = $false
@@ -341,6 +377,31 @@ try {
       Stop-Bridge -ProcessId $bridgePid
       Write-Log 'Supervisor stopped by user.'
       break
+    }
+
+    # --- P2.2.6 self-update restart / rollback ------------------------------
+    if ($exitCode -eq $script:UpdateExitCode) {
+      # The bridge verified and applied a fast-forward update. Relaunch at once
+      # with no backoff and without counting a crash.
+      Write-Log 'Bridge requested a self-update restart (code 74); relaunching'
+      $consecutiveCrashes = 0
+      $postUpdateCrashes = 0
+      Start-Sleep -Seconds 1
+      continue
+    }
+    $updateState = Get-UpdateState
+    if ($updateState -and $updateState.applyPendingVerify -and $runDuration.TotalSeconds -lt $SuccessWindowSec) {
+      $postUpdateCrashes++
+      Write-Log "post-update startup looks unhealthy (exit=$exitText fast, count=$postUpdateCrashes)"
+      if ($postUpdateCrashes -ge 2) {
+        [void](Invoke-UpdateRollback)
+        $postUpdateCrashes = 0
+        $consecutiveCrashes = 0
+        Start-Sleep -Seconds 2
+        continue
+      }
+    } else {
+      $postUpdateCrashes = 0
     }
 
     # Any exit (including code 0) leaves Jarvis offline, so production recovers

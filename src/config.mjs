@@ -105,6 +105,18 @@ export function loadConfig() {
     // development; null keeps production registration global. Never hard-coded.
     commandsGuildId: process.env.DISCORD_COMMANDS_GUILD_ID || null,
 
+    // --- safe self-update (P2.2.6) ----------------------------------------
+    // Jarvis keeps its live Windows checkout on a configured trusted Git branch.
+    // The updater never hot-swaps modules: it fast-forwards the clean checkout
+    // after candidate verification and asks the Supervisor to restart the bridge.
+    // Production target after the P2 release merge is origin/main; a feature
+    // branch can be used for deterministic/owner smoke via explicit config.
+    autoUpdateEnabled: bool('AUTO_UPDATE_ENABLED', true),
+    autoUpdateRemote: (process.env.AUTO_UPDATE_REMOTE || 'origin').trim(),
+    autoUpdateBranch: (process.env.AUTO_UPDATE_BRANCH || 'main').trim(),
+    // How often the configured remote is re-checked (read-only `git fetch`).
+    autoUpdateIntervalMs: int('AUTO_UPDATE_INTERVAL_MS', 300000),
+
     // --- interactive Work follow-ups (P2.1) -------------------------------
     // Pending appended requirements per active Work chain. `0` (the default)
     // means unlimited for this single-owner bridge; a positive value is an
