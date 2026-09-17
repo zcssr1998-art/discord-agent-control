@@ -4,45 +4,49 @@
 
 `jarvis-v4-p2-2-hardening`
 
-Stacked on P2/P2.1. Do not merge P2.2 yet.
-
 ## Current milestone
 
-Jarvis V4 P2.2.4 — Work lifecycle / insert / terminal-state correctness. **FIXED.**
+Jarvis V4 P2 — release merge / mainline closeout.
 
-Spec: `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`.
-Bug ledger entry: `docs/P2_2_3_BUG_BASH.md` K6.
+Authoritative task:
 
-## What changed
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
 
-- one monotonic outer lifecycle per Work; exactly one terminal state
-  (DONE / FAILED / CANCELLED) guarded by `#markTerminal`;
-- an Agent turn result no longer renders DONE while the same run still has a
-  queued continuation; the completed turn result is posted as its own durable
-  message before the next turn repaints the progress card;
-- explicit insert state machine (RECEIVED / DELIVERED_LIVE /
-  QUEUED_CONTINUATION / CONSUMED / CANCELLED): a completed turn consumes its
-  live deliveries and an executed continuation is settled, so Stop never reports
-  an already-applied insert as unprocessed;
-- one Stop press freezes the run, cancels only genuinely pending demands, kills
-  the real process tree once, renders STOPPED once and clears controls; repeated
-  and stale `workctl` stops are idempotent and cannot touch a newer run;
-- terminal cards (progress + parent summary) expose no live Insert/Stop controls.
+## Why this task is active
 
-## Baselines preserved
+P2.2.4 implementation and owner real-Discord validation are complete. The remaining work is no longer feature development: the stacked P2 branches must be merged cleanly into `main` and the resulting `main` must pass a short real-machine smoke before P3 starts.
 
-- P2.2.1 Supervisor / LiteLLM / Task Scheduler watchdog recovery; one bridge instance.
-- P2.2.2 Chat default AUTO, manual pin, persistence, placeholder repair.
-- P2.2.3 paginated model selection, ACK hardening, help consistency, FULL
-  semantics, unlimited default Work duration (`TASK_TIMEOUT_MS=0`).
+Current PR stack:
 
-## Evidence
+- PR #4: `jarvis-v4-p2-control-context` -> `main` (P2/P2.1), still Draft at task creation;
+- PR #5: `jarvis-v4-p2-2-hardening` -> `jarvis-v4-p2-control-context` (P2.2–P2.2.4), still Draft at task creation;
+- verified P2.2.4 head before this release task: `aa6dc27521527b86f1122292abe5d97179623915`.
 
-- `npm test` 356/356, `npm run check` 113 files / 0 failed.
+Required merge order: **PR #4 first, then retarget/reconcile PR #5 to the new `main`, verify, then merge PR #5.**
+
+## Owner validation completed
+
+P2.2.4 owner smoke is PASS:
+
+- live insert/lifecycle: one Work created `step1/2/3.txt` plus live-inserted `inserted.txt = INSERT_CONSUMED_OK`, with no false intermediate DONE and one final completion;
+- Stop: one owner Stop killed the real Agent process tree, produced a stable STOPPED terminal state, reported no false pending insert, and terminal controls disappeared.
+
+Do not rerun the long Hunyuan3D reproduction.
+
+## Baselines to preserve
+
+- P2.2.1 Supervisor / LiteLLM / Task Scheduler watchdog recovery; one bridge instance;
+- P2.2.2 Chat default AUTO, manual pin, persistence, placeholder repair;
+- P2.2.3 paginated model selection, ACK hardening, help consistency, FULL semantics, unlimited default Work duration;
+- P2.2.4 monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control safety, no terminal live controls.
+
+## Existing evidence
+
+- `npm test` 356/356, `npm run check` 113 files / 0 failed;
 - `smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25,
-  `smoke:p22-insert` 14/14, `smoke:p223-full` 15/15.
+  `smoke:p22-insert` 14/14, `smoke:p223-full` 15/15;
 - `smoke:p224-lifecycle` 21/21 (real Agent + real Windows process tree).
 
 ## Next action
 
-P2.2.4 acceptance passed. Stop here; do not start P3.
+Execute `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` exactly. Merge #4 first, retarget/verify/merge #5 second, run the final smoke from `main`, update closeout docs, then stop. Do not start P3.
