@@ -90,10 +90,12 @@ export function loadConfig() {
     // Optional explicit default Work model for a workspace that has never
     // selected one. Never inferred from a provider's model list.
     defaultWorkModel: process.env.DEFAULT_WORK_MODEL || process.env.JARVIS_DEFAULT_WORK_MODEL || null,
-    // Wall-clock cap on one direct Chat request. A slow-but-legitimate model
-    // response must not be aborted by an aggressive default; a positive value is
-    // the operator override and `0` means no client-side timeout at all.
-    chatTimeoutMs: int('CHAT_TIMEOUT_MS', 120000),
+    // Wall-clock cap on one direct Chat request. No client-side Chat timeout is
+    // applied by default (`0` = unlimited), so a slow-but-legitimate model
+    // response is never aborted by an aggressive default. A positive value is an
+    // explicit operator override in milliseconds; provider/network failures
+    // still surface normally.
+    chatTimeoutMs: int('CHAT_TIMEOUT_MS', 0),
     // Output-token ceiling for Chat transports that require one (Anthropic
     // Messages). OpenAI-compatible transports are never artificially capped.
     chatMaxOutputTokens: int('CHAT_MAX_OUTPUT_TOKENS', 8192),

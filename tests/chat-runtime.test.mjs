@@ -7,7 +7,7 @@ function response(status, body) {
   return { ok: status >= 200 && status < 300, status, async json() { return body; } };
 }
 
-function fixture(fetchImpl) {
+function fixture(fetchImpl, timeoutMs = 5000) {
   const profiles = [
     {
       id: 'opencode-go', displayName: 'OpenCode Go', protocol: PROTOCOL.OPENCODE_GO,
@@ -26,7 +26,7 @@ function fixture(fetchImpl) {
     listModels: async (id) => ({ models: profiles.find((item) => item.id === id)?.models || [] }),
   };
   const credentialStore = { get: () => 'secret-key' };
-  return new ChatRuntime({ providerManager, credentialStore, fetchImpl, timeoutMs: 5000 });
+  return new ChatRuntime({ providerManager, credentialStore, fetchImpl, timeoutMs });
 }
 
 test('AUTO falls back from rate-limited DeepSeek to GLM without invoking an Agent', async () => {
@@ -64,6 +64,23 @@ test('manual provider/model pin never silently falls back', async () => {
     runtime.send({ prompt: 'x', providerId: 'opencode-go', model: 'deepseek-v4.1-flash' }),
     (error) => error.code === 'RATE_LIMIT' && error.attempts?.length === 1,
   );
+});
+
+test('timeoutMs=0 never supplies a client-side AbortSignal while a positive value still does', async () => {
+  const options = [];
+  const noTimeout = fixture(async (_url, opts) => {
+    options.push(opts);
+    return response(200, { choices: [{ message: { content: 'OK' } }] });
+  }, 0);
+  await noTimeout.send({ prompt: 'hi', model: 'glm-5.3-flash' });
+  assert.equal(options.at(-1).signal, undefined, '0 means unlimited: no client-side deadline is passed to fetch');
+
+  const withTimeout = fixture(async (_url, opts) => {
+    options.push(opts);
+    return response(200, { choices: [{ message: { content: 'OK' } }] });
+  }, 5000);
+  await withTimeout.send({ prompt: 'hi', model: 'glm-5.3-flash' });
+  assert.ok(options.at(-1).signal, 'a positive timeout still enables the client-side AbortSignal');
 });
 
 test('OpenCode Go auth matches the transport: bearer for chat/responses, x-api-key for messages', async () => {

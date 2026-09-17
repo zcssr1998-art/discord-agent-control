@@ -4,7 +4,9 @@
 
 ## Status
 
-Ready for implementation and verification.
+Implemented and verified. Default `CHAT_TIMEOUT_MS=0` (no Jarvis client-side Chat timeout) with
+explicit positive overrides preserved; `npm test` 388/388 and `npm run check` green; live bridge
+restarted and a real pinned OpenCode Go grok-4.6 Chat request succeeded (`timeoutMs=unlimited`).
 
 ## Last completed release task
 
