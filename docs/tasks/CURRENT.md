@@ -1,6 +1,10 @@
 # Active task
 
-None.
+`docs/tasks/CHAT_TIMEOUT_UNLIMITED_FIX.md` — remove Jarvis's default client-side Chat wall-clock timeout and make `CHAT_TIMEOUT_MS=0` the default/effective runtime policy.
+
+## Status
+
+Ready for implementation and verification.
 
 ## Last completed release task
 
@@ -12,10 +16,6 @@ P2.2.1–P2.2.6 fixes are on `main`; deterministic and real-machine (Agent, only
 faked) gates are green; the scheduled Supervisor runtime runs `main` with one Bridge and the
 updater source is `origin/main`.
 
-## Status
-
-P2/P2.1/P2.2.1–P2.2.6 complete and merged to `main`.
-
 ## Do not
 
-Do not start P3. A new task/branch must be created explicitly before any further work.
+Do not start P3. Complete the active Chat-timeout fix first; keep scope limited to the referenced task.
