@@ -6,23 +6,17 @@
 
 ## Current milestone
 
-Jarvis V4 P2 — release merge / mainline closeout.
+Jarvis V4 P2.2.5 — user-hostile limits cleanup before release merge.
 
 Authoritative task:
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
+`docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md`
 
 ## Why this task is active
 
-P2.2.4 implementation and owner real-Discord validation are complete. The remaining work is no longer feature development: the stacked P2 branches must be merged cleanly into `main` and the resulting `main` must pass a short real-machine smoke before P3 starts.
+P2.2.4 implementation and owner real-Discord validation are complete, but a source audit found several Jarvis-imposed limits that are not real platform limits and can surprise/block the owner: `/work`/modal input caps, silent result truncation, non-persistent permission tier, permanent failure/restart lockout, aggressive Chat timeout, opaque cooldowns, silent Chat-history trimming, approval expiry, follow-up cap, and a hard-coded Anthropic output ceiling.
 
-Current PR stack:
-
-- PR #4: `jarvis-v4-p2-control-context` -> `main` (P2/P2.1), still Draft at task creation;
-- PR #5: `jarvis-v4-p2-2-hardening` -> `jarvis-v4-p2-control-context` (P2.2–P2.2.4), still Draft at task creation;
-- verified P2.2.4 head before this release task: `aa6dc27521527b86f1122292abe5d97179623915`.
-
-Required merge order: **PR #4 first, then retarget/reconcile PR #5 to the new `main`, verify, then merge PR #5.**
+The previously prepared release task `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` is **deferred**, not cancelled. Do not merge PR #4/#5 until P2.2.5 passes.
 
 ## Owner validation completed
 
@@ -38,7 +32,8 @@ Do not rerun the long Hunyuan3D reproduction.
 - P2.2.1 Supervisor / LiteLLM / Task Scheduler watchdog recovery; one bridge instance;
 - P2.2.2 Chat default AUTO, manual pin, persistence, placeholder repair;
 - P2.2.3 paginated model selection, ACK hardening, help consistency, FULL semantics, unlimited default Work duration;
-- P2.2.4 monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control safety, no terminal live controls.
+- P2.2.4 monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control safety, no terminal live controls;
+- AUTO must not silently spend on metered/unknown billing; manual pins must not silently switch.
 
 ## Existing evidence
 
@@ -49,4 +44,4 @@ Do not rerun the long Hunyuan3D reproduction.
 
 ## Next action
 
-Execute `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` exactly. Merge #4 first, retarget/verify/merge #5 second, run the final smoke from `main`, update closeout docs, then stop. Do not start P3.
+Execute `docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md` exactly. Audit remaining hard caps/timeouts/lockouts, implement the required owner-friendly behavior, add focused regression coverage, update evidence, commit/push, then return the active task pointer to `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` and stop. Do not execute the release merge in the same Worker job and do not start P3.
