@@ -1,6 +1,6 @@
 # Active task
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+`docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
 
 ## Branch
 
@@ -8,21 +8,24 @@
 
 ## Status
 
-P3 task specification is complete. Implementation has **not** started yet.
+P3.0 timeout-policy cleanup is the **priority blocker** before AI TechLead implementation.
 
-P2/P2.1/P2.2.1–P2.2.6 remain complete and merged to `main`. Preserve that verified baseline.
+The previously prepared TechLead task remains queued at:
+
+`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+
+Do not start TechLead implementation until P3.0 passes.
 
 ## Objective
 
-Implement the P3 **AI TechLead Shadow Mode** exactly as specified in the active task file:
+Remove/redesign Jarvis-owned elapsed-time limits that can make valid owner work fail merely because an internal timer fired.
 
-- one compact startup review per explicit Work at most;
-- zero-token/model-call standby;
-- deterministic ProgressFingerprint + incident detection + dedupe/cooldown;
-- bounded low-context TechLead wakeups only for meaningful incidents;
-- default reviewer target Grok 4.6 through the existing safe provider/OpenCode Go path when available;
-- Shadow Mode is advisory only and must not auto-inject, auto-pause, auto-stop, run tools or edit files;
-- provider/event failure must not block normal Work.
+Key product rule:
+
+- Work/Chat/result delivery must not terminally fail because Jarvis waited N seconds;
+- low-level per-attempt transport timeouts may remain only as internal failure detectors with durable state + automatic recovery;
+- completed results must survive Discord/network timeout and must never require rerunning the Agent;
+- preserve real Discord/platform deadlines, rate-limit pacing, retry backoff, cleanup TTLs, progress repaint timers and necessary safety controls that do not expire owner work.
 
 ## Required startup order
 
@@ -33,17 +36,26 @@ Read:
 3. `docs/CURRENT.md`
 4. `docs/AI_HANDOFF.md`
 5. this file
-6. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
-7. current branch/HEAD/status/relevant diff
-8. only the existing Work lifecycle/watchdog/state/provider/status code needed for P3
+6. `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
+7. current branch / HEAD / git status / relevant diff
+8. only timeout/result-delivery/Work-lifecycle/Discord-transport code required by the task
 
 Do not generate a second architecture plan. The task file is authoritative.
+
+## After P3.0 passes
+
+Restore this pointer to:
+
+`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+
+Then stop that Worker job. Do not implement TechLead in the same job.
 
 ## Do not
 
 - do not work on `main` directly;
-- do not rewrite P2 systems;
-- do not add LangGraph/AutoGen/CrewAI or another daemon/router/database;
-- do not enable automatic TechLead intervention in P3;
-- do not silently use metered/unknown-billing providers;
-- do not continuously stream logs or poll the model.
+- do not blindly delete every timer;
+- do not replace a timeout with a finite retry count that still permanently loses the operation;
+- do not let Discord delivery failure become Worker execution failure;
+- do not re-run a completed Work just to resend its result;
+- do not add another daemon/database/queue framework;
+- do not regress owner Stop/cancel, security, billing safeguards, permission controls or P2 lifecycle semantics.
