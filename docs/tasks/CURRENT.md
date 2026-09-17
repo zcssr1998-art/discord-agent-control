@@ -16,6 +16,10 @@ The previously prepared TechLead task remains queued at:
 
 Do not start TechLead implementation until P3.0 passes.
 
+Already landed on `main` and merged into this branch: `docs/tasks/CHAT_TIMEOUT_UNLIMITED_FIX.md`
+(default `CHAT_TIMEOUT_MS=0`; no Jarvis client-side Chat wall-clock timeout). P3.0 generalizes this
+into a single timeout policy across Chat/Work/Agent/result delivery.
+
 ## Objective
 
 Remove/redesign Jarvis-owned elapsed-time limits that can make valid owner work fail merely because an internal timer fired.

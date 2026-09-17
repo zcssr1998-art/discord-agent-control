@@ -52,7 +52,7 @@ test('defaults are safe and documented', () => {
     assert.equal(c.maxConsecutiveFailures, 3);
     assert.equal(c.maxProcessRestarts, 5);
     assert.equal(c.approvalTimeoutMs, 0, 'no automatic approval denial by default (0 = no expiry)');
-    assert.equal(c.chatTimeoutMs, 120000, 'a slow legitimate Chat response must not be aborted by a 25s cap');
+    assert.equal(c.chatTimeoutMs, 0, 'no client-side Chat timeout by default (0 = unlimited)');
     assert.equal(c.chatMaxOutputTokens, 8192, 'Anthropic Chat output ceiling is configurable, not hard-coded 4096');
     assert.equal(c.maxWorkFollowUps, 0, 'follow-ups are unlimited by default (0 = unlimited)');
   });
@@ -68,6 +68,12 @@ test('Chat/approval/follow-up caps accept explicit operator overrides', () => {
     assert.equal(c.chatMaxOutputTokens, 4096);
     assert.equal(c.maxWorkFollowUps, 25);
     assert.equal(c.approvalTimeoutMs, 540000);
+  });
+});
+
+test('an explicit positive CHAT_TIMEOUT_MS remains an opt-in operator override', () => {
+  withEnv({ DISCORD_TOKEN: 't', DISCORD_OWNER_ID: '1', CHAT_TIMEOUT_MS: '60000' }, () => {
+    assert.equal(loadConfig().chatTimeoutMs, 60000);
   });
 });
 
