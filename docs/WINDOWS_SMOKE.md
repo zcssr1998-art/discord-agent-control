@@ -979,7 +979,7 @@ Observed live auto-deploy (owner action not required):
   had already advanced was still detected and restarted (proved deterministically in
   `smoke:p226-update` and on the real machine).
 
-Post-update real-agent smokes (Discord transport faked; human button clicks remain PENDING_OWNER):
+Post-update real-agent smokes (Discord transport faked; owner button clicks now covered below):
 
 ```text
 npm run smoke:p2             -> 11/11  (real Chat/vision + real Work thread + file)
@@ -989,5 +989,21 @@ npm run smoke:p224-lifecycle -> 21/21  (real Work lifecycle + single-press Stop 
 
 Final live runtime state: one Bridge + one Supervisor, no orphan Agent tree, scheduled task
 action points at this checkout's `scripts/start-supervisor.ps1`.
+
+### P2.2.6 Owner-side acceptance — COMPLETE (2026-09-17, build e1d7a78)
+
+Real owner interactions via Discord on the live bridge; `PENDING_OWNER` is cleared.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Tiny Chat | PASS | `你好，只回复：TINY_CHAT_OK` -> `TINY_CHAT_OK` in ~2.1s, no duplicate reply, no permission prompt |
+| Work | PASS | real Agent wrote `D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`; PowerShell tool call succeeded |
+| Owner Stop | PASS | foreground PowerShell task stopped once; card showed 已由 OWNER 停止; Agent tree (pid 52988) terminated; 0 pending approvals; task did not complete naturally |
+| After-Stop residue | PASS | `D:\deepseeek\STOP_TEST_RESULT.txt` absent, so the stopped task did not run to its end |
+| After-Stop recovery | PASS | a new Work after Stop completed and returned `STOP_RECOVERY_OK` |
+| `!status` | PASS | LiteLLM online, Work idle, project `D:\deepseeek`, 0 approvals, Build e1d7a78, Update `UP_TO_DATE · e1d7a78 → e1d7a78` |
+
+The transient `D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` test artifact was deleted during closeout.
+
 
 

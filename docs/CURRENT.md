@@ -45,14 +45,22 @@ P2.2.5 source/tests passed, but the live Windows runtime and the Discord-registe
 ## Existing evidence (deterministic)
 
 ```text
-npm test                 -> 381 pass / 0 fail
-npm run check            -> 120 file(s), 0 failed
-npm run smoke:p226-update-> 45/45  (real temp git repos: fast-forward / dirty / diverged / rollback / quarantine / pause / schema / secrets)
+npm test                 -> 386 pass / 0 fail
+npm run check            -> 121 file(s), 0 failed
+npm run smoke:p226-update-> 49/49  (real temp git repos: fast-forward / dirty / diverged / rollback / quarantine / pause / running-SHA / schema / secrets)
 npm run smoke:p225-limits-> 23/23
 npm run smoke:p223-full  -> 15/15
 npm run smoke:p224-lifecycle -> 21/21
+npm run smoke:p2         -> 11/11
 npm run verify:hook      -> 9/9
 ```
+
+## Owner acceptance (real Discord, build e1d7a78)
+
+COMPLETE — `PENDING_OWNER` cleared: Tiny Chat PASS, Work PASS
+(`D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`), owner Stop PASS (pid 52988 tree
+killed, 0 pending approvals), after-Stop residue PASS, after-Stop recovery PASS
+(`STOP_RECOVERY_OK`), `!status` PASS (Build e1d7a78, Update `UP_TO_DATE · e1d7a78 → e1d7a78`).
 
 ## Next action
 

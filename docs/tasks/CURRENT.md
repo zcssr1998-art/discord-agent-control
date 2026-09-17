@@ -12,6 +12,8 @@ P2.2.4, P2.2.5 and P2.2.6 are complete and verified.
 
 - P2.2.6 (Runtime Freshness / Safe Self-Update) is complete:
   `docs/JARVIS_V4_P2_2_6_SAFE_SELF_UPDATE_TASK.md`.
+- P2.2.6 owner-side acceptance is COMPLETE on build `e1d7a78` (Tiny Chat / Work / Stop /
+  after-Stop recovery / `!status` all PASS); `PENDING_OWNER` is cleared.
 
 ## Scope of the active task
 

@@ -375,3 +375,13 @@ tests: <compact deterministic result>
 real-smoke: <PASS | PENDING_OWNER | FAIL>
 blocker: <none or one key blocker>
 ```
+
+## 12. Completion note
+
+COMPLETE (build `e1d7a78`). Deterministic gates green; live auto-deploy and Discord schema
+fetch-back verified. The owner-only checks left as `PENDING_OWNER` in the Worker report were
+performed by the owner on the real Discord client and PASS: Tiny Chat, Work
+(`OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`), owner Stop (pid 52988 tree killed, 0 pending
+approvals), after-Stop residue, after-Stop recovery (`STOP_RECOVERY_OK`) and `!status`.
+`PENDING_OWNER` is cleared. See `docs/WINDOWS_SMOKE.md` for the compact evidence.
+

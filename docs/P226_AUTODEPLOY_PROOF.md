@@ -18,4 +18,8 @@ Already verified before this probe:
 - `npm run doctor:commands` fetched the real Discord schema back:
   `/work task max_length == 6000`, 0 mismatches.
 
+This probe was applied automatically by the live updater, and the subsequent owner-side Discord
+acceptance (Tiny Chat / Work / Stop / after-Stop recovery / `!status`) PASSED on the resulting
+runtime. `PENDING_OWNER` is cleared.
+
 No secret is stored in this file.

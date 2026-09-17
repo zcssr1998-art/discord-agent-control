@@ -29,12 +29,23 @@ Key mechanics (see `docs/JARVIS_V4_P2_2_6_SAFE_SELF_UPDATE_TASK.md`):
 ## Verified on the real machine
 
 - bootstrap restart loaded the new runtime (`build=jarvis-v4-p2-2-hardening@496de33`);
+- verified remote advances were auto-deployed on the live runtime
+  (`496de33 -> ... -> e1d7a78`), each via exit code 74 + a single-Bridge Supervisor relaunch;
 - `npm run doctor:commands` fetched the real Discord schema back: `/work task max_length == 6000`,
   schema matches desired (0 mismatch);
 - `logs/bridge.log` shows `[update] enabled source=origin/jarvis-v4-p2-2-hardening` and
   `check(startup) ... -> UP_TO_DATE`;
-- deterministic gates green: `npm test` 381/0, `check` 120/0, `smoke:p226-update` 45/45,
-  `smoke:p225-limits` 23/23, `smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21, `verify:hook` 9/9.
+- deterministic gates green: `npm test` 386/0, `check` 121/0, `smoke:p226-update` 49/49,
+  `smoke:p225-limits` 23/23, `smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21,
+  `smoke:p2` 11/11, `verify:hook` 9/9.
+
+## Owner acceptance
+
+COMPLETE on build `e1d7a78`; `PENDING_OWNER` is cleared. Real Discord owner interactions:
+Tiny Chat PASS (~2.1s, no duplicate/no prompt); Work PASS (wrote
+`D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`); owner Stop PASS (pid 52988 tree
+killed, 0 pending approvals, no natural completion); after-Stop residue PASS
+(`STOP_TEST_RESULT.txt` absent); after-Stop recovery PASS (`STOP_RECOVERY_OK`); `!status` PASS.
 
 ## Preserve
 
