@@ -2,55 +2,46 @@
 
 Current execution specification:
 
-`docs/JARVIS_V4_P2_2_3_REPOSITORY_STABILIZATION_TASK.md`
-
-Mandatory blocking addendum discovered by the first real P2.2.3 Work run:
-
-`docs/JARVIS_V4_P2_2_3_RUNTIME_POLICY_ADDENDUM.md`
+`docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`
 
 Branch: `jarvis-v4-p2-2-hardening`
 
-## Status
+## Why this task is active
 
-Code-complete. K1–K5 are fixed with deterministic regression and real-machine
-E2E; see `docs/P2_2_3_BUG_BASH.md`. Final step before completion: owner
-real-Discord interaction confirmation, then stop (no P3).
+Owner real-Discord validation after P2.2.3 exposed a remaining release-blocking Work lifecycle bug cluster during a long Hunyuan3D installation task.
 
-Fixed blockers:
+Observed:
 
-1. `/model` many-model placeholder → real pagination;
-2. ACK reliability → full ACK matrix + removed the synchronous hook-path git scan
-   that could block the bridge event loop;
-3. help view ↔ referenced controls aligned;
-4. **K4 FULL**: hard guards first, FULL allows routine calls, Work thread inherits
-   FULL exactly via `PermissionManager.inheritLevel`;
-5. **K5 timeout**: production default unlimited (`TASK_TIMEOUT_MS=0`), explicit
-   positive operator limit optional, startup preflight bounded separately.
+1. an intermediate Agent turn was rendered as `✅ 已完成`, then the same Work resumed executing because an inserted requirement/continuation still existed;
+2. useful result output from the completed turn disappeared when the mutable progress card returned to RUNNING;
+3. a live insert that had already successfully changed the installation path was later reported by Stop as `1 条未处理的插入需求`;
+4. owner had to press Stop multiple times before the Work visibly settled;
+5. terminal `已停止` cards still exposed active Insert/Stop controls and stale interactions.
 
-## Required runtime-policy direction
-
-Use the blocking addendum as authoritative for K4/K5:
-
-- FULL / 全开放 = no routine approval prompts after the owner has confirmed it once; child Work threads inherit it exactly; keep only deterministic hard safety guards such as secret-leak/secret-commit protection.
-- No arbitrary default Work duration limit. A healthy task runs until result, explicit Stop, actual process/runtime failure, or an explicitly configured positive operator timeout.
-- Stall/heartbeat remains observability, not a reason to kill a live task.
+These are lifecycle/accounting bugs, not new features.
 
 ## Scope
 
-Execute the complete audit matrix in the main taskbook plus the blocking addendum. Fix every reproducible in-scope bug found during the pass, add focused regression coverage, run real Windows/Discord/provider smokes where deterministic tests are insufficient, and keep a compact bug ledger at `docs/P2_2_3_BUG_BASH.md`.
+Execute only `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`.
 
-Do not start P3 or add unrelated architecture.
+Required outcomes:
+
+- intermediate Agent result != terminal Work DONE;
+- completed-turn result remains visible when continuation starts;
+- live insert / continuation bookkeeping transitions to consumed/settled correctly;
+- one valid Stop is sufficient and kills the real process tree;
+- repeated/stale Stop is idempotent and cannot affect a newer run;
+- terminal cards expose no live controls;
+- exactly one monotonic terminal state per Work.
 
 ## Preserve
 
-- P2.2.1 Supervisor/Task Scheduler/watchdog recovery;
-- P2.2.2 AUTO/manual Chat semantics and placeholder repair;
-- Work model persistence independent from Chat;
-- Chat never starts an Agent;
-- safe AUTO billing policy;
-- single-instance/process cleanup and real Stop semantics;
+- P2.2.1 Supervisor/autostart/watchdog recovery;
+- P2.2.2 Chat AUTO/manual selection;
+- P2.2.3 K1–K5 fixes, especially FULL semantics and unlimited default Work duration;
+- Chat/Work separation and workspace/model persistence;
 - no secrets in repo/logs.
 
 ## Completion
 
-Only mark complete after the main taskbook + blocking addendum audit/regression/E2E requirements are satisfied. K4/K5 are release blockers. Commit + push and verify remote HEAD.
+Run deterministic lifecycle/insert/Stop regression plus one small real Work smoke. Append the finding/fix to `docs/P2_2_3_BUG_BASH.md`, update state/handoff/evidence, commit + push, verify remote HEAD, then stop. Do not start P3.
