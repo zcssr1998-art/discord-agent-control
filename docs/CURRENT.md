@@ -6,13 +6,23 @@
 
 ## Current milestone
 
-Jarvis V4 P3 — **AI TechLead Shadow Mode**.
+Jarvis V4 P3 preflight — **P3.0 timeout policy cleanup**.
 
 Active task:
 
+`docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
+
+The prepared AI TechLead Shadow task is queued after P3.0:
+
 `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
 
-Task specification and branch setup are complete. Implementation has not started.
+## Why P3.0 is first
+
+A real Discord result-delivery path surfaced a `Connect Timeout Error (... timeout: 10000ms)` and the full result was not available through the normal delivery path. This exposed a broader UX issue: internal elapsed-time limits can still leak into owner-visible failures.
+
+Product rule now:
+
+> Valid owner work must not terminally fail merely because Jarvis waited N seconds. Per-attempt transport deadlines may exist only as internal recoverable safety mechanisms; they must not discard completed work/results or require the original Work to be rerun.
 
 ## Baseline to preserve
 
@@ -35,39 +45,29 @@ npm run verify:hook      -> 9/9
 scripts/smoke-supervisor-recovery.ps1 -> 23/23
 ```
 
-P2 real-Discord acceptance was complete. Existing Task Scheduler -> process Supervisor -> one Bridge runtime remains the production baseline on `main` until P3 is implemented, verified and explicitly promoted.
+Already-established owner-friendly defaults that must not regress:
 
-## P3 objective
+- Work wall-clock timeout default `0` (unlimited);
+- approval timeout default `0` (no auto-expiry);
+- Work follow-up cap default `0` (unlimited);
+- long Chat/Work output must remain recoverable in full;
+- historical failures must not permanently poison a channel.
 
-Add an event-driven, extremely low-token AI TechLead to Work mode:
+## P3.0 target
 
-- at most one compact startup review per explicit Work;
-- standby performs zero model calls;
-- local deterministic monitoring detects stagnation/risk first;
-- only compact incidents wake the TechLead;
-- duplicate incidents are suppressed;
-- hard per-Work wake budget prevents runaway model usage;
-- default desired reviewer is Grok 4.6 through the existing safe OpenCode Go/provider path when available;
-- Shadow Mode is advisory only: no automatic insert/pause/stop/tool/file action.
-
-## Important constraints
-
-- Use `TechLead` for the AI reviewer; do not overload the existing process `Supervisor` name.
-- Reuse current Work lifecycle, persistent sessions, watchdog/runaway protection, approval hook, insert accounting, cancellation, provider/model discovery and state/status surfaces.
-- Do not add another orchestration framework, daemon, router or database.
-- OpenCode-specific structured events are optional enrichment; Jarvis-owned Work/runner events are the canonical fallback.
-- Event capability must degrade safely if hooks change or disappear.
-- TechLead/provider failure must never block normal Work in P3.
-- AUTO/billing safety remains authoritative: no silent METERED/unknown fallback.
+- audit every user-facing timeout in Chat/Work/result-delivery paths;
+- eliminate arbitrary total-duration deadlines;
+- make Chat default client-side timeout unlimited where safely supported;
+- separate Worker execution success from Discord delivery state;
+- persist full result before delivery attempts;
+- transient Discord/network timeout -> durable pending/retry state, never task rerun/data loss;
+- preserve mandatory protocol deadlines, rate-limit pacing, backoff, liveness repaint and cleanup TTLs;
+- prove behavior with deterministic tests plus minimum real Windows/Discord smoke.
 
 ## Live runtime
 
-Production/live runtime is still the already-verified P2 `main` chain. P3 branch is not live and must not be presented as accepted before implementation + tests + real smoke.
-
-## External limitation
-
-WorkBuddy gateway may still return `HTTP 403 request illegal`; that remains external and must not block other providers or P3 implementation.
+Production/live runtime remains the already-verified P2 `main` chain until P3 work is implemented, tested and explicitly promoted.
 
 ## Next action
 
-Execute `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` on this branch. Do not create a second plan; inspect only the relevant existing subsystems, implement minimally, verify, commit and push.
+Execute `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md` on this branch. After it passes, restore `docs/tasks/CURRENT.md` to the existing AI TechLead Shadow task and stop that Worker job.
