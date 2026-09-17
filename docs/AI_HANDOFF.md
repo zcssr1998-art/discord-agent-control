@@ -6,70 +6,64 @@
 
 ## Active task
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (P3.0 + P3.1 complete and
-committed; **awaiting owner acceptance of P3.1 — do not start TechLead**).
+`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
 
-## P3.1 outcome (done)
+P3.0 and P3.1 are complete. P3.1 has passed owner acceptance on real Discord and TechLead implementation may start.
 
-- `src/web-search/`: `search-policy.mjs`, `evidence-packet.mjs`,
-  `web-search-service.mjs`, `providers/opencode-websearch.mjs`,
-  `providers/tavily.mjs`.
-- Default backend **OpenCode Go native `web_search`** (Responses transport,
-  model `grok-4.6`), billing **SUBSCRIPTION**; reuses the existing OpenCode Go
-  credential, no extra search key, no coding Agent. Tavily is an optional
-  **METERED** adapter gated by `ALLOW_METERED_WEB_SEARCH`.
-- `runChat` runs ≤1 search phase + 1 answer phase; evidence is injected as a
-  compact system instruction and real sources are appended as a `Sources:` block;
-  footer marks `Web`. Search failure degrades to a model-knowledge answer.
-- Config: `WEB_SEARCH_MODE=auto|off|always`, `WEB_SEARCH_PROVIDER`,
-  `ALLOW_METERED_WEB_SEARCH`, `WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_MODEL`.
-- Owner control: `!search [auto|on|off]`; doctor shows provider/billing.
-- Verified: `npm test` 411/0; `npm run check` 130/0; `npm run smoke:p31-search`
-  7/7 (real search + real model answer + real sources); `smoke:p222` 25/25;
-  `smoke:p2` 11/11. Owner Discord turn: PENDING.
+## Completed baseline
 
-## P3.0 outcome (done)
+### P3.1 — Native Chat web search
 
-- Default Chat/Work/result-delivery path has no arbitrary total-duration limit;
-  remaining explicit caps are default-off operator overrides (`TASK_TIMEOUT_MS`,
-  `CHAT_TIMEOUT_MS`, `APPROVAL_TIMEOUT_MS`).
-- New durable result outbox: `src/result-delivery.mjs` +
-  `data/jarvis.db` schema v2 `result_deliveries`. `#deliverResult` persists the
-  full result before the first send; a connect/send timeout is `PENDING` then
-  `DEGRADED` (recoverable), retried with bounded backoff, and never fails the Work.
-- `!status` shows `📨 Result delivery:`; `!redeliver` re-attempts; startup
-  `resumePendingDeliveries()` recovers after restart.
+- Default backend: OpenCode Go native `web_search` (Responses transport, `grok-4.6`), billing `SUBSCRIPTION`.
+- Normal Chat remains lightweight; no coding Agent / Work session for search.
+- AUTO current-info search works; stable knowledge can skip search; visible real Sources + `Web` footer when search is used.
+- Deterministic/real smoke: `npm test` 411/0, `npm run check` 130/0, `smoke:p31-search` 7/7, `smoke:p222` 25/25, `smoke:p2` 11/11.
+- Owner acceptance observed: stable question without Web; current-info question with real Web/Sources.
+
+### P3.0 — Timeout policy cleanup
+
+- No arbitrary total-duration failure in the default path.
+- Durable result outbox separates Worker execution from Discord delivery.
+- Result persists before delivery; transport timeout becomes recoverable pending/degraded delivery, never reruns a completed Work.
 - Audit: `docs/P3_0_TIMEOUT_AUDIT.md`.
+
+## TechLead objective
+
+Implement the existing task exactly as specified:
+
+- zero-token standby;
+- deterministic incident detection first;
+- ProgressFingerprint + dedupe/cooldown;
+- Grok 4.6 only for meaningful judgment events;
+- bounded per-Work wake budget;
+- Shadow Mode advisory only (`CONTINUE`, `SUGGEST_INJECT`, `SUGGEST_PAUSE_REPLAN`, `ASK_OWNER`);
+- no automatic insert/pause/stop/tool/file action;
+- failure of TechLead/provider/events must never block normal Work.
 
 ## Preserve
 
-P2/P2.1/P2.2.1–P2.2.6 are complete on `main`. Preserve:
-
 - one process Supervisor + one Bridge;
 - Chat/Work separation;
-- Work timeout default unlimited;
-- approval timeout default unlimited;
+- P3.0 timeout/result-delivery semantics;
+- P3.1 native Chat web search;
 - persistent Work lifecycle/session state;
 - truthful insert accounting;
-- owner Stop/process-tree cancellation;
-- permission controls;
-- AUTO billing safety/manual pin semantics;
+- Stop/cancellation/permission controls;
+- billing safeguards/manual pin semantics;
 - updater rollback/quarantine;
 - secret redaction/credential isolation.
 
-## TechLead intent
+Duplicate Bridge startup/provider-warning notifications observed during development are a non-blocking UX follow-up; do not expand TechLead scope to fix them unless required by a touched path.
 
-After P3.1 passes, continue to `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`: zero-token standby, deterministic incident detection first, Grok 4.6 only on meaningful incidents, advisory Shadow Mode.
-
-## Current Worker completion contract
+## Completion contract
 
 ```text
 PASS | FAIL
 commit: <sha or none>
 tests: <compact result>
-search: <actual backend / billing class>
-auto-policy: <PASS|FAIL>
-agent-started-for-chat-search: <NO required>
-real-smoke: <PASS|PENDING + reason>
 blocker: <none or one key blocker>
+techlead: <provider/model, SHADOW>
+wakes: <startup + incident count>
+events: <FULL|PARTIAL|DEGRADED>
+real-smoke: <PASS|PENDING + reason>
 ```
