@@ -6,7 +6,27 @@
 
 ## Active task
 
-`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md` (P3.0 complete and committed).
+`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (P3.0 + P3.1 complete and
+committed; **awaiting owner acceptance of P3.1 — do not start TechLead**).
+
+## P3.1 outcome (done)
+
+- `src/web-search/`: `search-policy.mjs`, `evidence-packet.mjs`,
+  `web-search-service.mjs`, `providers/opencode-websearch.mjs`,
+  `providers/tavily.mjs`.
+- Default backend **OpenCode Go native `web_search`** (Responses transport,
+  model `grok-4.6`), billing **SUBSCRIPTION**; reuses the existing OpenCode Go
+  credential, no extra search key, no coding Agent. Tavily is an optional
+  **METERED** adapter gated by `ALLOW_METERED_WEB_SEARCH`.
+- `runChat` runs ≤1 search phase + 1 answer phase; evidence is injected as a
+  compact system instruction and real sources are appended as a `Sources:` block;
+  footer marks `Web`. Search failure degrades to a model-knowledge answer.
+- Config: `WEB_SEARCH_MODE=auto|off|always`, `WEB_SEARCH_PROVIDER`,
+  `ALLOW_METERED_WEB_SEARCH`, `WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_MODEL`.
+- Owner control: `!search [auto|on|off]`; doctor shows provider/billing.
+- Verified: `npm test` 411/0; `npm run check` 130/0; `npm run smoke:p31-search`
+  7/7 (real search + real model answer + real sources); `smoke:p222` 25/25;
+  `smoke:p2` 11/11. Owner Discord turn: PENDING.
 
 ## P3.0 outcome (done)
 
@@ -20,17 +40,6 @@
 - `!status` shows `📨 Result delivery:`; `!redeliver` re-attempts; startup
   `resumePendingDeliveries()` recovers after restart.
 - Audit: `docs/P3_0_TIMEOUT_AUDIT.md`.
-- Verified: `npm test` 395/0; `npm run check` 123/0; P2 smokes all green
-  (`p2` 11/11, `p22` 10/10, `p222` 25/25, `p22-insert` 14/14, `p223-full` 15/15,
-  `p224-lifecycle` 21/21, `p225-limits` 23/23, `p226-update` 49/49, `verify:hook`
-  9/9, supervisor recovery 23/23). Real Discord owner full-result run: PENDING.
-
-## Current objective (P3.1)
-
-Native Chat web search without the Work/coding-agent runtime: deterministic
-freshness/intent policy, pluggable `WebSearchService`, compact evidence packet,
-visible sources, explicit billing classification, graceful degradation. One search
-phase + one answer phase.
 
 ## Preserve
 

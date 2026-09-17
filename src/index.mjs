@@ -23,6 +23,7 @@ import { ProviderManager } from './provider-manager.mjs';
 import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
 import { ChatRuntime } from './chat-runtime.mjs';
+import { buildWebSearchService } from './web-search/web-search-service.mjs';
 import { ChatHistoryStore } from './chat-history.mjs';
 import { ProviderHealthRegistry } from './provider-health.mjs';
 import { WorkspaceScheduler } from './workspace-scheduler.mjs';
@@ -320,6 +321,17 @@ async function main() {
   });
   if (visionRoute) console.log(`[chat] vision route provider=${visionRoute.providerId} model=${visionRoute.model || 'auto'}`);
 
+  // P3.1 native Chat web search. A lightweight product layer: it never creates a
+  // Work session or starts a coding Agent. Default backend is the OpenCode Go
+  // native web_search tool (SUBSCRIPTION); metered routes stay opt-in.
+  const webSearch = buildWebSearchService({ config, providerManager: providers, credentialStore: credentials });
+  if (config.webSearchMode !== 'off' && config.webSearchMode !== false) {
+    const searchStatus = webSearch.status();
+    console.log(`[chat-search] mode=${config.webSearchMode} provider=${config.webSearchProvider} providers=${searchStatus.providers.map((p) => `${p.id}(${p.billingType})`).join(', ') || 'none'} allowMetered=${searchStatus.allowMetered}`);
+  } else {
+    console.log('[chat-search] disabled by configuration');
+  }
+
   // Bounded, channel-scoped Chat history plus a git-ignored attachment inbox.
   const chatHistory = new ChatHistoryStore({ file: path.join(root, 'data', 'chat-history.json') });
   const attachmentInbox = path.join(root, 'data', 'inbox');
@@ -426,6 +438,7 @@ async function main() {
     modelManager: models,
     executorManager: executors,
     chatRuntime,
+    webSearch,
     chatHistory,
     gatewayHealth,
     workspaceScheduler,

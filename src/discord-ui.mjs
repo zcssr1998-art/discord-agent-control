@@ -39,6 +39,8 @@ import { registerApplicationCommands, verifyApplicationCommands, COMMAND_NAMES, 
 import { shortSha as shortUpdateSha } from './updater.mjs';
 import { autostartSummary } from './autostart.mjs';
 import { ResultDelivery, DELIVERY } from './result-delivery.mjs';
+import { decideSearch, normalizeMode } from './web-search/search-policy.mjs';
+import { formatEvidenceForModel, formatSourcesBlock } from './web-search/evidence-packet.mjs';
 import {
   clip,
   permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
@@ -176,6 +178,7 @@ export class DiscordControlPlane {
     modelManager = null,
     executorManager = null,
     chatRuntime = null,
+    webSearch = null,
     chatHistory = null,
     gatewayHealth = null,
     workspaceScheduler = null,
@@ -202,6 +205,11 @@ export class DiscordControlPlane {
     this.modelManager = modelManager;
     this.executorManager = executorManager;
     this.chatRuntime = chatRuntime;
+    // P3.1 native Chat web search: a lightweight product capability, never a
+    // coding Agent. Null disables search (Chat still works from model knowledge).
+    this.webSearch = webSearch;
+    this.webSearchMode = normalizeMode(config.webSearchMode || 'auto');
+    this.webSearchProvider = config.webSearchProvider || 'auto';
     // Bounded, channel-scoped Chat history. It is separate from the Agent
     // session and is only ever touched by the Chat path.
     this.chatHistory = chatHistory;
@@ -879,6 +887,13 @@ export class DiscordControlPlane {
     }
     lines.push(`🌐 LiteLLM gateway: ${gateway}`);
 
+    if (this.webSearch?.status) {
+      const search = this.webSearch.status();
+      const providers = search.providers.map((provider) => `${provider.id}(${provider.billingType})`).join(', ') || '(none)';
+      const cooling = search.cooldowns.length ? ` · cooldown=${search.cooldowns.map((item) => item.providerId).join(',')}` : '';
+      lines.push(`🔎 Web search: mode=${this.webSearchMode} · ${providers}${cooling}`);
+    }
+
     const executors = (this.executorManager?.list() ?? []);
     lines.push(`🛠 Executors: ${executors.length ? '' : '(none discovered)'}`);
     for (const executor of executors.slice(0, 6)) {
@@ -1237,6 +1252,38 @@ export class DiscordControlPlane {
         if (result.ok) ok += 1;
       }
       await message.reply(clip(`📨 已重投 ${ok}/${pending.length} 条待投递结果。`));
+      return;
+    }
+    // P3.1 owner control: runtime web-search mode + provider health.
+    const searchCommand = text.match(/^!search(?:\s+(\S+))?$/i);
+    if (searchCommand) {
+      const action = (searchCommand[1] ?? '').toLowerCase();
+      if (action) {
+        const next = action === 'on' ? 'always' : action;
+        if (!['auto', 'always', 'off'].includes(next)) {
+          await message.reply('用法：`!search auto|on|off`（`on` = 每轮都搜；`不要联网` 可单轮关闭）。');
+          return;
+        }
+        this.webSearchMode = normalizeMode(next);
+        await message.reply(`🔎 联网搜索模式：**${this.webSearchMode}**（本次运行有效；持久模式由 \`WEB_SEARCH_MODE\` 配置）。`);
+        return;
+      }
+      const status = this.webSearch?.status?.();
+      if (!status) { await message.reply('🔎 联网搜索未接入（Chat 仍可正常使用）。'); return; }
+      const lines = [
+        '🔎 **联网搜索状态**', '',
+        `模式：${this.webSearchMode} · Provider：${this.webSearchProvider} · 允许计费：${status.allowMetered ? '是' : '否'} · Max：${status.maxResults}`,
+        'Providers:',
+        ...(status.providers.length
+          ? status.providers.map((provider) => `• ${provider.id} · ${provider.displayName} · ${provider.billingType}${provider.model ? ` · ${provider.model}` : ''}`)
+          : ['• （未配置）']),
+        ...(status.cooldowns.length
+          ? ['冷却：', ...status.cooldowns.map((item) => `• ${item.providerId} ${formatUptime(item.remainingMs)} ${item.lastErrorCode || ''}`)]
+          : []),
+        '',
+        '用法：`!search auto|on|off`；单轮关闭直接说 `不要联网`。',
+      ];
+      await message.reply(clip(lines.join('\n')));
       return;
     }
     if (text === '!config') {
@@ -1697,7 +1744,31 @@ export class DiscordControlPlane {
     const providerId = selection.chatProviderId || 'auto';
     const model = selection.chatModel || null;
     const history = this.chatHistory ? this.chatHistory.get(channelId) : { messages: [], summary: null };
-    const system = history.summary ? `${PANEL_COMPACT_HEADER}\n${history.summary}` : null;
+    // P3.1: one bounded web-search phase before the answer. Deterministic policy
+    // first; the search layer never starts a coding Agent. A search failure is a
+    // Search state, never a Chat/model failure.
+    const searchDecision = this.webSearch
+      ? decideSearch(text, { mode: this.webSearchMode })
+      : { search: false, reason: 'disabled', explicit: false, query: null };
+    let evidence = null;
+    let searchNote = null;
+    if (searchDecision.search) {
+      const searchStartedAt = Date.now();
+      try {
+        const outcome = await this.webSearch.search({ query: redact(searchDecision.query || text), providerId: this.webSearchProvider });
+        evidence = outcome.packet;
+        console.log(`[chat-search] provider=${evidence.providerId} billing=${evidence.billingType} sources=${evidence.sources.length} reason=${searchDecision.reason} durationMs=${Date.now() - searchStartedAt}`);
+      } catch (error) {
+        searchNote = searchDecision.explicit
+          ? '🔎 搜索不可用，当前事实未能联网核实。'
+          : '🔎 搜索不可用，以下为模型内置知识回答。';
+        console.warn(`[chat-search] unavailable reason=${searchDecision.reason} error=${redact(error?.message || error)}`);
+      }
+    }
+    const systemParts = [];
+    if (history.summary) systemParts.push(`${PANEL_COMPACT_HEADER}\n${history.summary}`);
+    if (evidence) systemParts.push(formatEvidenceForModel(evidence));
+    const system = systemParts.length ? systemParts.join('\n\n') : null;
     const startedAt = Date.now();
     let result;
     try {
@@ -1756,15 +1827,20 @@ export class DiscordControlPlane {
         '💬 Chat',
         result.providerName || result.providerId || providerId,
         served,
+        ...(evidence ? ['Web'] : []),
         ...(fallback ? ['fallback'] : []),
         `${(durationMs / 1000).toFixed(1)}s`,
       ].join(' · '),
+      searchNote,
       historyNote,
     ].filter(Boolean).join('\n');
-    console.log(`[chat] done channel=${channelId} provider=${result.providerId} model=${result.model} served=${served} fallback=${fallback} durationMs=${durationMs}`);
+    console.log(`[chat] done channel=${channelId} provider=${result.providerId} model=${result.model} served=${served} fallback=${fallback} web=${Boolean(evidence)} durationMs=${durationMs}`);
     // K3: deliver the FULL answer (chunked or as an attachment for very long
-    // text). A real model answer is never replaced by a truncated preview.
-    await this.#deliverResult(message, result.text, { footer, label: 'chat' });
+    // text). A real model answer is never replaced by a truncated preview. Real
+    // search sources are appended only when search actually returned them.
+    const sourcesBlock = evidence ? formatSourcesBlock(evidence) : null;
+    const answerText = [result.text, sourcesBlock].filter(Boolean).join('\n\n');
+    await this.#deliverResult(message, answerText, { footer, label: 'chat' });
   }
 
   #chatFailureText(error, { providerId, model }) {

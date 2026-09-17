@@ -6,25 +6,35 @@
 
 ## Current milestone
 
-Jarvis V4 P3 — **P3.0 complete, P3.1 active**.
+Jarvis V4 P3 — **P3.0 and P3.1 implemented; awaiting owner acceptance for P3.1**.
+Do not start TechLead yet.
 
-Done (P3.0): `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`.
+### P3.1 — Native Chat web search (done)
 
-- Default Chat/Work/result-delivery path has no arbitrary total-duration limit;
-  the only total caps left are explicit, default-off operator overrides.
-- Durable result outbox (`data/jarvis.db` schema v2 `result_deliveries`) persists
-  the full result before the first send; a Discord connect/send failure becomes
-  `PENDING`/`DEGRADED` and is retried, never failing the Worker execution.
-- `!status` distinguishes `📨 Result delivery` state; `!redeliver` re-attempts.
+- `src/web-search/`: deterministic `search-policy.mjs`, bounded
+  `evidence-packet.mjs`, pluggable `web-search-service.mjs` and providers.
+- Default backend: **OpenCode Go native `web_search`** (Responses transport,
+  model `grok-4.6`), billing **SUBSCRIPTION** — reuses the existing OpenCode Go
+  credential; no extra search key and no coding Agent. Tavily is an optional
+  **METERED** adapter (`ALLOW_METERED_WEB_SEARCH=false` by default).
+- Chat runs at most one search phase + one answer phase; evidence is injected as
+  compact system instructions and real sources are appended as a `Sources:` block.
+  AUTO searches only on current-info/explicit intent; `不要联网` always wins.
+- Config: `WEB_SEARCH_MODE=auto|off|always`, `WEB_SEARCH_PROVIDER`,
+  `ALLOW_METERED_WEB_SEARCH`, `WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_MODEL`.
+- Owner control: `!search [auto|on|off]`, doctor shows provider/billing.
+- Verified: `npm test` 411/0; `npm run check` 130/0; `npm run smoke:p31-search`
+  7/7 (real OpenCode Go search + real model answer + real sources);
+  `smoke:p222` 25/25, `smoke:p2` 11/11. Owner Discord turn: PENDING.
+
+### P3.0 — Timeout policy cleanup (done)
+
+- No arbitrary total-duration limit in the default path; durable result outbox
+  (`result_deliveries`) separates Worker execution from Discord delivery.
 - Audit: `docs/P3_0_TIMEOUT_AUDIT.md` (remaining arbitrary total limits: 0).
 
-Active now:
-
-`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
-
-Queued after P3.1:
-
-1. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+Active doc: `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md` (complete) →
+`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (queued).
 
 ## Baseline to preserve
 
@@ -70,15 +80,18 @@ Verification: `npm test` 395/0; `npm run check` 123/0; `smoke:p2` 11/11,
 `smoke:p226-update` 49/49, `verify:hook` 9/9,
 `smoke-supervisor-recovery.ps1` 23/23. Real Discord owner run: PENDING (owner-only).
 
-### P3.1 — Native Chat Web Search
+### P3.1 — Native Chat Web Search (DONE — awaiting owner acceptance)
 
-- modern Chat-style AUTO web search;
-- normal Chat remains lightweight;
-- no coding Agent startup for search;
+- modern Chat-style AUTO web search (deterministic policy);
+- normal Chat remains lightweight; no coding Agent startup for search;
 - current-info questions retrieve live evidence and show real sources;
-- no silent metered/unknown search spend.
+- no silent metered/unknown search spend (OpenCode Go native = SUBSCRIPTION).
 
-### P3 — AI TechLead Shadow Mode
+Verification: `npm test` 411/0; `npm run check` 130/0; `smoke:p31-search` 7/7
+(real OpenCode Go `web_search` + real model answer + real sources); `smoke:p222`
+25/25; `smoke:p2` 11/11. Owner Discord turn: PENDING.
+
+### P3 — AI TechLead Shadow Mode (NOT STARTED)
 
 - event-driven, near-zero-token standby;
 - deterministic monitoring first;
@@ -87,9 +100,12 @@ Verification: `npm test` 395/0; `npm run check` 123/0; `smoke:p2` 11/11,
 
 ## Live runtime
 
-Production remains the verified P2 `main` chain until P3 work is implemented, tested and explicitly promoted.
+Production remains the verified P2 `main` chain until P3 work is explicitly
+promoted. The live supervised bridge currently runs this feature branch (single
+Supervisor + single Bridge).
 
 ## Next action
 
-Execute P3.1 (`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`), then stop for owner
-acceptance. Do not start P3 TechLead until the owner accepts P3.1.
+Owner acceptance of P3.1 on real Discord (ask a current-info question, verify
+live sources and the `Web` footer, verify no Agent starts). Do not start P3
+TechLead until the owner accepts P3.1.

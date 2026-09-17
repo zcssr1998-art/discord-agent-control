@@ -100,6 +100,19 @@ export function loadConfig() {
     // Messages). OpenAI-compatible transports are never artificially capped.
     chatMaxOutputTokens: int('CHAT_MAX_OUTPUT_TOKENS', 8192),
 
+    // --- native Chat web search (P3.1) -----------------------------------
+    // AUTO searches only when current information is likely needed; `always`
+    // searches every turn; `off` disables. Per-turn `不要联网` always wins.
+    webSearchMode: (process.env.WEB_SEARCH_MODE || 'auto').trim().toLowerCase(),
+    // 'auto' picks the best allowed route (OpenCode Go native web_search =
+    // SUBSCRIPTION); an explicit id pins one provider.
+    webSearchProvider: (process.env.WEB_SEARCH_PROVIDER || 'auto').trim(),
+    // METERED/UNKNOWN search providers are never used by AUTO unless allowed.
+    allowMeteredWebSearch: bool('ALLOW_METERED_WEB_SEARCH', false),
+    webSearchMaxResults: Math.max(1, Math.min(10, int('WEB_SEARCH_MAX_RESULTS', 5))),
+    // Optional explicit model for the OpenCode native web-search provider.
+    webSearchModel: process.env.WEB_SEARCH_MODEL || null,
+
     // --- native Discord application commands (P2.1) -----------------------
     // Register the /-commands idempotently at startup (best effort).
     autoRegisterCommands: bool('DISCORD_AUTO_REGISTER_COMMANDS', true),
