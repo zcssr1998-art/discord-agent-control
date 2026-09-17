@@ -234,7 +234,11 @@ test('continuation demands not deliverable live run as an extra turn in the SAME
   assert.equal(calls.runner, 1, 'no second Agent');
   assert.equal(calls.submit, 1, 'no second workspace lock');
   assert.equal(plane.tasks.size, 0, 'one task, one final DONE');
-  assert.match(fake.messagesIn(thread.id).at(-1).content, /done:continuation demand/);
+  // The final turn's result is on the terminal progress card; the earlier turn's
+  // result is preserved as its own durable message (P2.2.4).
+  const texts = fake.messagesIn(thread.id).map((m) => m.content);
+  assert.ok(texts.some((text) => /done:continuation demand/.test(text)), 'the final turn result is shown');
+  assert.ok(texts.some((text) => /第 1 轮已完成/.test(text) && /done:task/.test(text)), 'turn 1 result is preserved');
 });
 
 test('unsupported executor degrades honestly instead of pretending to insert', async () => {

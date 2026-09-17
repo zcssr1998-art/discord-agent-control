@@ -862,3 +862,30 @@ Known external blocker unchanged: WorkBuddy gateway returns
 `HTTP 403 provider 11140 request illegal`, so `smoke:local` agent-driven checks
 and WorkBuddy-executor Work tasks remain BLOCKED_BY_WORKBUDDY. Other providers
 remain usable and the bridge reports WorkBuddy as unavailable.
+
+## P2.2.4 Work lifecycle / insert / Stop — 2026-09-17
+
+```text
+npm test                             -> 356 pass / 0 fail
+npm run check                        -> 113 file(s), 0 failed
+npm run smoke:p2                     -> 11/11  (real Chat + vision + Work thread)
+npm run smoke:p22                    -> 10/10  (instance lock, durable store, autostart)
+npm run smoke:p222                   -> 25/25  (real Chat model selection / restart)
+npm run smoke:p22-insert             -> 14/14  (real live insert, one Agent/session)
+npm run smoke:p223-full              -> 15/15  (K4/K5 real FULL Work, 0 prompts, real Stop)
+npm run smoke:p224-lifecycle         -> 21/21  (real Work lifecycle + single-press Stop)
+```
+
+`smoke:p224-lifecycle` real-machine evidence (real OpenCode Go credential,
+Claude Code CLI through the local adapter, real hook server, real Windows
+process tree; only the Discord transport is the in-process fake):
+
+- a real Work with a live insert AND a queued continuation never rendered an
+  intermediate `? 已完成` (continuous monitor clean) and produced exactly one DONE;
+- the completed turn result was preserved on its own message (`第 1 轮已完成`);
+- the live insert settled `CONSUMED`, the continuation `EXECUTED`; a later Stop
+  did not report any unprocessed insert;
+- a second real Work was terminated by ONE `!stop`: the captured Agent pid was
+  reported dead by `tasklist`, no run remained, the STOPPED card had no controls;
+- a re-materialised stale Stop control returned `该任务已结束` and created/killed
+  nothing.

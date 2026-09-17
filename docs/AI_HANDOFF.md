@@ -6,33 +6,29 @@
 
 ## Active task
 
-`docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`
+None. `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md` completed (K6 FIXED).
 
 ## Current status
 
-P2.2.1–P2.2.3 fixes are complete and must be preserved. Owner real-Discord validation then exposed one remaining Work lifecycle/accounting cluster:
+P2.2.1–P2.2.4 fixes are complete. The P2.2.4 lifecycle cluster is closed:
 
-- intermediate turn falsely rendered terminal DONE, then same Work resumed;
-- completed-turn output disappeared when continuation restarted the mutable progress card;
-- a live insert that had already been applied was later reported as unprocessed;
-- Stop needed repeated owner action before settling;
-- terminal STOPPED cards retained live controls.
+- no intermediate DONE before the Work is actually terminal;
+- completed-turn results are preserved as their own message;
+- live inserts settle as CONSUMED and continuations as EXECUTED;
+- one Stop settles the run and kills the real process tree; repeats/stale
+  controls are harmless;
+- terminal cards carry no live controls.
 
-Treat this as lifecycle correctness, not a new feature.
-
-## Required outcome
-
-- continuation decision happens before terminal DONE rendering;
-- completed results remain visible across later turns;
-- insert/continuation states are truthfully consumed/pending/cancelled;
-- one Stop settles the active run and kills the real process tree;
-- repeated/stale controls are harmless;
-- terminal state is monotonic and unique.
+Implementation and evidence are recorded in `docs/P2_2_3_BUG_BASH.md` (K6) and
+`docs/CURRENT.md`.
 
 ## Preserve
 
-Do not regress Supervisor recovery, Chat AUTO/manual behavior, P2.2.3 model pagination/ACK/help fixes, FULL semantics, or unlimited default Work duration. Do not start P3. No secrets in repo/logs.
+Do not regress Supervisor recovery, Chat AUTO/manual behavior, model
+pagination/ACK/help fixes, FULL semantics, or unlimited default Work duration.
+Do not start P3. No secrets in repo/logs.
 
 ## Delivery
 
-Add deterministic lifecycle/insert/Stop regression, run a small real Work smoke, append the bug/fix to `docs/P2_2_3_BUG_BASH.md`, update state/evidence, commit + push, verify remote HEAD, then stop.
+Done: focused regression `tests/v4-p224-work-lifecycle.test.mjs`, real smoke
+`smoke:p224-lifecycle`, state/handoff updates, commit + push.

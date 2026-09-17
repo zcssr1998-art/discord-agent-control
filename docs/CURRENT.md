@@ -8,50 +8,41 @@ Stacked on P2/P2.1. Do not merge P2.2 yet.
 
 ## Current milestone
 
-Jarvis V4 P2.2.4 — Work lifecycle / insert / terminal-state correctness.
+Jarvis V4 P2.2.4 — Work lifecycle / insert / terminal-state correctness. **FIXED.**
 
-Authoritative spec:
+Spec: `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`.
+Bug ledger entry: `docs/P2_2_3_BUG_BASH.md` K6.
 
-`docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`
+## What changed
 
-## Why this milestone exists
+- one monotonic outer lifecycle per Work; exactly one terminal state
+  (DONE / FAILED / CANCELLED) guarded by `#markTerminal`;
+- an Agent turn result no longer renders DONE while the same run still has a
+  queued continuation; the completed turn result is posted as its own durable
+  message before the next turn repaints the progress card;
+- explicit insert state machine (RECEIVED / DELIVERED_LIVE /
+  QUEUED_CONTINUATION / CONSUMED / CANCELLED): a completed turn consumes its
+  live deliveries and an executed continuation is settled, so Stop never reports
+  an already-applied insert as unprocessed;
+- one Stop press freezes the run, cancels only genuinely pending demands, kills
+  the real process tree once, renders STOPPED once and clears controls; repeated
+  and stale `workctl` stops are idempotent and cannot touch a newer run;
+- terminal cards (progress + parent summary) expose no live Insert/Stop controls.
 
-P2.2.3 closed K1–K5 and passed broad regression, but owner real-Discord validation exposed a remaining lifecycle bug cluster in a long Hunyuan3D Work:
+## Baselines preserved
 
-- an intermediate Agent turn was shown as `✅ 已完成` although the same Work still had continuation work and resumed running;
-- useful completed-turn output was overwritten/disappeared when the mutable progress card returned to RUNNING;
-- a live insert that had already successfully changed installation behavior was later falsely counted by Stop as `1 条未处理的插入需求`;
-- Stop required repeated owner interaction before the task visibly settled;
-- terminal STOPPED UI still exposed active Insert/Stop controls.
+- P2.2.1 Supervisor / LiteLLM / Task Scheduler watchdog recovery; one bridge instance.
+- P2.2.2 Chat default AUTO, manual pin, persistence, placeholder repair.
+- P2.2.3 paginated model selection, ACK hardening, help consistency, FULL
+  semantics, unlimited default Work duration (`TASK_TIMEOUT_MS=0`).
 
-These are release-blocking correctness issues: displayed lifecycle != actual lifecycle, and insert accounting != actual execution.
+## Evidence
 
-## Required invariants
-
-- one Work has one monotonic outer lifecycle and exactly one terminal state: DONE / STOPPED / FAILED;
-- Agent turn completion is not Work completion when continuations/follow-ups remain;
-- completed-turn result output remains visible when later turns start;
-- live inserts and queued continuations have truthful consumed/pending/cancelled accounting;
-- one valid Stop request is sufficient to kill the actual process tree and settle the run;
-- repeated/stale controls are idempotent and cannot mutate newer runs;
-- terminal cards expose no active controls.
-
-## Baselines to preserve
-
-P2.2.1:
-- persistent Supervisor / LiteLLM / Task Scheduler watchdog recovery;
-- one bridge instance / process cleanup.
-
-P2.2.2:
-- Chat default AUTO, selectable manual pin, persistence, placeholder repair.
-
-P2.2.3:
-- real paginated model selection;
-- Discord interaction ACK hardening;
-- help/control consistency;
-- FULL means no routine re-approval and Work threads inherit FULL exactly;
-- production Work duration is unlimited by default (`TASK_TIMEOUT_MS=0`).
+- `npm test` 356/356, `npm run check` 113 files / 0 failed.
+- `smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25,
+  `smoke:p22-insert` 14/14, `smoke:p223-full` 15/15.
+- `smoke:p224-lifecycle` 21/21 (real Agent + real Windows process tree).
 
 ## Next action
 
-Execute `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`, add focused deterministic regression and one small real Work lifecycle smoke, append the finding/fix to `docs/P2_2_3_BUG_BASH.md`, commit + push, verify remote HEAD, then stop. Do not start P3.
+P2.2.4 acceptance passed. Stop here; do not start P3.

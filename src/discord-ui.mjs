@@ -83,6 +83,27 @@ export function insertMessage(mode) {
 }
 
 /**
+ * P2.2.4 exact insert/continuation state machine.
+ *
+ * A requirement always carries one of these states, so Stop/cleanup can report
+ * the truth instead of counting an already-executed demand as unprocessed:
+ *   RECEIVED            — accepted, not yet handed to a turn
+ *   DELIVERED_LIVE      — written into the RUNNING turn's stdin/session
+ *   QUEUED_CONTINUATION — queued to run as the next turn in the SAME run
+ *   CONSUMED            — the turn it was delivered into completed successfully
+ *   CANCELLED           — genuinely dropped by Stop/end before it ever ran
+ */
+export const INSERT_STATE = Object.freeze({
+  RECEIVED: 'RECEIVED',
+  DELIVERED_LIVE: 'DELIVERED_LIVE',
+  QUEUED_CONTINUATION: 'QUEUED_CONTINUATION',
+  CONSUMED: 'CONSUMED',
+  CANCELLED: 'CANCELLED',
+});
+
+const TERMINAL_PROGRESS_STATES = new Set([STATE.DONE, STATE.FAILED, STATE.CANCELLED, STATE.TIMEOUT]);
+
+/**
  * P2.2 ACK fix: classify a failed interaction acknowledgement with the real
  * Discord cause instead of a generic swallow. Codes:
  *   10062 Unknown interaction · 40060 already acknowledged · 50027 invalid webhook.
@@ -601,6 +622,9 @@ export class DiscordControlPlane {
 
     const task = this.tasks.get(channelId);
     if (!task) return;
+    // Once a run is terminal its card must never be flipped back to RUNNING by a
+    // late event from the dying process (terminal is monotonic).
+    if (task.runId && this.workRuns.get(task.runId)?.terminal) return;
     if (task.progress.record(event)) task.schedule();
   }
 
@@ -2004,47 +2028,76 @@ export class DiscordControlPlane {
     ].join('\n');
   }
 
-  /** One shared stop implementation so panel Stop and `!stop` cannot drift. */
-  async #stopChannel(channelId) {
-    // Stop always clears the chain's pending follow-ups first, so nothing
-    // unexpectedly starts after the owner pressed Stop.
-    const clearedFollowUps = this.#clearFollowUps(channelId);
-    // Unconsumed steering demands (live-injected or continuation) belong to the
-    // stopped Work: drop them so they can never run later.
-    const activeChain = this.workChains.get(channelId);
-    const activeRun = activeChain?.activeRunId ? this.workRuns.get(activeChain.activeRunId) : null;
-    let clearedInserts = 0;
-    if (activeRun) {
-      clearedInserts = (activeRun.injected?.length ?? 0) + (activeRun.continuations?.length ?? 0);
-      activeRun.injected = [];
-      activeRun.continuations = [];
+  /**
+   * One shared stop implementation so panel Stop, the card Stop and `!stop`
+   * cannot drift.
+   *
+   * P2.2.4: one valid Stop must settle the whole run in a single press. It is
+   * idempotent, only clears GENUINELY pending inserts/continuations (a live
+   * insert consumed by a completed turn is never reported as unprocessed), and
+   * a stale Stop carrying an older run id can never touch a newer run.
+   */
+  async #stopChannel(channelId, { runId = null } = {}) {
+    const chain = this.workChains.get(channelId);
+    const activeRun = chain?.activeRunId ? this.workRuns.get(chain.activeRunId) : null;
+    const task = this.tasks.get(channelId);
+    const runner = this.runners.get(channelId);
+    const queuedState = this.scheduler?.stateFor(channelId).state === 'queued';
+    const followUpCount = chain?.followUps?.length ?? 0;
+
+    // A stale card's Stop carries an older run id. Never let it touch a newer run.
+    if (runId && activeRun && activeRun.id !== runId) {
+      console.log(`[work-lifecycle] stale stop ignored run=${runId} active=${activeRun.id}`);
+      return '该任务已结束。';
     }
-    const followUpLine = [
-      clearedFollowUps ? `已清空 ${clearedFollowUps} 条待执行的追加需求。` : null,
-      clearedInserts ? `已清空 ${clearedInserts} 条未处理的插入需求。` : null,
-    ].filter(Boolean);
-    const queued = this.scheduler?.cancelQueued(channelId);
+    // Idempotent terminal response: nothing live left to settle.
+    if (!activeRun && !task && !runner?.busy && !queuedState && !followUpCount) {
+      return '⛔ 当前没有 Agent 进程；任务已结束。';
+    }
+
+    // Cancel this channel's scheduler queue entry (a queued run must not start
+    // after Stop). The active run, if any, is settled below.
+    const queued = queuedState ? this.scheduler?.cancelQueued(channelId) : null;
     if (queued) {
       console.log(`[queue] cancel channel=${channelId} workspace=${queued.key} position=${queued.position}`);
       this.queuedNotices.delete(channelId);
-      return [
-        `⛔ 已取消排队中的任务（原队列位置 ${queued.position}）。活动任务不受影响。`,
-        ...followUpLine,
-      ].join('\n');
     }
-    const runner = this.runners.get(channelId);
-    const task = this.tasks.get(channelId);
+
+    // Freeze the run first so a late insert can no longer be accepted, then drop
+    // only the demands that never affected execution.
+    let clearedInserts = 0;
+    if (activeRun) {
+      this.#markTerminal(activeRun, STATE.CANCELLED);
+      clearedInserts = this.#cancelRunInserts(activeRun);
+    }
+    const clearedFollowUps = this.#clearFollowUps(channelId);
+
     const sessionId = this.state.getChannel(channelId, this.config.defaultCwd).sessionId;
     const cancelled = sessionId ? this.approvalManager.cancelForSession(sessionId, 'stopped from Discord') : 0;
+    let stoppedProgress = null;
+    let stoppedMessage = null;
     if (task) {
+      stoppedProgress = task.progress;
+      stoppedMessage = task.statusMessage;
       task.cancelled = true;
-      task.progress.setState(STATE.CANCELLED, '已由 OWNER 停止');
-      task.schedule();
+      if (this.#markTerminal(activeRun, STATE.CANCELLED)) {
+        task.progress.setState(STATE.CANCELLED, '已由 OWNER 停止');
+      }
     }
     const killed = (runner && await runner.stop({ reason: 'stopped by owner (!stop)' })) || { killed: false, pid: null };
     this.runners.delete(channelId);
     if (task) await task.finish();
+    // Guarantee the terminal card exposes no live controls even if the run's own
+    // finally never repainted it (runner was already gone / no in-flight result).
+    if (stoppedMessage && stoppedProgress) {
+      await stoppedMessage.edit({ content: clip(stoppedProgress.render()), components: [] }).catch(() => {});
+    }
     await this.#refreshParentCard(channelId, { finalState: true }).catch(() => {});
+    const followUpLine = [
+      queued ? `⛔ 已取消排队中的任务（原队列位置 ${queued.position}）。` : null,
+      clearedFollowUps ? `已清空 ${clearedFollowUps} 条待执行的追加需求。` : null,
+      clearedInserts ? `已清空 ${clearedInserts} 条未处理的插入需求。` : null,
+    ].filter(Boolean);
     return [
       killed.pid
         ? `⛔ 已停止 Agent 进程树（pid ${killed.pid}）。`
@@ -2075,6 +2128,12 @@ export class DiscordControlPlane {
       // `continuations` = not deliverable live (race/unsupported), executed as an
       // extra turn in the SAME run/session so nothing is silently dropped.
       injected: [], continuations: [],
+      // P2.2.4: one monotonic outer lifecycle for the whole Work. `terminal`
+      // records the SINGLE terminal state (DONE/FAILED/CANCELLED) and makes any
+      // later transition a no-op. `settledInserts` keeps consumed/cancelled
+      // demands for truthful accounting.
+      terminal: null,
+      settledInserts: [],
     };
     this.workRuns.set(run.id, run);
     const chain = this.#chain(channelId);
@@ -2087,11 +2146,94 @@ export class DiscordControlPlane {
   #endRun(run) {
     if (!run) return;
     run.state = 'ended';
+    // Anything still pending never ran: mark it cancelled, never "unprocessed
+    // later" (that would misreport an already-applied live insert).
+    for (const record of [...(run.injected ?? []), ...(run.continuations ?? [])]) {
+      if (record.state !== INSERT_STATE.CONSUMED) record.state = INSERT_STATE.CANCELLED;
+      try { if (record.durableId) this.durableStore?.followUpRemove(record.durableId, { state: record.state }); } catch { /* audit-only */ }
+    }
+    run.settledInserts = [...(run.settledInserts ?? []), ...(run.injected ?? []), ...(run.continuations ?? [])];
     run.injected = [];
-    if (run.continuations) run.continuations = [];
+    run.continuations = [];
     this.workRuns.delete(run.id);
     const chain = this.workChains.get(run.channelId);
     if (chain?.activeRunId === run.id) chain.activeRunId = null;
+  }
+
+  /**
+   * Exactly one terminal transition per run. Returns false when the run already
+   * reached a DIFFERENT terminal state (DONE then RUNNING / STOPPED then DONE is
+   * impossible). Same-state repeats stay idempotent so a second Stop is harmless.
+   */
+  #markTerminal(run, state) {
+    if (!run) return true;
+    if (run.terminal) {
+      if (run.terminal !== state) {
+        console.warn(`[work-lifecycle] run=${run.id} ignore terminal=${state}; already=${run.terminal}`);
+        return false;
+      }
+      return true;
+    }
+    run.terminal = state;
+    console.log(`[work-lifecycle] run=${run.id} terminal=${state}`);
+    return true;
+  }
+
+  /**
+   * A successfully completed turn consumes every requirement delivered live into
+   * it. It already affected execution, so it must never be reported as
+   * "unprocessed" afterwards (P2.2.4 K6/L3).
+   */
+  #settleInjected(run, state = INSERT_STATE.CONSUMED) {
+    const records = Array.isArray(run?.injected) ? run.injected : [];
+    if (!records.length) return 0;
+    for (const record of records) {
+      record.state = state;
+      try { if (record.durableId) this.durableStore?.followUpRemove(record.durableId, { state }); } catch { /* audit-only */ }
+    }
+    run.settledInserts = [...(run.settledInserts ?? []), ...records];
+    run.injected = [];
+    return records.length;
+  }
+
+  /** Cancel only genuinely pending inserts/continuations of a stopped run. */
+  #cancelRunInserts(run, state = INSERT_STATE.CANCELLED) {
+    const records = [...(run?.injected ?? []), ...(run?.continuations ?? [])];
+    const pending = records.filter((record) => {
+      const current = record.state ?? (run.continuations?.includes(record) ? INSERT_STATE.QUEUED_CONTINUATION : INSERT_STATE.DELIVERED_LIVE);
+      return current !== INSERT_STATE.CONSUMED && current !== INSERT_STATE.CANCELLED;
+    });
+    for (const record of pending) {
+      record.state = state;
+      try { if (record.durableId) this.durableStore?.followUpRemove(record.durableId, { state }); } catch { /* audit-only */ }
+    }
+    if (run) {
+      run.settledInserts = [...(run.settledInserts ?? []), ...pending];
+      run.injected = (run.injected ?? []).filter((record) => !pending.includes(record));
+      run.continuations = (run.continuations ?? []).filter((record) => !pending.includes(record));
+    }
+    return pending.length;
+  }
+
+  /**
+   * Post a completed intermediate turn's result as its OWN immutable message,
+   * before the next continuation repaints the mutable progress card. Without
+   * this the continuation's RUNNING edit erased the turn's useful output
+   * (P2.2.4 K6/L2).
+   */
+  async #postTurnResult(message, turn, result, runLog) {
+    const body = [
+      `🟡 第 ${turn} 轮已完成，仍有插入需求/后续工作，任务继续。`,
+      runLog?.path ? `日志：\`${path.basename(runLog.path)}\`` : null,
+      '',
+      clip(redact(result?.text || '（无最终文本）'), 1800),
+    ].filter((line) => line !== null).join('\n');
+    try {
+      await message.reply?.({ content: body });
+      console.log(`[work-lifecycle] preserved turn=${turn} result as its own message`);
+    } catch (error) {
+      console.warn(`[work-lifecycle] could not preserve turn ${turn} result: ${redact(error?.message || error)}`);
+    }
   }
 
   #hasActiveWork(channelId) {
@@ -2148,7 +2290,9 @@ export class DiscordControlPlane {
     const s = this.sessionManager.get(channelId);
     const task = this.tasks.get(channelId);
     const model = task?.progress?.model || s.model || 'unknown';
-    const finished = ['DONE', 'FAILED', 'CANCELLED', 'TIMEOUT'].includes(progressState ?? '');
+    const runId = chain.activeRunId || chain.queuedRunId || null;
+    const liveRun = runId ? this.workRuns.get(runId) : null;
+    const finished = Boolean(liveRun?.terminal) || TERMINAL_PROGRESS_STATES.has(progressState);
     const workedMs = Math.max(0, Date.now() - (chain.cardStartedAt || Date.now()));
     const stateLine = finished ? `${icon} ${label}` : `${icon} ${label} · ${formatUptime(workedMs)}`;
     const content = [
@@ -2167,8 +2311,7 @@ export class DiscordControlPlane {
           .setStyle(ButtonStyle.Link),
       ));
     }
-    const runId = chain.activeRunId || chain.queuedRunId || null;
-    if (runId && !finished) rows.push(...workControlRows(runId));
+    if (liveRun && !finished) rows.push(...workControlRows(liveRun.id));
     return { content, components: rows };
   }
 
@@ -2247,10 +2390,11 @@ export class DiscordControlPlane {
       return;
     }
     const notice = chain.queuedNotice;
-    if (notice && chain.queuedRunId && this.workRuns.has(chain.queuedRunId)) {
+    const queuedRun = chain.queuedRunId ? this.workRuns.get(chain.queuedRunId) : null;
+    if (notice && queuedRun && !queuedRun.terminal) {
       const pending = chain.followUps.length;
       const base = `⏳ 排队中 · 追加需求：${pending} 条待执行`;
-      notice.edit({ content: base, components: workControlRows(chain.queuedRunId) }).catch(() => {});
+      notice.edit({ content: base, components: workControlRows(queuedRun.id) }).catch(() => {});
     }
   }
 
@@ -2365,18 +2509,26 @@ export class DiscordControlPlane {
     }
     if (!prepared) return { ok: false, reason: 'empty' };
 
+    // Re-check the run is still live and insertable: Stop may have landed while
+    // attachments were prepared, and a late insert must never be accepted after
+    // the run was frozen/terminal.
+    if (run.terminal || run.state === 'ended' || chain.activeRunId !== runId
+      || !this.#hasActiveWork(channelId) || this.tasks.get(channelId)?.cancelled) {
+      return { ok: false, reason: 'ended' };
+    }
+
     const runner = this.tasks.get(channelId)?.runner ?? this.runners.get(channelId);
     const supports = this.#supportsLiveInsert(channelId);
-    const record = { prompt: prepared, channelId, guildId, channel, at: Date.now() };
-    const durableId = `${channelId}:insert:${Date.now()}:${(run.injected?.length ?? 0) + 1}`;
+    const durableId = `${channelId}:insert:${Date.now()}:${++this.followUpSeq}`;
+    const record = { prompt: prepared, channelId, guildId, channel, at: Date.now(), durableId };
 
     if (supports && runner?.busy && typeof runner.injectRequirement === 'function') {
       const delivery = runner.injectRequirement(prepared);
       if (delivery?.delivered) {
-        run.injected.push(record);
+        run.injected.push({ ...record, state: INSERT_STATE.DELIVERED_LIVE });
         // Observable delivery receipt; the requirement body is never logged.
-        console.log(`[work-insert] run=${run.id} accepted mode=live bytes=${delivery.bytes ?? '-'}`);
-        try { this.durableStore?.followUpAdd({ id: durableId, runId: run.id, channelId, position: run.injected.length, state: 'INSERTED' }); } catch { /* audit-only */ }
+        console.log(`[work-insert] run=${run.id} accepted mode=live state=${INSERT_STATE.DELIVERED_LIVE} bytes=${delivery.bytes ?? '-'}`);
+        try { this.durableStore?.followUpAdd({ id: durableId, runId: run.id, channelId, position: run.injected.length, state: INSERT_STATE.DELIVERED_LIVE }); } catch { /* audit-only */ }
         return { ok: true, mode: 'inserted' };
       }
       console.log(`[work-insert] run=${run.id} live delivery rejected (${delivery?.reason ?? 'unknown'}); continuing in the same session`);
@@ -2385,10 +2537,10 @@ export class DiscordControlPlane {
     }
 
     run.continuations = run.continuations ?? [];
-    run.continuations.push(record);
-    try { this.durableStore?.followUpAdd({ id: durableId, runId: run.id, channelId, position: run.continuations.length, state: 'CONTINUATION' }); } catch { /* audit-only */ }
+    run.continuations.push({ ...record, state: INSERT_STATE.QUEUED_CONTINUATION });
+    try { this.durableStore?.followUpAdd({ id: durableId, runId: run.id, channelId, position: run.continuations.length, state: INSERT_STATE.QUEUED_CONTINUATION }); } catch { /* audit-only */ }
     const mode = supports ? 'continued' : 'unsupported';
-    console.log(`[work-insert] run=${run.id} accepted mode=${mode} pending=${run.continuations.length}`);
+    console.log(`[work-insert] run=${run.id} accepted mode=${mode} state=${INSERT_STATE.QUEUED_CONTINUATION} pending=${run.continuations.length}`);
     await this.#refreshParentCard(channelId).catch(() => {});
     return { ok: true, mode };
   }
@@ -2618,6 +2770,13 @@ export class DiscordControlPlane {
 
   async #runTaskNow(message, prompt, run = null) {
     const channelId = message.channelId;
+    // A run stopped while still queued must never start an Agent afterwards.
+    if (run?.terminal) {
+      console.log(`[work-lifecycle] run=${run.id} terminal=${run.terminal}; skipping queued start`);
+      this.#endRun(run);
+      await this.#refreshParentCard(channelId, { finalState: true }).catch(() => {});
+      return;
+    }
     const chState = this.sessionManager.get(channelId);
     let runner;
     try { runner = await this.getRunner(channelId); }
@@ -2641,7 +2800,7 @@ export class DiscordControlPlane {
     // The active card keeps its controls across progress edits; a terminal
     // update clears them so a finished card cannot control a newer run.
     const activeComponents = () => {
-      if (!run || this.workRuns.get(run.id) !== run || run.state === 'ended') return null;
+      if (!run || this.workRuns.get(run.id) !== run || run.state === 'ended' || run.terminal) return null;
       return workControlRows(run.id);
     };
     const statusMessage = await message.reply({ content: progress.render(), components: activeComponents() ?? [] });
@@ -2760,18 +2919,36 @@ export class DiscordControlPlane {
         }
         console.log(`[task] turn=${turn} channel=${channelId} isError=${Boolean(result.isError)} tools=${result.tools.length} durationMs=${result.durationMs}`);
 
+        // A successful turn consumes every requirement that was delivered live
+        // into it, so Stop/cleanup can never later call it "unprocessed".
+        if (!result.isError && !task.cancelled) this.#settleInjected(run, INSERT_STATE.CONSUMED);
+
+        // Decide the continuation BEFORE any terminal rendering: an Agent turn
+        // ending is not the Work ending while a continuation still remains.
         const next = run?.continuations?.length && !result.isError && !task.cancelled
           ? run.continuations.shift()
           : null;
         if (!next) break;
+
+        // Preserve this turn's completed result as its own immutable message
+        // before the continuation repaints the mutable progress card.
+        await this.#postTurnResult(message, turn, result, runLog);
+        // Stop may have landed while the result message was being sent.
+        if (task.cancelled || run?.terminal) {
+          throw Object.assign(new Error('stopped by owner'), { code: 'TASK_CANCELLED' });
+        }
+        next.state = INSERT_STATE.CONSUMED;
         console.log(`[work-insert] run=${run.id} continuation turn=${turn + 1} (same session, no new run)`);
-        try { this.durableStore?.followUpRemove(`continuation:${run.id}:${turn}`, { state: 'EXECUTED' }); } catch { /* audit-only */ }
+        try { if (next.durableId) this.durableStore?.followUpRemove(next.durableId, { state: 'EXECUTED' }); } catch { /* audit-only */ }
         progress.setState(STATE.RUNNING, '继续执行插入的需求');
-        await editor.flushNow(progress.render());
+        await editor.flushNow(progress.render(), activeComponents());
         turnPrompt = next.prompt;
       }
 
-      progress.setState(result.isError ? STATE.FAILED : STATE.DONE);
+      // Guard every terminal transition with the one-transition ledger so a run
+      // can never emit DONE and then RUNNING, or STOPPED and then DONE.
+      const finalState = result.isError ? STATE.FAILED : STATE.DONE;
+      if (this.#markTerminal(run, finalState)) progress.setState(finalState);
       if (result.isError) this.limits?.noteFailure(channelId, result.text);
       else this.limits?.noteSuccess(channelId);
       console.log(`[task] done channel=${channelId} state=${progress.state} turns=${turn} tools=${result.tools.length} durationMs=${result.durationMs} tests=${progress.tests || '-'}`);
@@ -2797,16 +2974,16 @@ export class DiscordControlPlane {
       const cancelled = task.cancelled || error?.code === 'TASK_CANCELLED';
       if (cancelled) {
         progress.clearStall();
-        progress.setState(STATE.CANCELLED, '已由 OWNER 停止');
+        if (this.#markTerminal(run, STATE.CANCELLED)) progress.setState(STATE.CANCELLED, '已由 OWNER 停止');
         console.log(`[task] cancelled channel=${channelId} reason=${detail}`);
       } else if (error?.code === 'TASK_TIMEOUT') {
         progress.clearStall();
-        progress.setState(STATE.TIMEOUT, '任务达到时间上限');
+        if (this.#markTerminal(run, STATE.TIMEOUT)) progress.setState(STATE.TIMEOUT, '任务达到时间上限');
         const failures = this.limits?.noteFailure(channelId, error);
         console.log(`[task] timeout channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
       } else {
         progress.clearStall();
-        progress.setState(STATE.FAILED, 'Agent 执行失败');
+        if (this.#markTerminal(run, STATE.FAILED)) progress.setState(STATE.FAILED, 'Agent 执行失败');
         const failures = this.limits?.noteFailure(channelId, error);
         console.log(`[task] failed channel=${channelId} consecutiveFailures=${failures ?? '-'} error=${detail}`);
       }
@@ -2994,7 +3171,8 @@ export class DiscordControlPlane {
         await this.#ephemeral(interaction, '该任务已结束。');
         return;
       }
-      const text = await this.#stopChannel(run.channelId);
+      // Pass the card's run id so a stale Stop can never target a newer run.
+      const text = await this.#stopChannel(run.channelId, { runId });
       // Clear the card controls; the outcome goes out as an ephemeral follow-up
       // so the terminal progress repaint cannot hide it.
       const base = interaction.message?.content ?? '';

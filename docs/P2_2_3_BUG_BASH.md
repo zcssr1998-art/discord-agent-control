@@ -120,6 +120,60 @@ in `logs/` and the focused smoke scripts.
 
 ---
 
+## K6 — Work lifecycle / insert / Stop state inconsistency (P2.2.4)
+
+- **Severity:** release blocker (displayed lifecycle != actual lifecycle; insert
+  accounting != actual execution).
+- **Repro (owner real Hunyuan3D install):** an intermediate Agent turn was shown
+  as `✅ 已完成` although the same Work still had a queued continuation; the
+  completed turn's result disappeared when the continuation repainted the mutable
+  progress card; Stop later reported `已清空 1 条未处理的插入需求` for a live insert
+  that had in fact changed the install path; Stop needed several presses; a
+  terminal STOPPED card still exposed Insert/Stop controls.
+- **Root causes:**
+  1. the terminal DONE transition was rendered from the turn result without a
+     durable notion of "the Work is still non-terminal"; `run.continuations` was
+     consumed in a window that could be missed, and completed-turn output lived
+     only in the mutable progress card body;
+  2. `run.injected` records were never settled: a live insert stayed "pending"
+     until `#endRun`, so Stop counted an already-applied requirement as
+     unprocessed;
+  3. Stop had no single terminal ledger and no stale-run guard, so late/duplicate
+     interactions could race the runner shutdown; queued `run.continuations`
+     durable ids (`continuation:${runId}:${turn}`) never matched the row that was
+     actually inserted;
+  4. terminal rendering relied on the run's own `finally` to clear controls.
+- **Fix:**
+  - explicit insert state machine (`INSERT_STATE`: RECEIVED / DELIVERED_LIVE /
+    QUEUED_CONTINUATION / CONSUMED / CANCELLED); a successful turn settles every
+    live delivery as CONSUMED and an executed continuation as EXECUTED, so Stop's
+    "unprocessed" count is truthful;
+  - one monotonic terminal ledger per run (`#markTerminal`): DONE / FAILED /
+    CANCELLED are mutually exclusive; a late event can never flip a terminal card
+    back to RUNNING, and a finished DONE run cannot become STOPPED;
+  - continuation decision happens before any terminal render, and the completed
+    turn result is posted as its own immutable message (`#postTurnResult`) before
+    the next turn repaints the card;
+  - Stop is one-shot, idempotent and stale-safe (`#stopChannel(channelId,
+    { runId })`): it freezes the run, cancels only genuinely pending demands,
+    kills the real process tree once, renders STOPPED once, and a stale `workctl`
+    id returns `该任务已结束` without touching a newer run;
+  - terminal cards never carry live controls (`activeComponents`, parent card).
+- **Files:** `src/discord-ui.mjs`, `scripts/p224-lifecycle-e2e.mjs`,
+  `package.json` (`smoke:p224-lifecycle`).
+- **Tests:** `tests/v4-p224-work-lifecycle.test.mjs` (10 required scenarios:
+  no intermediate DONE; durable result; live-insert settle; continuation
+  execute; single-press Stop; idempotent Stop; control-free terminal card;
+  stale-control isolation; monotonic terminal; no duplicate Agent/lock).
+  Adjusted `tests/v4-p22-insert.test.mjs` for the new durable intermediate
+  result message.
+- **Real E2E:** `npm run smoke:p224-lifecycle` → 21/21 on the real machine (real
+  credential + Claude Code + real hook server + real Windows process tree):
+  false-DONE monitor clean, turn-1 result preserved, live insert CONSUMED and
+  continuation EXECUTED, Stop after DONE reports no unprocessed insert, one Stop
+  press kills the pid tree, terminal card control-free, stale Stop rejected.
+- **Status:** FIXED.
+
 ## Adjacent defects found by the matrix
 
 ### P223-B1 — staged-secret scan blocked the bridge event loop
