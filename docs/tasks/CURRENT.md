@@ -1,18 +1,29 @@
 # Active task
 
-None.
+Current execution specification:
 
-Last task completed: `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md` (P2.2.4
-Work lifecycle / insert / Stop correctness). See `docs/P2_2_3_BUG_BASH.md` K6 and
-`docs/CURRENT.md` for the delivered state and evidence.
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
 
 Branch: `jarvis-v4-p2-2-hardening`
 
-## Do not redo
+## Scope
+
+Close P2 cleanly into `main`:
+
+1. verify latest hardening head and release gates;
+2. merge PR #4 (`jarvis-v4-p2-control-context` -> `main`) first;
+3. retarget/reconcile PR #5 (`jarvis-v4-p2-2-hardening`) onto the new `main`;
+4. verify PR #5 against new main and merge it second;
+5. run final short real-machine smoke from `main`;
+6. update repository closeout state and stop.
+
+Owner P2.2.4 insert/lifecycle + single-Stop real-Discord smoke is already PASS. Do not redo the long Hunyuan3D reproduction.
+
+## Do not redo / regress
 
 - P2.2.1 Supervisor/autostart/watchdog recovery;
 - P2.2.2 Chat AUTO/manual selection;
-- P2.2.3 K1–K5 fixes (pagination, ACK, help, FULL semantics, unlimited duration);
-- P2.2.4 K6 lifecycle fixes.
+- P2.2.3 pagination, ACK, help, FULL semantics, unlimited Work duration;
+- P2.2.4 monotonic lifecycle, insert accounting, one-shot Stop, stale-control safety.
 
-Do not start P3.
+Do not start P3 and do not delete remote P2 branches automatically in this task.
