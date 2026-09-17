@@ -1,7 +1,5 @@
 # Current project state
 
-Keep this file compact. It is the first project-state file a new worker should read.
-
 ## Branch
 
 `jarvis-v4-p2-2-hardening`
@@ -10,92 +8,50 @@ Stacked on P2/P2.1. Do not merge P2.2 yet.
 
 ## Current milestone
 
-Jarvis V4 P2.2.3 — repository-wide stabilization / full bug bash.
+Jarvis V4 P2.2.4 — Work lifecycle / insert / terminal-state correctness.
 
-Authoritative execution specs:
+Authoritative spec:
 
-- `docs/JARVIS_V4_P2_2_3_REPOSITORY_STABILIZATION_TASK.md`
-- `docs/JARVIS_V4_P2_2_3_RUNTIME_POLICY_ADDENDUM.md` (mandatory K4/K5 blockers discovered by real Work)
+`docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`
 
-## P2.2.3 status: fixes complete, awaiting owner real-Discord click validation
+## Why this milestone exists
 
-All reproducible in-scope blockers are fixed with deterministic regression and
-real-machine evidence. Compact ledger: `docs/P2_2_3_BUG_BASH.md`.
+P2.2.3 closed K1–K5 and passed broad regression, but owner real-Discord validation exposed a remaining lifecycle bug cluster in a long Hunyuan3D Work:
 
-Closed release blockers:
+- an intermediate Agent turn was shown as `✅ 已完成` although the same Work still had continuation work and resumed running;
+- useful completed-turn output was overwritten/disappeared when the mutable progress card returned to RUNNING;
+- a live insert that had already successfully changed installation behavior was later falsely counted by Stop as `1 条未处理的插入需求`;
+- Stop required repeated owner interaction before the task visibly settled;
+- terminal STOPPED UI still exposed active Insert/Stop controls.
 
-- K1 many-model Chat UI fake `<model-id>` placeholder → real pagination;
-- K2 interaction ACK reliability → full ACK matrix + removed the synchronous
-  `policy.mjs` git scan that could block the bridge event loop for up to 3s;
-- K3 help view referenced controls it did not show → real controls added;
-- K4 FULL was not FULL (policy ordering + Work-thread inheritance via
-  `switchLevel`) → hard guards first, FULL allows routine calls, trusted
-  `inheritLevel()` copies FULL exactly;
-- K5 arbitrary 900s Work kill → production default unlimited
-  (`TASK_TIMEOUT_MS=0`), explicit positive operator limit optional, startup
-  preflight separately bounded.
+These are release-blocking correctness issues: displayed lifecycle != actual lifecycle, and insert accounting != actual execution.
 
-Verification (real machine):
+## Required invariants
 
-- `npm test` 350 pass; `npm run check` clean;
-- `smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25, `smoke:p22-insert`
-  14/14, `smoke:p22-model` 6/6, `smoke:p22-workspace` 8/8, `verify:hook` 9/9,
-  `doctor:discord` login OK;
-- `smoke:p223-full` 15/15 (real FULL Work with 0 approval prompts; real `!stop`);
-- supervisor recovery `23/23` (kill bridge/LiteLLM/supervisor auto-recovered,
-  one bridge instance; machine not rebooted).
-
-## Remaining / external
-
-- Owner-only: real Discord click/typing of `/panel`, `/model`, `/status`,
-  `/doctor` after the final commit.
-- WorkBuddy gateway `403 request illegal` (external, documented in
-  `docs/WINDOWS_SMOKE.md`) still blocks WorkBuddy-executor agent smokes such as
-  `smoke:local`; the bridge reports it unavailable and keeps other providers.
+- one Work has one monotonic outer lifecycle and exactly one terminal state: DONE / STOPPED / FAILED;
+- Agent turn completion is not Work completion when continuations/follow-ups remain;
+- completed-turn result output remains visible when later turns start;
+- live inserts and queued continuations have truthful consumed/pending/cancelled accounting;
+- one valid Stop request is sufficient to kill the actual process tree and settle the run;
+- repeated/stale controls are idempotent and cannot mutate newer runs;
+- terminal cards expose no active controls.
 
 ## Baselines to preserve
 
-P2.2.1 recovery:
+P2.2.1:
+- persistent Supervisor / LiteLLM / Task Scheduler watchdog recovery;
+- one bridge instance / process cleanup.
 
-- persistent Supervisor with unlimited bounded-backoff recovery;
-- Bridge process isolation;
-- LiteLLM continuous health/recovery;
-- Task Scheduler AtLogOn + 1-minute watchdog recovery;
-- single-instance/process cleanup invariants.
+P2.2.2:
+- Chat default AUTO, selectable manual pin, persistence, placeholder repair.
 
-P2.2.2 Chat selection:
-
-- fresh/default Chat = AUTO/null;
-- AUTO is selectable default, not a lock;
-- real manual Provider/model pin persists and never silently falls back;
-- explicit switch back to AUTO;
-- placeholder IDs cannot persist and old bad state repairs to AUTO/null;
-- Chat and Work model selections remain independent.
-
-## Audit scope
-
-The active task covers existing product behavior only: native/text commands, control-panel/button/modal UX, Chat routing, Work orchestration, permissions/approvals, workspace/session/state persistence, attachments/context controls, queue/stop/live insert, startup/recovery/LiteLLM/process lifecycle, failure handling and help/status/diagnostics consistency.
-
-Every reproducible in-scope bug found by the matrix must be fixed, explicitly externally blocked, or proven to be a new out-of-scope feature request. K4/K5 may not be deferred.
-
-## Required evidence
-
-Maintain `docs/P2_2_3_BUG_BASH.md` as the compact bug ledger. Run deterministic regression plus focused real Windows/Discord/provider E2E as defined by the main taskbook and runtime-policy addendum. Do not fabricate owner-only Discord interaction evidence.
-
-## Preserve
-
-- ordinary Chat never starts an Agent;
-- Work model selection/persistence independent from Chat;
-- LiteLLM primary + OpenCode Go direct architecture;
-- AUTO does not unexpectedly use disallowed metered routes;
-- Stop controls the real session/process;
-- no secrets in repo/logs/evidence.
-
-## Non-goals
-
-No P3 finance/market monitoring, Longbridge/Futu, new provider architecture, voice, web dashboard, Agent-swarm product feature, Redis/Postgres, Windows Service/NSSM/PM2/Docker, or speculative rewrite.
+P2.2.3:
+- real paginated model selection;
+- Discord interaction ACK hardening;
+- help/control consistency;
+- FULL means no routine re-approval and Work threads inherit FULL exactly;
+- production Work duration is unlimited by default (`TASK_TIMEOUT_MS=0`).
 
 ## Next action
 
-Commit/push the verified stabilization work and verify remote HEAD. Then the
-owner performs the final real-Discord interaction confirmation. Do not start P3.
+Execute `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md`, add focused deterministic regression and one small real Work lifecycle smoke, append the finding/fix to `docs/P2_2_3_BUG_BASH.md`, commit + push, verify remote HEAD, then stop. Do not start P3.
