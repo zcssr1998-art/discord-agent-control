@@ -167,7 +167,7 @@ test('a saved model the provider no longer offers fails loudly and never silentl
     () => plane.getRunner(fake.channelId),
     (error) => {
       assert.equal(error.code, 'MODEL_UNAVAILABLE');
-      assert.match(error.message, /已保存模型 .* 当前不可用，请重新使用 !model 选择模型。/);
+      assert.match(error.message, /已保存模型 .* 当前不可用，请重新使用 \/model 或 !models 选择模型。/);
       return true;
     },
   );

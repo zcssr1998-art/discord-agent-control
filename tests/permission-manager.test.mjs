@@ -16,12 +16,12 @@ test('permissions default to STANDARD and every FULL entry needs confirmation', 
   assert.equal(permissions.switchLevel('c1', LEVEL.FULL).needsConfirm, true);
 });
 
-test('a running session sees a permission change on its next tool call', () => {
+test('a running session sees a permission change on its next tool call', async () => {
   const permissions = new PermissionManager();
   permissions.syncSession('s1', 'c1');
-  assert.equal(permissions.classify({ sessionId: 's1', toolName: 'PowerShell', toolInput: { command: 'echo ok' }, cwd }).decision, 'ask');
+  assert.equal((await permissions.classify({ sessionId: 's1', toolName: 'PowerShell', toolInput: { command: 'echo ok' }, cwd })).decision, 'ask');
   permissions.switchLevel('c1', LEVEL.RELAXED);
-  assert.equal(permissions.classify({ sessionId: 's1', toolName: 'PowerShell', toolInput: { command: 'echo ok' }, cwd }).decision, 'allow');
+  assert.equal((await permissions.classify({ sessionId: 's1', toolName: 'PowerShell', toolInput: { command: 'echo ok' }, cwd })).decision, 'allow');
 });
 
 test('raising permission does not resolve an approval that is already pending', async () => {

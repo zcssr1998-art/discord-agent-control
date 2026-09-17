@@ -114,6 +114,23 @@ export function panelBackRow() {
   );
 }
 
+/**
+ * The help view carries the real controls its copy references (`⚙️ 设置`,
+ * `🔐 权限`, `🛠 新建 Work`, `⛔ Stop`) so they are never described as
+ * clickable while absent. Handlers are the existing `panel:*` ones.
+ */
+export function panelHelpRows() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('panel:newwork').setLabel('🛠 新建 Work').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('panel:settings').setLabel('⚙️ 设置').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('panel:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('panel:stop').setLabel('⛔ Stop').setStyle(ButtonStyle.Danger),
+    ),
+    panelBackRow(),
+  ];
+}
+
 export function panelModelRows() {
   return [
     new ActionRowBuilder().addComponents(
@@ -138,21 +155,40 @@ export function workControlRows(runId) {
   ];
 }
 
-export function providerModelRows(prefix, providerId, items, { current = null } = {}) {
-  if (!items.length || items.length > 20) return null;
+/**
+ * Paginated model buttons for one provider. Returns `{ rows, page, pages }`
+ * with a nav row whenever the list spans more than one page, so a provider
+ * with many models (e.g. OpenCode Go) always has a real selectable path in
+ * Discord instead of a fake `<model-id>` placeholder instruction.
+ * Discord allows at most 5 action rows per message; 15 models = 3 rows, plus
+ * nav + Back still fits.
+ */
+export const MODEL_PAGE_SIZE = 15;
+
+export function providerModelRows(prefix, providerId, items, { current = null, page = 1, pageSize = MODEL_PAGE_SIZE } = {}) {
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  const pageNow = Math.min(pages, Math.max(1, Number(page) || 1));
+  const slice = items.slice((pageNow - 1) * pageSize, pageNow * pageSize);
   const rows = [];
-  for (let i = 0; i < items.length; i += 5) {
+  for (let i = 0; i < slice.length; i += 5) {
     rows.push(new ActionRowBuilder().addComponents(
-      ...items.slice(i, i + 5).map((item) => new ButtonBuilder()
+      ...slice.slice(i, i + 5).map((item) => new ButtonBuilder()
         .setCustomId(`${prefix}:${providerId}:${item.id}`)
         .setLabel(item.id === current ? `✓ ${item.label}`.slice(0, 80) : String(item.label).slice(0, 80))
         .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)),
     ));
   }
-  return rows;
+  if (pages > 1) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${prefix}nav:${providerId}:${pageNow - 1}`).setLabel('⬅️ 上一页').setStyle(ButtonStyle.Secondary).setDisabled(pageNow <= 1),
+      new ButtonBuilder().setCustomId(`${prefix}nav:${providerId}:${pageNow + 1}`).setLabel('下一页 ➡️').setStyle(ButtonStyle.Secondary).setDisabled(pageNow >= pages),
+    ));
+  }
+  return { rows, page: pageNow, pages };
 }
 
 export const SETTINGS_MODEL_LIMIT = 20;
+export const CHOICE_PAGE_SIZE = 10;
 
 export function choiceRows(prefix, items, { current = null } = {}) {
   if (!items.length || items.length > 25) return null;
@@ -167,6 +203,30 @@ export function choiceRows(prefix, items, { current = null } = {}) {
     ));
   }
   return rows;
+}
+
+/** Paginated variant of `choiceRows` for lists that can exceed one page. */
+export function pagedChoiceRows(prefix, items, { current = null, page = 1, pageSize = CHOICE_PAGE_SIZE } = {}) {
+  const pages = Math.max(1, Math.ceil(items.length / pageSize));
+  const pageNow = Math.min(pages, Math.max(1, Number(page) || 1));
+  const slice = items.slice((pageNow - 1) * pageSize, pageNow * pageSize);
+  const rows = [];
+  for (let i = 0; i < slice.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(
+      ...slice.slice(i, i + 5).map((item) => new ButtonBuilder()
+        .setCustomId(`${prefix}:${item.id}`)
+        .setLabel(item.id === current ? `✓ ${item.label}`.slice(0, 80) : String(item.label).slice(0, 80))
+        .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        .setDisabled(Boolean(item.disabled))),
+    ));
+  }
+  if (pages > 1) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${prefix}nav:${pageNow - 1}`).setLabel('⬅️ 上一页').setStyle(ButtonStyle.Secondary).setDisabled(pageNow <= 1),
+      new ButtonBuilder().setCustomId(`${prefix}nav:${pageNow + 1}`).setLabel('下一页 ➡️').setStyle(ButtonStyle.Secondary).setDisabled(pageNow >= pages),
+    ));
+  }
+  return { rows, page: pageNow, pages };
 }
 
 function modelPageButtons(page, pages) {

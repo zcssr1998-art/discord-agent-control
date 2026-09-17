@@ -165,10 +165,14 @@ export class ExecutorManager {
     return Boolean(executor?.capabilities?.includes('live-steering'));
   }
 
-  /** The wire protocol a given Provider/model pair is served over. */
+  /**
+   * The wire protocol a given Provider/model pair is served over. `model` may be
+   * a model id or a `{ id }` object: accepting only the string form used to turn
+   * an accidental object argument into a silent `unknown` at the call site.
+   */
   resolveTransport(provider, model) {
     if (!provider) return null;
-    if (provider.protocol === PROTOCOL.OPENCODE_GO) return openCodeGoTransport(model);
+    if (provider.protocol === PROTOCOL.OPENCODE_GO) return openCodeGoTransport(model?.id ?? model);
     if (provider.protocol === PROTOCOL.ANTHROPIC) return TRANSPORT.ANTHROPIC_MESSAGES;
     if (provider.protocol === PROTOCOL.OPENAI) return TRANSPORT.OPENAI_CHAT;
     if (provider.protocol === PROTOCOL.WORKBUDDY) return 'workbuddy';

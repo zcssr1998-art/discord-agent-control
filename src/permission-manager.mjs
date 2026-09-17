@@ -87,6 +87,23 @@ export class PermissionManager {
     return { ok: true, previous, current: LEVEL.FULL, changed: previous !== LEVEL.FULL };
   }
 
+  /**
+   * Trusted internal inheritance for a child channel (e.g. a new Work thread
+   * created from a parent). It copies the parent's already-effective level
+   * EXACTLY, including FULL, without routing through the owner-facing
+   * confirmation. `switchLevel()` deliberately refuses FULL unless confirmed,
+   * so using it here silently downgraded a FULL parent's thread to STANDARD.
+   * This method must never be reachable from a user-facing switch control.
+   */
+  inheritLevel(channelId, level) {
+    const previous = this.getLevel(channelId);
+    if (!Object.values(LEVEL).includes(level)) {
+      return { ok: false, previous, current: previous, changed: false };
+    }
+    this.#setLevel(channelId, level);
+    return { ok: true, previous, current: level, changed: previous !== level };
+  }
+
   /** 重置指定 channel 的权限为默认值（!reset / !cwd / bridge 重启时调用）。 */
   reset(channelId, reason = 'reset') {
     const previous = this.getLevel(channelId);
@@ -98,7 +115,7 @@ export class PermissionManager {
     return { previous, current, changed: previous !== current, reason };
   }
 
-  classify({ sessionId, ...toolCall }) {
+  async classify({ sessionId, ...toolCall }) {
     return classifyToolCall({ ...toolCall, permissionLevel: this.getLevelBySession(sessionId) });
   }
 

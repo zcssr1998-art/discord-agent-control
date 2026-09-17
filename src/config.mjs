@@ -102,8 +102,16 @@ export function loadConfig() {
     maxWorkFollowUps: int('MAX_WORK_FOLLOWUPS', 10),
 
     // --- runaway protection ----------------------------------------------
-    // Hard wall-clock cap on one task. Hitting it kills the agent process.
-    taskTimeoutMs: int('TASK_TIMEOUT_MS', 900000),
+    // NO hard wall-clock cap on one task by default. A healthy Agent runs until
+    // it finishes, the owner stops it, the process exits/fails, or an operator
+    // sets an explicit positive TASK_TIMEOUT_MS. `0`/unset means unlimited; a
+    // positive value is an opt-in operator limit and only then kills the Agent.
+    // Duration alone is never a failure condition.
+    taskTimeoutMs: int('TASK_TIMEOUT_MS', 0),
+    // The startup backend preflight must stay bounded even when Work is
+    // unlimited, so it has its own explicit timeout instead of borrowing the
+    // (now unlimited) task timeout.
+    backendProbeTimeoutMs: int('BACKEND_PROBE_TIMEOUT_MS', 180000),
     // If the agent produces no event at all for this long, the control plane
     // repaints the status message with "仍在等待 …". It never calls the model, so
     // a silent agent is visible without spending tokens.

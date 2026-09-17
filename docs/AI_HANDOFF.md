@@ -16,27 +16,34 @@ Mandatory blocking addendum:
 
 ## Current status
 
-P2.2.1 Supervisor recovery and P2.2.2 Chat model selection are complete and must be preserved. The owner requested a repository-wide stabilization pass because adjacent bugs kept surfacing.
+P2.2.1 recovery and P2.2.2 Chat selection are complete and preserved. The P2.2.3
+stabilization pass (main taskbook + runtime-policy addendum) is code-complete:
 
-The first real P2.2.3 Work run exposed two additional release blockers:
+- K1 fake many-model placeholder → real pagination;
+- K2 interaction ACK matrix + removed the synchronous `policy.mjs` git scan that
+  blocked the bridge event loop (likely cause of intermittent timeouts);
+- K3 help view now carries the controls its copy references;
+- K4 FULL is a real no-routine-approval policy and Work threads inherit FULL
+  exactly (`PermissionManager.inheritLevel`); hard secret guards still apply;
+- K5 production Work has no default wall-clock cap (`TASK_TIMEOUT_MS=0`);
+  explicit positive operator limit optional; startup preflight separately bounded.
 
-1. **FULL is not really FULL.** `policy.mjs` asks on sensitive paths before reaching the FULL allow branch. Separately, Work-thread creation inherits permission with `switchLevel(thread.id, parentLevel)`; FULL returns `needsConfirm` and is not applied, so the child silently executes as STANDARD.
-2. **Work is hard-killed after 900s.** `TASK_TIMEOUT_MS` defaults to `900000` and `runTask` kills the Agent on wall-clock expiry. The owner explicitly rejects arbitrary duration caps.
+Ledger with repro/root cause/fix/verification: `docs/P2_2_3_BUG_BASH.md`.
 
-Required semantics are in the addendum: confirmed FULL means no routine approval prompts and exact child-thread inheritance (hard secret-leak/secret-commit guards remain); default Work duration is unlimited, with explicit Stop/process failure/optional positive operator timeout as termination paths. Stall/heartbeat is visibility only.
+Real-machine evidence in this pass: `npm test` 350 pass, `check` clean,
+`smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25, `smoke:p22-insert`
+14/14, `smoke:p22-model` 6/6, `smoke:p22-workspace` 8/8, `smoke:p223-full` 15/15
+(real FULL Work, 0 prompts, real Stop), `verify:hook` 9/9, `doctor:discord`
+login OK, supervisor recovery 23/23.
 
-Other already-reproduced mandatory findings:
+Remaining: owner real-Discord click/typing confirmation; WorkBuddy gateway 403 is
+an external blocker for WorkBuddy-executor agent smokes only.
 
-- many-model Chat UI emits fake runnable `<model-id>` placeholder text;
-- previous `/status` `该应用程序未响应` requires complete interaction ACK coverage;
-- help text can reference controls not actually visible in that view.
+## Resume order (if continuing)
 
-## Resume order
-
-1. Pull latest branch/state.
-2. Check whether the previous timed-out Worker/process/session still exists; resume if possible rather than starting duplicate work.
-3. Fix K4/K5 first because they block a trustworthy long stabilization run.
-4. Continue the main taskbook matrix and write findings to `docs/P2_2_3_BUG_BASH.md`.
+1. Pull latest branch/state and read `docs/P2_2_3_BUG_BASH.md`.
+2. Do not redo K1–K5; only owner real-Discord validation remains for P2.2.3.
+3. Do not start P3.
 
 ## Preserve
 

@@ -824,3 +824,41 @@ npm run verify:opencode-go   -> 17/17（MiniMax anthropic-messages 直连路线�
 npm run verify:claude-opencode-chat -> 30/30
 verify:hook / smoke:discord  -> WorkBuddy 403，标记 BLOCKED_BY_WORKBUDDY
 ```
+
+
+---
+
+## 15. P2.2.3 repository stabilization evidence (2026-09-17)
+
+Real Windows machine. All commands run against the real branch
+`jarvis-v4-p2-2-hardening`; no secret is printed.
+
+```text
+npm test                             -> 350 pass / 0 fail
+npm run check                        -> 111 file(s), 0 failed
+npm run smoke:p2                     -> 11/11  (real Chat + vision + Work thread)
+npm run smoke:p22                    -> 10/10  (instance lock, durable store, autostart)
+npm run smoke:p222                   -> 25/25  (real Chat model selection / restart)
+npm run smoke:p22-insert             -> 14/14  (real live insert, one Agent/session)
+npm run smoke:p22-model              -> 6/6    (real model restore across processes)
+npm run smoke:p22-workspace          -> 8/8    (real workspace persistence)
+npm run smoke:p223-full              -> 15/15  (K4/K5 real FULL Work, 0 prompts, real Stop)
+npm run verify:hook                  -> 9/9    (global hook fires; inert otherwise)
+npm run doctor:discord               -> login OK (Jarvis#8605, 1 guild)
+verify:opencode-go                   -> 17/17
+verify:claude-opencode-chat          -> 30/30
+scripts/smoke-supervisor-recovery.ps1-> 23/23  (kill bridge/LiteLLM/supervisor auto-recovery)
+```
+
+K4/K5 real-machine behavior after the fix:
+
+- setting the parent channel to FULL once yields a Work thread that reports
+  全开放 and completes a multi-step repo task with **zero** approval prompts;
+- `git add .env` is still hard-denied (secret guard independent of FULL);
+- production Work has **no** wall-clock cap (`TASK_TIMEOUT_MS=0`); a real 45s
+  `Start-Sleep` task stayed RUNNING and was terminated only by owner `!stop`.
+
+Known external blocker unchanged: WorkBuddy gateway returns
+`HTTP 403 provider 11140 request illegal`, so `smoke:local` agent-driven checks
+and WorkBuddy-executor Work tasks remain BLOCKED_BY_WORKBUDDY. Other providers
+remain usable and the bridge reports WorkBuddy as unavailable.

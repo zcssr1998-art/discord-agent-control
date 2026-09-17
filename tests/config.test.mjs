@@ -12,7 +12,8 @@ const KEYS = [
   'CLAUDE_COMMAND', 'DEFAULT_CWD', 'APPROVAL_HOST', 'APPROVAL_PORT', 'APPROVAL_TIMEOUT_MS',
   'AUTO_ALLOW_WORKSPACE_WRITES', 'AUTO_ALLOW_TEST_COMMANDS', 'CLAUDE_PARTIAL_MESSAGES',
   'PROGRESS_THROTTLE_MS', 'LOG_DIR', 'DISCORD_PROXY',
-  'AGENT_BACKEND', 'ALLOW_PAID_FALLBACK', 'TASK_TIMEOUT_MS', 'MAX_CONSECUTIVE_FAILURES', 'MAX_PROCESS_RESTARTS',
+  'AGENT_BACKEND', 'ALLOW_PAID_FALLBACK', 'TASK_TIMEOUT_MS', 'BACKEND_PROBE_TIMEOUT_MS',
+  'MAX_CONSECUTIVE_FAILURES', 'MAX_PROCESS_RESTARTS',
   'WORKBUDDY_CLI', 'WORKBUDDY_HOME', 'NOTIFY_ON_START',
 ];
 
@@ -45,7 +46,8 @@ test('defaults are safe and documented', () => {
     assert.equal(c.autoAllowTestCommands, true);
     assert.equal(c.agentBackend, 'workbuddy-free-dsf');
     assert.equal(c.allowPaidFallback, false, 'paid fallback must be opt-in, never a default');
-    assert.equal(c.taskTimeoutMs, 900000, 'a task must not be able to run forever');
+    assert.equal(c.taskTimeoutMs, 0, 'no hard Work wall-clock cap by default (0 = unlimited)');
+    assert.equal(c.backendProbeTimeoutMs, 180000, 'the startup preflight stays bounded');
     assert.equal(c.maxConsecutiveFailures, 3);
     assert.equal(c.maxProcessRestarts, 5);
   });
@@ -80,6 +82,12 @@ test('CLAUDE_COMMAND=workbuddy fails loudly when the CLI cannot be found', () =>
       assert.match(String(error.message), /could not be found|WORKBUDDY_CLI/);
     }
     assert.ok(threw || true);
+  });
+});
+
+test('an explicit positive TASK_TIMEOUT_MS remains an opt-in operator limit', () => {
+  withEnv({ DISCORD_TOKEN: 't', DISCORD_OWNER_ID: '1', TASK_TIMEOUT_MS: '120000' }, () => {
+    assert.equal(loadConfig().taskTimeoutMs, 120000);
   });
 });
 

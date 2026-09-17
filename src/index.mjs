@@ -289,7 +289,9 @@ async function main() {
     extraEnv: workbuddyProbeEnv.env,
     envUnset: workbuddyProbeEnv.envUnset,
     inheritEnv: false,
-    timeoutMs: config.taskTimeoutMs,
+    // Bounded independently: taskTimeoutMs may be 0 (unlimited Work), but the
+    // startup preflight must never hang forever on a wedged CLI.
+    timeoutMs: config.backendProbeTimeoutMs,
   });
   const verdict = assertBackendAllowed(probe.backend, { allowPaidFallback: config.allowPaidFallback, expected: config.agentBackend });
   const probeDetail = `${probe.text || ''} ${probe.error || ''}`;

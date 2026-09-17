@@ -10,17 +10,22 @@ Mandatory blocking addendum discovered by the first real P2.2.3 Work run:
 
 Branch: `jarvis-v4-p2-2-hardening`
 
-## Why this task is active
+## Status
 
-P2.2.1 recovery and P2.2.2 Chat selection are complete, but owner validation continued to expose adjacent product bugs. P2.2.3 is one structured repository-wide stabilization pass; do not return to one-off fixes.
+Code-complete. K1–K5 are fixed with deterministic regression and real-machine
+E2E; see `docs/P2_2_3_BUG_BASH.md`. Final step before completion: owner
+real-Discord interaction confirmation, then stop (no P3).
 
-Known mandatory issues now include:
+Fixed blockers:
 
-1. `/model` for a many-model provider emits a fake placeholder command such as `!chatmodel opencode-go <model-id>`;
-2. slash-command ACK reliability (`该应用程序未响应`) must be systematically exercised across every command/button/modal path;
-3. help/control-panel navigation must not describe controls as clickable when they are not present;
-4. **FULL permission is not actually FULL**: sensitive-path checks run before the FULL allow rule, and a new Work thread attempts to inherit FULL through `switchLevel()`, which requires confirmation and silently leaves the child at STANDARD;
-5. **the 15-minute Work wall-clock kill is unacceptable**: `TASK_TIMEOUT_MS` defaults to `900000` and `runTask` kills a healthy Agent at that boundary. Production default must be unlimited; duration alone is not failure.
+1. `/model` many-model placeholder → real pagination;
+2. ACK reliability → full ACK matrix + removed the synchronous hook-path git scan
+   that could block the bridge event loop;
+3. help view ↔ referenced controls aligned;
+4. **K4 FULL**: hard guards first, FULL allows routine calls, Work thread inherits
+   FULL exactly via `PermissionManager.inheritLevel`;
+5. **K5 timeout**: production default unlimited (`TASK_TIMEOUT_MS=0`), explicit
+   positive operator limit optional, startup preflight bounded separately.
 
 ## Required runtime-policy direction
 

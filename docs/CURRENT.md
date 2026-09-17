@@ -17,30 +17,41 @@ Authoritative execution specs:
 - `docs/JARVIS_V4_P2_2_3_REPOSITORY_STABILIZATION_TASK.md`
 - `docs/JARVIS_V4_P2_2_3_RUNTIME_POLICY_ADDENDUM.md` (mandatory K4/K5 blockers discovered by real Work)
 
-## Newly confirmed release blockers
+## P2.2.3 status: fixes complete, awaiting owner real-Discord click validation
 
-### FULL permission mismatch
+All reproducible in-scope blockers are fixed with deterministic regression and
+real-machine evidence. Compact ledger: `docs/P2_2_3_BUG_BASH.md`.
 
-Owner set the parent channel to `全开放`, then created a Work thread. The Work still repeatedly requested approval for `unclassified shell command` and `sensitive file access`.
+Closed release blockers:
 
-Confirmed code causes:
+- K1 many-model Chat UI fake `<model-id>` placeholder → real pagination;
+- K2 interaction ACK reliability → full ACK matrix + removed the synchronous
+  `policy.mjs` git scan that could block the bridge event loop for up to 3s;
+- K3 help view referenced controls it did not show → real controls added;
+- K4 FULL was not FULL (policy ordering + Work-thread inheritance via
+  `switchLevel`) → hard guards first, FULL allows routine calls, trusted
+  `inheritLevel()` copies FULL exactly;
+- K5 arbitrary 900s Work kill → production default unlimited
+  (`TASK_TIMEOUT_MS=0`), explicit positive operator limit optional, startup
+  preflight separately bounded.
 
-- `src/policy.mjs` evaluates sensitive-file/sensitive-shell approval checks before the `permissionLevel === 'full'` allow branch;
-- Work-thread inheritance calls `permissionManager.switchLevel(thread.id, parentLevel)`. When parent level is FULL, `switchLevel()` returns `needsConfirm` and does not apply it; the ignored result leaves the new thread at default STANDARD.
+Verification (real machine):
 
-Required invariant: after the owner confirms FULL, normal Agent tool execution must not keep prompting; a child Work thread must inherit FULL exactly. Keep hard secret-leak/secret-commit protections.
+- `npm test` 350 pass; `npm run check` clean;
+- `smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25, `smoke:p22-insert`
+  14/14, `smoke:p22-model` 6/6, `smoke:p22-workspace` 8/8, `verify:hook` 9/9,
+  `doctor:discord` login OK;
+- `smoke:p223-full` 15/15 (real FULL Work with 0 approval prompts; real `!stop`);
+- supervisor recovery `23/23` (kill bridge/LiteLLM/supervisor auto-recovered,
+  one bridge instance; machine not rebooted).
 
-### Arbitrary 15-minute Work kill
+## Remaining / external
 
-`src/config.mjs` defaults `TASK_TIMEOUT_MS` to `900000`; `src/discord-ui.mjs` wraps each Agent turn with `withTimeout(...taskTimeoutMs...)` and kills the Agent at expiry. A real task was therefore stopped at 15m01s while still doing legitimate work.
-
-Required invariant: production default has no hard Work wall-clock limit. A healthy task runs until result, explicit Stop, actual process/runtime failure, or an explicitly configured positive operator timeout. Stall notices/heartbeat are visibility only, not kill conditions.
-
-## Other mandatory findings already reproduced
-
-- `/model` many-model UI still emits a fake runnable placeholder (`!chatmodel opencode-go <model-id>`).
-- previously observed Discord `该应用程序未响应` requires full ACK/defer verification across slash/button/modal paths.
-- Help/control-panel text must not reference controls as clickable when not present in that view.
+- Owner-only: real Discord click/typing of `/panel`, `/model`, `/status`,
+  `/doctor` after the final commit.
+- WorkBuddy gateway `403 request illegal` (external, documented in
+  `docs/WINDOWS_SMOKE.md`) still blocks WorkBuddy-executor agent smokes such as
+  `smoke:local`; the bridge reports it unavailable and keeps other providers.
 
 ## Baselines to preserve
 
@@ -86,4 +97,5 @@ No P3 finance/market monitoring, Longbridge/Futu, new provider architecture, voi
 
 ## Next action
 
-Resume/execute P2.2.3 using both authoritative specs. Fix K4/K5 first because the current permission and timeout behavior prevents a trustworthy long bug-bash run; then continue the full matrix, commit + push, and stop when all release blockers are closed.
+Commit/push the verified stabilization work and verify remote HEAD. Then the
+owner performs the final real-Discord interaction confirmation. Do not start P3.

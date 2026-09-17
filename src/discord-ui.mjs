@@ -40,7 +40,7 @@ import {
   clip,
   permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
   providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, panelMainRows,
-  panelBackRow, panelModelRows, workControlRows, providerModelRows, choiceRows,
+  panelBackRow, panelHelpRows, panelModelRows, workControlRows, providerModelRows, choiceRows, pagedChoiceRows,
   modelPageButtons, protocolLabel, transportLabel, billingLabel, sanitizeThreadName, workTitle,
   SETTINGS_MODEL_LIMIT, DISCORD_LIMIT,
 } from './discord/renderers.mjs';
@@ -111,18 +111,18 @@ export const PANEL_HELP_TEXT = [
   '🛠 **Work** = Agent，可读写文件、执行 Shell、测试。',
   '',
   '**创建 Work**',
-  '服务器父频道：`work <任务>`',
+  '服务器父频道：`work` + 任务内容',
   '→ 自动创建 🛠 Work 线程，父频道继续 Chat。',
-  '私聊：`work <任务>`',
+  '私聊：`work` + 任务内容',
   '→ 私聊内直接运行 Work。',
   '',
   '`work` → 当前频道切到 Work，下一条普通消息作为任务',
   '`chat` → 切回 Chat（永久 Work 线程里禁止切 Chat）',
-  '`!cwd <绝对路径>` → 绑定当前频道项目目录',
-  '`!workspace [<绝对路径>|reset]` → 查看/切换/恢复默认工作目录',
+  '`!cwd` + 绝对路径 → 绑定当前频道项目目录',
+  '`!workspace` → 查看/切换工作目录（`!workspace reset` 恢复默认）',
   '',
   '**快速开始**',
-  '1. 点 ⚙️ 设置：Work = Claude Code + OpenCode Go + deepseek-v4.1-flash',
+  '1. 点 ⚙️ 设置：配置 Work 执行器 / Provider / 模型',
   '2. 点 🔐 权限：standard / relaxed',
   '3. 点 🛠 新建 Work，直接输入任务',
   '4. 在自动创建的 🛠 线程看进度',
@@ -361,7 +361,7 @@ export class DiscordControlPlane {
       if (provider.credentialRef && !credential) throw Object.assign(new Error('Provider credential missing'), { code: 'INVALID_CREDENTIAL' });
       const resolved = this.#resolveWorkModel(channelId, chState, provider);
       if (!resolved.model) {
-        throw Object.assign(new Error('请先使用 !model <model-id> 选择模型'), { code: 'MODEL_REQUIRED' });
+        throw Object.assign(new Error('未选择 Work 模型：请使用 /model → Work 模型，或 !models 浏览后选择'), { code: 'MODEL_REQUIRED' });
       }
       runner = await this.executorManager.createRunner({
         executorId: chState.executorId, provider, credential, model: resolved.model, ...common,
@@ -399,7 +399,7 @@ export class DiscordControlPlane {
       if (globalState.workspace && globalState.workspace !== state.workspace) {
         lines.push(`全局默认：\`${globalState.workspace}\`（来源：${label(globalState.workspaceSource)}）`);
       }
-      lines.push('', '切换：`!workspace <绝对路径>` · 恢复默认：`!workspace reset`');
+      lines.push('', '切换：`!workspace` + 绝对路径 · 恢复默认：`!workspace reset`');
       return lines.join('\n');
     }
 
@@ -465,7 +465,7 @@ export class DiscordControlPlane {
       if (!known || known.has(candidate.model)) return candidate;
       // A stale selection must fail loudly, never silently switch the model.
       throw Object.assign(
-        new Error(`已保存模型 ${candidate.model} 当前不可用，请重新使用 !model 选择模型。`),
+        new Error(`已保存模型 ${candidate.model} 当前不可用，请重新使用 /model 或 !models 选择模型。`),
         { code: 'MODEL_UNAVAILABLE', model: candidate.model },
       );
     }
@@ -822,7 +822,8 @@ export class DiscordControlPlane {
       lines.push(`${icon} ${executor.displayName}${executor.id === current ? ' · 当前' : ''}`);
       lines.push(`   ${executor.id} · ${executor.version || executor.status}`);
     }
-    lines.push('', '切换：`!executor <id>`');
+    const first = (this.executorManager?.list() ?? [])[0];
+    lines.push('', first ? `切换示例：\`!executor ${first.id}\`（使用上方列出的真实执行器 ID）` : '切换：`!executor` 加真实执行器 ID');
     return lines.join('\n');
   }
 
@@ -835,7 +836,8 @@ export class DiscordControlPlane {
       lines.push(`${ready && (!status || status === 'PASS') ? '✅' : '❌'} ${provider.displayName}${provider.id === current ? ' · 当前' : ''}`);
       lines.push(`   ${provider.id} · ${protocolLabel(provider.protocol)}${status && status !== 'PASS' ? ` · ${status}` : ''}`);
     }
-    lines.push('', '切换：`!provider <id>`');
+    const first = (this.providerManager?.list() ?? [])[0];
+    lines.push('', first ? `切换示例：\`!provider ${first.id}\`（使用上方列出的真实 Provider ID）` : '切换：`!provider` 加真实 Provider ID');
     return lines.join('\n');
   }
 
@@ -848,7 +850,7 @@ export class DiscordControlPlane {
     try { result = await this.modelManager.list(id); }
     catch (error) { return { content: providerErrorMessage(error), components: [] }; }
     if (!result.models.length) {
-      return { content: `⚠️ ${provider.displayName} 未能自动获取模型列表。\n请使用 \`!provider ${id}\` 后输入 \`!model <model-id>\`，系统会发起真实调用验证。`, components: [] };
+      return { content: `⚠️ ${provider.displayName} 未能自动获取模型列表。\n可稍后重试；也可发送 \`!model\` 加真实的模型 ID 手动选择（会发起真实调用验证）。`, components: [] };
     }
     const pageSize = 15;
     const pages = Math.max(1, Math.ceil(result.models.length / pageSize));
@@ -873,7 +875,9 @@ export class DiscordControlPlane {
         return `${model.id === state.model ? '✅' : '•'} ${model.displayName}\n  \`${model.id}\`${suffix}`;
       }),
       '',
-      id === state.providerId ? '切换：`!model <model-id>`' : `先切换 Provider：\`!provider ${id}\``,
+      id === state.providerId
+        ? `切换：\`!model\` 加真实模型 ID（示例：\`!model ${rows[0]?.id ?? '实际模型ID'}\`）`
+        : `先切换 Provider：\`!provider ${id}\``,
     ].filter(Boolean);
     const buttons = modelPageButtons(page, pages);
     return { content: clip(lines.join('\n')), components: buttons ? [buttons] : [] };
@@ -889,7 +893,7 @@ export class DiscordControlPlane {
     const provider = this.providerManager?.get(state.providerId);
     if (!provider || !this.executorManager.compatible(executorId, provider.protocol)) {
       await this.sessionManager.change(channelId, { executorId }, 'executor changed');
-      return `⚠️ 已选择执行器：${executor.displayName}，但它不支持当前 Provider。\n请继续使用 \`!provider <id>\` 选择兼容 Provider；配置完成前不会启动任务。`;
+      return `⚠️ 已选择执行器：${executor.displayName}，但它不支持当前 Provider。\n请在 \`/model\` → Work 模型 或 \`/settings\` → 提供商 中选择兼容 Provider；配置完成前不会启动任务。`;
     }
     await this.sessionManager.change(channelId, { executorId }, 'executor changed');
     return `✅ 已切换执行器：${executor.displayName}\n已创建新安全 Session，权限恢复为 🛡️ 标准。`;
@@ -942,7 +946,7 @@ export class DiscordControlPlane {
       '🛠️ 可用执行器',
       ...(compatible.length ? compatible.map((executor) => `✅ ${executor.displayName}`) : ['⚠️ 当前没有已就绪的兼容执行器']),
     ];
-    if (added.modelsMissing) lines.push('', '⚠️ 未能自动获取模型列表，可切换 Provider 后使用 `!model <model-id>` 验证并添加。');
+    if (added.modelsMissing) lines.push('', '⚠️ 未能自动获取模型列表：可稍后发送 `!models` 刷新，或用 `!model` 加真实模型 ID 验证并添加。');
     if (!deleted) lines.push('', '⚠️ Discord 未允许删除原消息，请立即手动删除。');
     return { content: lines.join('\n'), components: [providerResultButtons(added.profile.id)] };
   }
@@ -1092,7 +1096,7 @@ export class DiscordControlPlane {
         if (!providerId) {
           const removable = this.providerManager.list().filter((item) => item.removable);
           await message.reply(removable.length
-            ? `可删除 Provider：\n${removable.map((item) => `• \`${item.id}\` ${item.displayName}`).join('\n')}\n\n删除：\`!provider remove <id>\``
+            ? `可删除 Provider：\n${removable.map((item) => `• \`${item.id}\` ${item.displayName}`).join('\n')}\n\n删除示例：\`!provider remove ${removable[0].id}\``
             : '没有可删除的 Provider。');
           return;
         }
@@ -1392,9 +1396,12 @@ export class DiscordControlPlane {
       model: parent.model,
       sessionId: null,
     }, this.config.defaultCwd);
-    // Permission inheritance is explicit: copy the parent's current level. The
-    // parent may later change without affecting the thread's snapshot.
-    this.permissionManager.switchLevel(thread.id, this.permissionManager.getLevel(parentId));
+    // Permission inheritance is explicit: copy the parent's current level,
+    // including FULL. `switchLevel()` would refuse FULL without a UI
+    // confirmation and silently leave the child at STANDARD, so inheritance
+    // uses the trusted internal path instead. The parent may later change
+    // without affecting the thread's snapshot.
+    this.permissionManager.inheritLevel(thread.id, this.permissionManager.getLevel(parentId));
 
     console.log(`[work-thread] created thread=${thread.id} parent=${parentId} cwd=${parent.cwd}`);
     await message.reply(`🛠 已创建 Work 线程 <#${thread.id}>，任务已在线程中开始。父频道保持 Chat。`);
@@ -1508,7 +1515,7 @@ export class DiscordControlPlane {
   #chatFailureText(error, { providerId, model }) {
     const pinned = (providerId && providerId !== 'auto') || Boolean(model);
     if (error?.code === 'NO_VISION_ROUTE') {
-      return '❌ 当前没有可用的图片识别路由。请手动固定一个支持图片的模型（`!chatmodel <provider-id> <model-id>`），或改用 Work 处理该图片。';
+      return '❌ 当前没有可用的图片识别路由。请在 `/model` → Chat 模型中固定一个支持图片的模型，或改用 Work 处理该图片。';
     }
     if (error?.code === 'NO_CHAT_PROVIDER') {
       return pinned
@@ -1725,7 +1732,9 @@ export class DiscordControlPlane {
   }
 
   #panelHelp() {
-    return { content: clip(PANEL_HELP_TEXT), components: [panelBackRow()] };
+    // The quick-start copy references these controls, so the help view itself
+    // must expose them (single panel handler, no duplicate implementation).
+    return { content: clip(PANEL_HELP_TEXT), components: panelHelpRows() };
   }
 
   async #panelStatus(channelId) {
@@ -1834,45 +1843,41 @@ export class DiscordControlPlane {
       .map((provider) => ({ id: provider.id, label: `${provider.displayName} · ${billingLabel(provider.billingType)}` }));
   }
 
-  #chatModelMenu(channelId) {
+  #chatModelMenu(channelId, page = 1) {
     const selection = this.sessionManager.get(channelId);
     const current = selection.chatProviderId || 'auto';
     const providers = this.#chatProviderList();
+    const paged = pagedChoiceRows('panelchatp', providers, { current, page });
     const rows = [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('panelchat:auto').setLabel(current === 'auto' ? '✓ AUTO' : 'AUTO')
         .setStyle(current === 'auto' ? ButtonStyle.Primary : ButtonStyle.Secondary),
     )];
-    const providerRows = choiceRows('panelchatp', providers, { current });
-    if (providerRows) rows.push(...providerRows);
-    rows.push(panelBackRow());
-    if (rows.length > 5) {
-      return {
-        content: `💬 **Chat 模型**\n当前：${this.#chatRouteLabel(channelId)}\n⚠️ Provider 较多，请使用 \`!chatmodel <provider-id> <model-id>\`。`,
-        components: [rows[0], panelBackRow()],
-      };
-    }
+    rows.push(...paged.rows, panelBackRow());
+    const browse = paged.pages > 1 ? `\nProvider 列表第 ${paged.page}/${paged.pages} 页，可用下方翻页按钮浏览。` : '';
     return {
-      content: `💬 **Chat 模型**\n当前：${this.#chatRouteLabel(channelId)}\n选择 AUTO，或选择 Provider 后再选模型。手动固定后不会自动回退。`,
+      content: `💬 **Chat 模型**\n当前：${this.#chatRouteLabel(channelId)}\n选择 AUTO，或选择 Provider 后再选模型。手动固定后不会自动回退。${browse}`,
       components: rows,
     };
   }
 
-  async #chatProviderModels(channelId, providerId) {
+  async #chatProviderModels(channelId, providerId, page = 1) {
     const provider = this.providerManager?.get(providerId);
     if (!provider) return { content: '❌ 未知 Provider。', components: [panelBackRow()] };
     if (provider.protocol === PROTOCOL.WORKBUDDY) return { content: '❌ WorkBuddy 不是 Chat Provider。', components: [panelBackRow()] };
     if (!this.providerManager.hasCredential(provider)) return { content: '❌ 该 Provider 缺少 credential。', components: [panelBackRow()] };
     let models = [];
     try { models = (await this.modelManager.list(providerId)).models; }
-    catch (error) { return { content: `${providerErrorMessage(error)}\n请使用 \`!chatmodel ${providerId} <model-id>\`。`, components: [panelBackRow()] }; }
+    catch (error) { return { content: `${providerErrorMessage(error)}\n可稍后重试，或发送 \`!chatmodel ${providerId}\` 后再试。`, components: [panelBackRow()] }; }
     if (!models.length) {
-      return { content: `⚠️ 未能自动获取 ${provider.displayName} 的模型列表。\n请使用 \`!chatmodel ${providerId} <model-id>\`。`, components: [panelBackRow()] };
+      return { content: `⚠️ 未能自动获取 ${provider.displayName} 的模型列表。\n可稍后重试，或发送 \`!chatmodel ${providerId}\` 查看手动指定方式。`, components: [panelBackRow()] };
     }
-    const rows = providerModelRows('panelchatm', providerId, models.map((model) => ({ id: model.id, label: model.id })), {
+    const paged = providerModelRows('panelchatm', providerId, models.map((model) => ({ id: model.id, label: model.id })), {
       current: this.sessionManager.get(channelId).chatModel,
+      page,
     });
-    if (!rows) return { content: `⚠️ ${provider.displayName} 模型较多，请使用 \`!chatmodel ${providerId} <model-id>\`。`, components: [panelBackRow()] };
-    return { content: `💬 ${provider.displayName} 模型（固定后不会自动回退）`, components: [...rows, panelBackRow()] };
+    const header = `💬 ${provider.displayName} 模型（固定后不会自动回退）`
+      + (paged.pages > 1 ? `\n第 ${paged.page}/${paged.pages} 页` : '');
+    return { content: header, components: [...paged.rows, panelBackRow()] };
   }
 
   #workProviderList(channelId) {
@@ -1883,41 +1888,72 @@ export class DiscordControlPlane {
       .map((provider) => ({ id: provider.id, label: provider.displayName }));
   }
 
-  #workModelMenu(channelId) {
+  #workModelMenu(channelId, page = 1) {
     const selection = this.sessionManager.get(channelId);
     const executor = this.executorManager?.get(selection.executorId);
     const providers = this.#workProviderList(channelId);
-    const rows = choiceRows('panelworkp', providers, { current: selection.providerId });
-    if (!rows) {
+    const paged = pagedChoiceRows('panelworkp', providers, { current: selection.providerId, page });
+    if (!providers.length) {
       return {
-        content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n⚠️ 请在 ⚙️ 设置 中切换到兼容当前 Provider 的执行器（例如 Claude Code）。`,
+        content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n⚠️ 暂无可用的兼容 Provider。请先在 \`/model\` → Work 或 \`/settings\` 中检查执行器与 Provider。`,
         components: [panelBackRow()],
       };
     }
+    const browse = paged.pages > 1 ? `\nProvider 列表第 ${paged.page}/${paged.pages} 页。` : '';
     return {
-      content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n选择 Provider：`,
-      components: [...rows, panelBackRow()],
+      content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n选择 Provider：${browse}`,
+      components: [...paged.rows, panelBackRow()],
     };
   }
 
-  async #workProviderModels(channelId, providerId) {
+  async #workProviderModels(channelId, providerId, page = 1) {
     const provider = this.providerManager?.get(providerId);
     if (!provider) return { content: '❌ 未知 Provider。', components: [panelBackRow()] };
     const selection = this.sessionManager.get(channelId);
     if (this.executorManager && !this.executorManager.compatible(selection.executorId, provider.protocol, null)) {
-      return { content: '❌ 当前执行器不支持此 Provider 协议。', components: [panelBackRow()] };
+      const recommendations = this.executorManager.compatibleExecutors?.(provider.protocol)?.map((item) => item.displayName) ?? [];
+      return {
+        content: `❌ 当前执行器不支持此 Provider 协议。${recommendations.length ? `\n兼容执行器：${recommendations.join('、')}（可在 \`/settings\` → \`🛠️ 执行器\` 切换）` : ''}`,
+        components: [panelBackRow()],
+      };
     }
     let models = [];
     try { models = (await this.modelManager.list(providerId)).models; }
-    catch (error) { return { content: `${providerErrorMessage(error)}\n请使用 \`!provider ${providerId}\` 后输入 \`!model <model-id>\`。`, components: [panelBackRow()] }; }
+    catch (error) { return { content: `${providerErrorMessage(error)}\n可先用 \`!models\` 重试。`, components: [panelBackRow()] }; }
     if (!models.length) {
-      return { content: `⚠️ 未能自动获取 ${provider.displayName} 的模型列表。\n请切换到该 Provider 后使用 \`!model <model-id>\` 验证。`, components: [panelBackRow()] };
+      return { content: `⚠️ 未能自动获取 ${provider.displayName} 的模型列表。\n可先用 \`!models\` 重试，再用本菜单选择。`, components: [panelBackRow()] };
     }
-    const rows = providerModelRows('panelworkm', providerId, models.map((model) => ({ id: model.id, label: model.id })), {
+    const paged = providerModelRows('panelworkm', providerId, models.map((model) => ({ id: model.id, label: model.id })), {
       current: selection.providerId === providerId ? selection.model : null,
+      page,
     });
-    if (!rows) return { content: `⚠️ ${provider.displayName} 模型较多，请切换到该 Provider 后使用 \`!model <model-id>\`。`, components: [panelBackRow()] };
-    return { content: `🛠 ${provider.displayName} 模型（选择后会创建新安全 Session）`, components: [...rows, panelBackRow()] };
+    const header = `🛠 ${provider.displayName} 模型（选择后会创建新安全 Session）`
+      + (paged.pages > 1 ? `\n第 ${paged.page}/${paged.pages} 页` : '');
+    return { content: header, components: [...paged.rows, panelBackRow()] };
+  }
+
+  /**
+   * Cached Work-model list for the settings panel, paginated the same way as
+   * the Chat menu so a many-model provider never needs a fake placeholder.
+   */
+  #settingsModelMenu(channelId, page = 1) {
+    const state = this.sessionManager.get(channelId);
+    const provider = this.providerManager?.get(state.providerId);
+    if (!provider) return { content: '❌ 当前未选择 Provider。', components: [settingsBackRow()] };
+    const models = provider.models ?? [];
+    if (!models.length) {
+      return {
+        content: `🧠 ${provider.displayName} 尚未缓存模型列表。\n请先发送 \`!models\` 刷新后再回到本菜单。`,
+        components: [settingsBackRow()],
+      };
+    }
+    const paged = pagedChoiceRows('setmodel', models.map((model) => ({ id: model.id, label: model.id })), {
+      current: state.model,
+      page,
+    });
+    const header = `🧠 选择模型（${provider.displayName}）`
+      + (paged.pages > 1 ? `\n第 ${paged.page}/${paged.pages} 页` : '');
+    return { content: header, components: [...paged.rows, settingsBackRow()] };
   }
 
   #newChat(channelId) {
@@ -2453,15 +2489,9 @@ export class DiscordControlPlane {
 
   async #chatModelCommand(channelId, argument) {
     if (!argument) {
-      const actual = this.#chatActualText(channelId);
-      return [
-        '💬 **Chat 模型**',
-        `路由：${this.#chatRouteText(channelId)}`,
-        ...(actual ? [`最近实际：${actual}`] : []),
-        '',
-        '切换：`!chatmodel auto` 或 `!chatmodel <provider-id> <model-id>`',
-        '手动指定后不会自动回退。',
-      ].join('\n');
+      // Same selectable menu as `/model` → Chat, so the text command has a real
+      // click path instead of an unusable `<provider-id> <model-id>` example.
+      return this.#chatModelMenu(channelId);
     }
     if (argument.toLowerCase() === 'auto') {
       const result = await this.#applyChatSelection(channelId, { providerId: 'auto', model: null });
@@ -2470,7 +2500,15 @@ export class DiscordControlPlane {
         : result.message;
     }
     const [providerId, modelId] = argument.split(/\s+/);
-    if (!modelId) return `❌ 请同时指定 model：\`!chatmodel ${providerId} <model-id>\`。`;
+    if (!modelId) {
+      const provider = this.providerManager?.get(providerId);
+      if (!provider) return `❌ 未知 Provider：\`${providerId}\`。`;
+      if (provider.protocol === PROTOCOL.WORKBUDDY) return '❌ WorkBuddy 不是 Chat Provider。';
+      if (!this.providerManager.hasCredential(provider)) return `❌ Provider \`${providerId}\` 缺少 credential。`;
+      // Show the real paginated model list for that provider instead of
+      // demanding a model id the owner may not know.
+      return this.#chatProviderModels(channelId, providerId);
+    }
     const result = await this.#applyChatSelection(channelId, { providerId, model: modelId });
     return result.ok
       ? `✅ Chat 模型已固定为 \`${providerId} / ${modelId}\`。\n该选择不会自动回退到其他模型。`
@@ -2688,12 +2726,21 @@ export class DiscordControlPlane {
       let turnPrompt = prompt;
       let result;
       let turn = 0;
+      // Explicit unlimited-vs-timed branch. A healthy task has NO default
+      // wall-clock cap: it ends on result, owner Stop, process exit/failure, or
+      // an explicitly configured positive operator limit. Never pass 0 into the
+      // timeout helper and hope it means "disabled".
+      const operatorTimeoutMs = Number(this.config.taskTimeoutMs);
+      const timed = Number.isFinite(operatorTimeoutMs) && operatorTimeoutMs > 0;
       for (;;) {
         turn += 1;
-        result = await withTimeout(runner.send(turnPrompt), this.config.taskTimeoutMs, {
-          label: 'task',
-          onTimeout: () => { console.error(`[task] timeout after ${this.config.taskTimeoutMs}ms; killing the agent process`); runner.stop({ reason: 'task wall-clock timeout' }).catch(() => {}); },
-        });
+        const sendPromise = runner.send(turnPrompt);
+        result = timed
+          ? await withTimeout(sendPromise, operatorTimeoutMs, {
+            label: 'task',
+            onTimeout: () => { console.error(`[task] operator timeout after ${operatorTimeoutMs}ms; killing the agent process`); runner.stop({ reason: 'task wall-clock timeout' }).catch(() => {}); },
+          })
+          : await sendPromise;
 
         // A result that arrives after `!stop` must not be presented as a success.
         if (task.cancelled) {
@@ -2885,8 +2932,16 @@ export class DiscordControlPlane {
       await this.#edit(interaction, this.#chatModelMenu(channelId));
       return;
     }
+    if (prefix === 'panelchatpnav') {
+      await this.#edit(interaction, this.#chatModelMenu(channelId, Number(id) || 1));
+      return;
+    }
     if (prefix === 'panelchatp') {
       await this.#edit(interaction, await this.#chatProviderModels(channelId, parts.slice(1).join(':')));
+      return;
+    }
+    if (prefix === 'panelchatmnav') {
+      await this.#edit(interaction, await this.#chatProviderModels(channelId, parts[1], Number(parts[2]) || 1));
       return;
     }
     if (prefix === 'panelchatm') {
@@ -2901,11 +2956,19 @@ export class DiscordControlPlane {
         : { content: clip(result.message), components: [panelBackRow()] });
       return;
     }
+    if (prefix === 'panelworkpnav') {
+      await this.#edit(interaction, this.#workModelMenu(channelId, Number(id) || 1));
+      return;
+    }
     if (prefix === 'panelworkp') {
       const providerId = parts.slice(1).join(':');
       const switched = await this.#switchProvider(channelId, providerId);
       const models = await this.#workProviderModels(channelId, providerId);
       await this.#edit(interaction, { ...models, content: clip(`${switched}\n\n${models.content}`) });
+      return;
+    }
+    if (prefix === 'panelworkmnav') {
+      await this.#edit(interaction, await this.#workProviderModels(channelId, parts[1], Number(parts[2]) || 1));
       return;
     }
     if (prefix === 'panelworkm') {
@@ -2975,22 +3038,15 @@ export class DiscordControlPlane {
         return;
       }
       if (id === 'model') {
-        const state = this.sessionManager.get(channelId);
-        const provider = this.providerManager?.get(state.providerId);
-        const models = provider?.models ?? [];
-        if (models.length && models.length <= SETTINGS_MODEL_LIMIT) {
-          const rows = choiceRows('setmodel', models.map((model) => ({ id: model.id, label: model.id })), { current: state.model });
-          await this.#edit(interaction, { content: `🧠 选择模型（${provider.displayName}）`, components: [...rows, settingsBackRow()] });
-        } else {
-          await this.#edit(interaction, {
-            content: `🧠 模型数量较多或未缓存（${models.length}）。请使用 \`!models\` / \`!model <model-id>\`。`,
-            components: [settingsBackRow()],
-          });
-        }
+        await this.#edit(interaction, this.#settingsModelMenu(channelId));
         return;
       }
       // refresh / back / unknown
       await this.#edit(interaction, this.#settingsPanel(channelId));
+      return;
+    }
+    if (prefix === 'setmodelnav') {
+      await this.#edit(interaction, this.#settingsModelMenu(channelId, Number(id) || 1));
       return;
     }
     if (prefix === 'setexec' || prefix === 'setprov' || prefix === 'setmodel') {
