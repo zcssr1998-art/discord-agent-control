@@ -313,7 +313,7 @@ export class DiscordControlPlane {
     await this.registerCommands().catch(() => null);
     try {
       const result = await verifyApplicationCommands({
-        client: this.client,
+        application: this.client?.application ?? null,
         guildId: this.config.commandsGuildId || null,
         logger: console,
       });
