@@ -2,28 +2,28 @@
 
 Current execution specification:
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
+`docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md`
 
 Branch: `jarvis-v4-p2-2-hardening`
 
 ## Scope
 
-Close P2 cleanly into `main`:
+Pre-release cleanup of Jarvis-imposed user-hostile limits:
 
-1. verify latest hardening head and release gates;
-2. merge PR #4 (`jarvis-v4-p2-control-context` -> `main`) first;
-3. retarget/reconcile PR #5 (`jarvis-v4-p2-2-hardening`) onto the new `main`;
-4. verify PR #5 against new main and merge it second;
-5. run final short real-machine smoke from `main`;
-6. update repository closeout state and stop.
+1. audit meaningful caps/timeouts/cooldowns/lockouts/truncation/reset behavior;
+2. use real Discord limits for `/work` slash + modal input;
+3. stop silently truncating Chat/Work final results;
+4. persist owner-selected permission tier across restart/session/model/provider/workspace changes;
+5. remove permanent historical failure/restart channel lockout;
+6. make Chat timeout practical/configurable;
+7. expose/override provider cooldown;
+8. auto-compact Chat history instead of silently dropping oldest context;
+9. make approval expiry and follow-up caps owner-configurable/non-surprising;
+10. replace hard-coded Anthropic `max_tokens: 4096` with documented config;
+11. add focused deterministic smoke and short real-Discord verification.
 
-Owner P2.2.4 insert/lifecycle + single-Stop real-Discord smoke is already PASS. Do not redo the long Hunyuan3D reproduction.
+## Preserve
 
-## Do not redo / regress
+Do not regress P2.2.1–P2.2.4, AUTO billing safeguards, manual-pin semantics, secret protection, one-active-Work-per-workspace, or unlimited default Work duration.
 
-- P2.2.1 Supervisor/autostart/watchdog recovery;
-- P2.2.2 Chat AUTO/manual selection;
-- P2.2.3 pagination, ACK, help, FULL semantics, unlimited Work duration;
-- P2.2.4 monotonic lifecycle, insert accounting, one-shot Stop, stale-control safety.
-
-Do not start P3 and do not delete remote P2 branches automatically in this task.
+Do not start P3. Do not merge PR #4/#5 during this task. The release merge task resumes only after P2.2.5 passes.
