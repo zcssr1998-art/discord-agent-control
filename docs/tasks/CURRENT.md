@@ -8,24 +8,27 @@
 
 ## Status
 
-P3.1 (`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`) is implemented and
-committed; P3.0 is also complete. **Awaiting owner acceptance — do not start
-TechLead implementation.**
+P3.0 and P3.1 are complete. **P3.1 owner acceptance PASS on real Discord.**
 
-Recorded backend: OpenCode Go native `web_search` (Responses transport, model
-`grok-4.6`), billing class **SUBSCRIPTION** (no extra search key, no coding
-Agent). Tavily is an optional METERED adapter used only when
-`ALLOW_METERED_WEB_SEARCH=true` or explicitly pinned.
+Observed owner acceptance:
 
-## After owner acceptance
+- stable knowledge Chat answered without `Web` / `Sources`;
+- current-info Chat used real web search and returned visible `Web` + real source links;
+- P3.1 smoke verified no coding Agent / Work session is started for Chat search;
+- OpenCode Go native `web_search` remains the recorded default backend, billing class `SUBSCRIPTION`;
+- duplicate Bridge startup/provider-warning notifications are a non-blocking UX follow-up and are not part of the TechLead implementation.
 
-Continue `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (advisory Shadow Mode:
-zero-token standby, deterministic incident detection first, Grok 4.6 only on
-meaningful incidents).
+## Current objective
 
-## Do not
+Implement `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` exactly as specified:
 
-- do not start a coding Agent / Work session for a Chat search;
-- do not silently use METERED/UNKNOWN search providers in AUTO;
-- do not add a second routing framework, daemon, database or queue;
-- do not regress P3.0 timeout/retry semantics or P2 Chat/Work separation.
+- zero-token standby;
+- deterministic monitoring first;
+- compact ProgressFingerprint / incident detection / dedupe / cooldown;
+- Grok 4.6 only on meaningful review events;
+- hard per-Work wake budget;
+- Shadow Mode is advisory only: no automatic inject/pause/stop/tool/file action;
+- TechLead/provider/event failure must never block normal Work;
+- preserve all P2, P3.0 and P3.1 behavior.
+
+Do not create a second architecture plan. Read the existing task and implement the smallest compatible seam, then run the required deterministic and real-machine smoke tests and stop for owner acceptance.
