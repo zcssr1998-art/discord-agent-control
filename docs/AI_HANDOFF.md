@@ -6,29 +6,40 @@
 
 ## Active task
 
-None. `docs/JARVIS_V4_P2_2_4_WORK_LIFECYCLE_TASK.md` completed (K6 FIXED).
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
 
 ## Current status
 
-P2.2.1–P2.2.4 fixes are complete. The P2.2.4 lifecycle cluster is closed:
+P2.2.1–P2.2.4 fixes are complete and owner P2.2.4 real-Discord validation is PASS.
 
-- no intermediate DONE before the Work is actually terminal;
-- completed-turn results are preserved as their own message;
-- live inserts settle as CONSUMED and continuations as EXECUTED;
-- one Stop settles the run and kills the real process tree; repeats/stale
-  controls are harmless;
-- terminal cards carry no live controls.
+Owner evidence:
 
-Implementation and evidence are recorded in `docs/P2_2_3_BUG_BASH.md` (K6) and
-`docs/CURRENT.md`.
+- live insert/lifecycle Work: no false intermediate DONE, inserted path requirement executed in the same Work, one final completion;
+- Stop Work: one Stop killed the real Agent process tree, no false pending-insert report, stable STOPPED terminal, no terminal live controls.
+
+The next task is release integration only: merge the stacked P2 PRs into `main` in the correct order and verify the resulting mainline runtime.
+
+## Required order
+
+1. Re-check remote/PR state and run the release gates on the latest hardening head.
+2. PR #4 (`jarvis-v4-p2-control-context` -> `main`) first: Ready/checks/merge.
+3. Retarget PR #5 (`jarvis-v4-p2-2-hardening`) to the new `main`; reconcile/verify its diff and tests.
+4. Merge PR #5 second.
+5. Run final short real-machine Discord/Chat/Work/Stop/single-instance smoke from `main`.
+6. Update closeout docs on `main`, then stop.
+
+Do not start P3 in this task and do not delete remote feature branches automatically.
 
 ## Preserve
 
-Do not regress Supervisor recovery, Chat AUTO/manual behavior, model
-pagination/ACK/help fixes, FULL semantics, or unlimited default Work duration.
-Do not start P3. No secrets in repo/logs.
+- Supervisor/LiteLLM/Task Scheduler recovery and one bridge instance;
+- Chat AUTO/manual selection and model persistence;
+- model pagination/ACK/help consistency;
+- FULL means no routine prompts and Work threads inherit it exactly;
+- Work duration unlimited by default;
+- monotonic Work lifecycle, truthful insert accounting, one-shot Stop and stale-control safety;
+- no secrets in repo/logs.
 
-## Delivery
+## External limitation
 
-Done: focused regression `tests/v4-p224-work-lifecycle.test.mjs`, real smoke
-`smoke:p224-lifecycle`, state/handoff updates, commit + push.
+WorkBuddy gateway may still return `HTTP 403 request illegal`; keep it documented as external if unchanged. It must not block other providers or the bridge.
