@@ -966,3 +966,28 @@ After bootstrap, a later verified commit on the configured branch is detected by
 updater, verified in a staging worktree, fast-forwarded, and applied by a Supervisor restart
 (exit code 74) without owner action — no in-process hot reload and no second Bridge.
 
+Observed live auto-deploy (owner action not required):
+
+- the Supervisor log shows `Bridge DOWN: exited code=74` followed by
+  `Bridge requested a self-update restart (code 74); relaunching` and a new `Bridge UP` — the
+  supervisor PID is preserved and exactly one Bridge owns the lock before and after;
+- the new runtime logs `[instance] ... build=jarvis-v4-p2-2-hardening@<new sha>` and
+  `[update] verified running SHA <new sha> after restart`;
+- after the reconcile fix, startup reports `[commands] fetch-back schema PASS — /work task
+  max_length=6000` and `[update] command schema reconcile: PASS`;
+- freshness is judged by the RUNNING SHA, not the checkout HEAD: a stale process whose checkout
+  had already advanced was still detected and restarted (proved deterministically in
+  `smoke:p226-update` and on the real machine).
+
+Post-update real-agent smokes (Discord transport faked; human button clicks remain PENDING_OWNER):
+
+```text
+npm run smoke:p2             -> 11/11  (real Chat/vision + real Work thread + file)
+npm run smoke:p223-full      -> 15/15  (real FULL Work, 0 prompts, single-press Stop)
+npm run smoke:p224-lifecycle -> 21/21  (real Work lifecycle + single-press Stop kills the tree)
+```
+
+Final live runtime state: one Bridge + one Supervisor, no orphan Agent tree, scheduled task
+action points at this checkout's `scripts/start-supervisor.ps1`.
+
+
