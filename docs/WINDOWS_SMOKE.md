@@ -1005,5 +1005,70 @@ Real owner interactions via Discord on the live bridge; `PENDING_OWNER` is clear
 
 The transient `D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` test artifact was deleted during closeout.
 
+## P2 release merge / mainline closeout — 2026-09-17
+
+Repository `zcssr1998-art/discord-agent-control`. PR #4 `jarvis-v4-p2-control-context` merged to
+`main` first (merge commit `507df36`); PR #5 `jarvis-v4-p2-2-hardening` reconciled against the new
+`main` and merged second (merge commit `f938e88`). Both GitHub PRs report `merged=true`.
+
+Local merge + push over SSH was used because `gh` is unauthenticated on this machine (a known,
+already-documented constraint). GitHub auto-detected both PRs as merged once their commits were
+reachable from the base branch. The remote feature branches are deliberately preserved; they are
+safe cleanup candidates for a later explicit owner action.
+
+Deterministic/focused gates, run from the new `main` checkout (`f938e88`):
+
+```text
+npm test                     -> 386 pass / 0 fail
+npm run check                -> 121 file(s), 0 failed
+npm run smoke:p2             -> 11/11
+npm run smoke:p22            -> 10/10
+npm run smoke:p222           -> 25/25
+npm run smoke:p22-insert     -> 14/14
+npm run smoke:p223-full      -> 15/15
+npm run smoke:p224-lifecycle -> 21/21
+npm run smoke:p225-limits    -> 23/23
+npm run smoke:p226-update    -> 49/49
+npm run verify:hook          -> 9/9
+npm run doctor:discord       -> login OK (Jarvis.#8605, 1 guild); proxy=none in this shell
+scripts/smoke-supervisor-recovery.ps1 -> 22/23
+```
+
+`smoke:p2`, `smoke:p222`, `smoke:p223-full` and `smoke:p224-lifecycle` are the real-machine Chat /
+Work / Stop gates: real Agent and real Windows process tree, only the Discord transport faked.
+`smoke:p224-lifecycle` covers one-shot Stop killing the real tree with no live controls left.
+
+Supervisor-recovery note: the only miss is `G4 supervisor really stopped before the restart
+window` — Task Scheduler restarted the supervisor faster than the smoke's 5-second negative
+assertion, so that check observed a live supervisor. Every substantive G4 check passed
+(`Task Scheduler restarted the supervisor automatically`, `bridge restored`, `exactly one bridge`).
+
+Post-merge live runtime (unchanged `Task Scheduler -> Supervisor -> Bridge` chain):
+
+- live checkout on `main`, one Supervisor + one Bridge, instance lock
+  `branch=main commit=f938e88...`;
+- `[instance] acquired lock pid=... build=main@f938e88`;
+- `[commands] registered=12 changed=0`;
+- `[update] enabled source=origin/main intervalMs=30000` and
+  `[update] check(startup) local=f938e88 remote=f938e88 relation=up_to_date dirty=false -> UP_TO_DATE`;
+- `[discord] control plane ready`.
+
+Real Discord command-schema fetch-back:
+
+```text
+npm run doctor:commands
+OK    application resolved
+OK    /work task max_length == 6000  — got 6000
+OK    fetched Discord command schema matches desired  — 0 mismatch(es)
+```
+
+Owner acceptance remains valid: the real-Discord Tiny Chat / Work / Stop / after-Stop recovery /
+`!status` acceptance was completed on build `e1d7a78`, and `main` is a pure merge of that verified
+content (no post-acceptance code change).
+
+External blocker unchanged: WorkBuddy `HTTP 403 request illegal`
+(`[backend] WorkBuddy status=FAIL; ... No provider fallback attempted.`). It does not block other
+providers, auto-update state or Bridge availability.
+
 
 

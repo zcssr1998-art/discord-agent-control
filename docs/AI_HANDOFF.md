@@ -2,74 +2,55 @@
 
 ## Branch
 
-`jarvis-v4-p2-2-hardening`
+`main`
 
 ## Active task
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` (P2.2.6 is complete; do not start P3)
+None. P2 release merge / mainline closeout is complete
+(`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`). Do **not** start P3.
 
 ## Current status
 
-P2.2.6 Runtime Freshness / Safe Self-Update is implemented, tested and verified on the real
-Windows/Discord machine. GitHub HEAD, the Windows live runtime SHA and the Discord registered
-command schema now converge automatically instead of drifting until a manual restart.
+Jarvis V4 P2 is complete on `main`. PR #4 (`jarvis-v4-p2-control-context`, merge `507df36`)
+landed first; PR #5 (`jarvis-v4-p2-2-hardening`) was reconciled against the new `main` and merged
+as `f938e88`. `main` contains the P2/P2.1 control-panel/native-command work and every
+P2.2.1–P2.2.6 hardening fix (P2.2.4 lifecycle `aa6dc27` verified ancestor).
 
-Key mechanics (see `docs/JARVIS_V4_P2_2_6_SAFE_SELF_UPDATE_TASK.md`):
+## Verified on main
 
-- `src/updater.mjs` is dependency-free so a candidate can be validated in a throwaway
-  `git worktree` before the live checkout moves (`scripts/p226-update-smoke.mjs` is the gate).
-- Fast-forward only. Dirty/diverged -> `BLOCKED`. Previous known-good SHA recorded; a failing
-  SHA is quarantined until the remote SHA changes. Post-update crash loops are rolled back by
-  `scripts/update-helper.mjs`, invoked by the existing Supervisor.
-- The Bridge exits with code 74 after a verified apply; the Supervisor (Task Scheduler ->
-  Supervisor -> Bridge) relaunches exactly one Bridge from the same checkout.
-- `/update status|now|pause|resume` added; `/status` and `/doctor` show local/remote SHA and the
-  command-schema fetch-back result (including real `/work task max_length`).
+- `npm test` 386/0, `npm run check` 121/0.
+- `smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25, `smoke:p22-insert` 14/14,
+  `smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21, `smoke:p225-limits` 23/23,
+  `smoke:p226-update` 49/49, `verify:hook` 9/9.
+- `scripts/smoke-supervisor-recovery.ps1` 22/23 — the miss is only the test's negative
+  "supervisor really stopped" window; Task Scheduler restarted it faster than the 5s assertion.
+  All substantive recovery checks passed.
+- Live runtime: Task Scheduler -> Supervisor -> Bridge, one instance, checkout on `main`,
+  running `f938e88`, updater `source=origin/main` `UP_TO_DATE`.
+- Real Discord schema fetch-back (`npm run doctor:commands`): `/work task max_length == 6000`,
+  0 mismatches.
 
-## Verified on the real machine
+## Preserved invariants (do not regress)
 
-- bootstrap restart loaded the new runtime (`build=jarvis-v4-p2-2-hardening@496de33`);
-- verified remote advances were auto-deployed on the live runtime
-  (`496de33 -> ... -> e1d7a78`), each via exit code 74 + a single-Bridge Supervisor relaunch;
-- `npm run doctor:commands` fetched the real Discord schema back: `/work task max_length == 6000`,
-  schema matches desired (0 mismatch);
-- `logs/bridge.log` shows `[update] enabled source=origin/jarvis-v4-p2-2-hardening` and
-  `check(startup) ... -> UP_TO_DATE`;
-- deterministic gates green: `npm test` 386/0, `check` 121/0, `smoke:p226-update` 49/49,
-  `smoke:p225-limits` 23/23, `smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21,
-  `smoke:p2` 11/11, `verify:hook` 9/9.
+- Supervisor/LiteLLM/Task Scheduler recovery and exactly one Bridge;
+- Chat default AUTO + manual pin semantics + model persistence; AUTO never silently spends on
+  metered/unknown billing;
+- pagination/ACK/help consistency; FULL persistent owner semantics; unlimited default Work
+  duration; monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control
+  safety; P2.2.5 full result delivery, auto-compact, visible cooldown;
+- fast-forward-only safe self-update with rollback/quarantine and no second daemon;
+- secret/credential protection (no token in logs, diffs, notifications or state).
 
 ## Owner acceptance
 
-COMPLETE on build `e1d7a78`; `PENDING_OWNER` is cleared. Real Discord owner interactions:
-Tiny Chat PASS (~2.1s, no duplicate/no prompt); Work PASS (wrote
-`D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`); owner Stop PASS (pid 52988 tree
-killed, 0 pending approvals, no natural completion); after-Stop residue PASS
-(`STOP_TEST_RESULT.txt` absent); after-Stop recovery PASS (`STOP_RECOVERY_OK`); `!status` PASS.
-
-## Preserve
-
-- Supervisor/LiteLLM/Task Scheduler recovery and one bridge instance;
-- Chat AUTO/manual selection and model persistence;
-- pagination/ACK/help consistency;
-- FULL persistent owner semantics; unlimited default Work duration;
-- monotonic Work lifecycle, truthful insert accounting, one-shot Stop and stale-control safety;
-- P2.2.5 full result delivery, auto-compact, visible cooldown, non-blocking failure diagnostics;
-- AUTO billing safeguards, manual-pin semantics, secret/credential protection.
+COMPLETE on build `e1d7a78` (real Discord Tiny Chat / Work / Stop / after-Stop recovery /
+`!status`). `main` is a pure merge of that content; no post-acceptance code change.
 
 ## External limitation
 
-WorkBuddy gateway may still return `HTTP 403 request illegal`; documented as external. It must not
-block other providers, updater state or Bridge availability.
-
-## Do not do
-
-- do not execute the deferred release merge in the P2.2.6 Worker (now the active task);
-- do not start P3;
-- do not rerun the long Hunyuan3D reproduction;
-- do not kill an active Work to deploy an update (the updater marks `UPDATE_PENDING` instead);
-- do not add another independent daemon: the existing Supervisor owns lifecycle/restart/rollback.
+WorkBuddy gateway `HTTP 403 request illegal` is external and must never block other providers,
+the updater state or Bridge availability.
 
 ## Next
 
-Execute `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`.
+No active task. P3 requires a fresh explicit task/branch.

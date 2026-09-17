@@ -1,29 +1,21 @@
 # Active task
 
-Current execution specification:
+None.
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
+## Last completed release task
 
-Branch: `jarvis-v4-p2-2-hardening`
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` — P2 release merge / mainline closeout.
+
+Result: PR #4 (`jarvis-v4-p2-control-context`) merged to `main` first (`507df36`), then PR #5
+(`jarvis-v4-p2-2-hardening`) reconciled against the new `main` and merged (`f938e88`). All
+P2.2.1–P2.2.6 fixes are on `main`; deterministic and real-machine (Agent, only Discord transport
+faked) gates are green; the scheduled Supervisor runtime runs `main` with one Bridge and the
+updater source is `origin/main`.
 
 ## Status
 
-P2.2.4, P2.2.5 and P2.2.6 are complete and verified.
+P2/P2.1/P2.2.1–P2.2.6 complete and merged to `main`.
 
-- P2.2.6 (Runtime Freshness / Safe Self-Update) is complete:
-  `docs/JARVIS_V4_P2_2_6_SAFE_SELF_UPDATE_TASK.md`.
-- P2.2.6 owner-side acceptance is COMPLETE on build `e1d7a78` (Tiny Chat / Work / Stop /
-  after-Stop recovery / `!status` all PASS); `PENDING_OWNER` is cleared.
+## Do not
 
-## Scope of the active task
-
-Merge PR #4 then PR #5 into `main`, verify the new `main` on the real Windows/Discord runtime,
-and close out P2. Do **not** start P3.
-
-## Preserve
-
-Do not regress P2.2.1–P2.2.6, AUTO billing safeguards, manual pin semantics, secret protection,
-one-active-Work-per-workspace, unlimited default Work duration, lifecycle/Stop correctness,
-Supervisor single-instance behavior, or safe self-update (fast-forward-only + rollback).
-
-Do not start P3. Do not rerun the long Hunyuan3D reproduction.
+Do not start P3. A new task/branch must be created explicitly before any further work.

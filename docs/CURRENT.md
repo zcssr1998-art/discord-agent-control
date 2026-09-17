@@ -2,66 +2,81 @@
 
 ## Branch
 
-`jarvis-v4-p2-2-hardening`
+`main`
 
 ## Current milestone
 
-Jarvis V4 P2.2.6 — Runtime Freshness / Safe Self-Update: **complete**.
+Jarvis V4 P2 is **complete and merged to `main`**. No active task.
 
-Authoritative completed task:
-
-`docs/JARVIS_V4_P2_2_6_SAFE_SELF_UPDATE_TASK.md`
-
-Next active task (do not execute in the P2.2.6 Worker):
+Release merge / closeout task (complete):
 
 `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
 
-## What P2.2.6 fixed
+## Merge result
 
-P2.2.5 source/tests passed, but the live Windows runtime and the Discord-registered Slash Command schema could drift from GitHub HEAD until the owner manually restarted the Bridge. P2.2.6 removes that drift class:
+- PR #4 `jarvis-v4-p2-control-context` -> `main`: merge commit `507df36`.
+- PR #5 `jarvis-v4-p2-2-hardening` -> `main`, reconciled against the new `main`: merge commit
+  `f938e88`.
+- Final `main` contains the P2/P2.1 content (`6d7f60a`) and every P2.2.1–P2.2.6 fix
+  (P2.2.4 lifecycle `aa6dc27` verified as an ancestor).
+- The remote P2 feature branches are intentionally preserved. Safe cleanup candidates for a later
+  explicit owner action: `jarvis-v4-p2-control-context`, `jarvis-v4-p2-2-hardening`,
+  `jarvis-v4-p1-1-control-panel`, `jarvis-v4-p1-workflow`, `jarvis-v4-foundation`.
 
-- a configured trusted remote/branch is checked automatically (production target after P2 merge: `origin/main`);
-- `/status` and `/doctor` show running/local SHA vs fetched remote SHA and the full update state;
-- updates never interrupt active/queued Work or a busy Agent: the state becomes `UPDATE_PENDING`;
-- at a deterministic safe-idle boundary the candidate is verified in a throwaway `git worktree`, then the clean checkout is fast-forwarded;
-- fast-forward only; dirty/diverged checkouts are `BLOCKED` (no auto stash/reset/merge/rebase);
-- the previous known-good SHA is recorded; a bad SHA is quarantined so it cannot cause an update/restart loop;
-- restart goes through the existing Task Scheduler -> Supervisor -> Bridge chain (dedicated exit code 74), exactly one Bridge;
-- the Supervisor rolls back to the known-good SHA if a just-applied candidate keeps crashing;
-- Discord application commands are re-synced and fetched back from Discord; `/doctor` reports schema PASS/FAIL and `/work task max_length` (verified live = 6000);
-- owner controls: `/update status | now | pause | resume`;
-- notifications only on pending/applied/verified/blocked/failed, never per poll;
-- no secret/token/cookie/credential is logged or notified.
+## What P2 delivered (all merged)
 
-## Baselines preserved
+- P2: control panel, chat history / new / compact, attachments, native Work UX.
+- P2.1: native slash commands + interactive Work controls with ACK hardening.
+- P2.2.1: Supervisor / LiteLLM / Task Scheduler recovery; one Bridge instance.
+- P2.2.2: Chat default AUTO, manual pin, persistence, placeholder repair.
+- P2.2.3: pagination, ACK hardening, help consistency, FULL semantics, unlimited Work duration.
+- P2.2.4: monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control safety.
+- P2.2.5: owner-friendly limits cleanup, full result delivery, persistent permission tier,
+  auto-compact, visible cooldown.
+- P2.2.6: runtime freshness / fast-forward-only safe self-update, rollback + quarantine,
+  Discord command-schema fetch-back, `/update status|now|pause|resume`.
 
-- P2.2.1 Supervisor / LiteLLM / Task Scheduler watchdog recovery; one Bridge instance;
-- P2.2.2 Chat default AUTO, manual pin, persistence, placeholder repair;
-- P2.2.3 pagination, ACK hardening, help consistency, FULL semantics, unlimited default Work duration;
-- P2.2.4 monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control safety;
-- P2.2.5 owner-friendly limits cleanup, full result delivery, persistent permission tier, auto-compact, visible cooldown, no permanent channel lockout;
-- AUTO never silently spends on metered/unknown billing; manual pins never silently switch; secrets protected.
-
-## Existing evidence (deterministic)
+## Verified on new `main` (release merge, 2026-09-17)
 
 ```text
 npm test                 -> 386 pass / 0 fail
 npm run check            -> 121 file(s), 0 failed
-npm run smoke:p226-update-> 49/49  (real temp git repos: fast-forward / dirty / diverged / rollback / quarantine / pause / running-SHA / schema / secrets)
-npm run smoke:p225-limits-> 23/23
+npm run smoke:p2         -> 11/11
+npm run smoke:p22        -> 10/10
+npm run smoke:p222       -> 25/25
+npm run smoke:p22-insert -> 14/14
 npm run smoke:p223-full  -> 15/15
 npm run smoke:p224-lifecycle -> 21/21
-npm run smoke:p2         -> 11/11
+npm run smoke:p225-limits    -> 23/23
+npm run smoke:p226-update    -> 49/49
 npm run verify:hook      -> 9/9
+scripts/smoke-supervisor-recovery.ps1 -> 22/23
 ```
 
-## Owner acceptance (real Discord, build e1d7a78)
+The one supervisor-recovery miss is a timing race in the test's negative window
+(`G4 supervisor really stopped before the restart window`): Task Scheduler restarted the
+supervisor faster than the 5s assertion window. All substantive G4 checks passed (supervisor
+restarted, bridge restored, exactly one bridge). Not a regression.
 
-COMPLETE — `PENDING_OWNER` cleared: Tiny Chat PASS, Work PASS
-(`D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`), owner Stop PASS (pid 52988 tree
-killed, 0 pending approvals), after-Stop residue PASS, after-Stop recovery PASS
-(`STOP_RECOVERY_OK`), `!status` PASS (Build e1d7a78, Update `UP_TO_DATE · e1d7a78 → e1d7a78`).
+## Live runtime
+
+- Existing chain only: Task Scheduler -> `scripts/start-supervisor.ps1` -> Bridge.
+- One Supervisor + one Bridge; live checkout on `main`, running SHA `f938e88`.
+- Updater live: `[update] enabled source=origin/main` and
+  `check(startup) ... UP_TO_DATE`.
+- Real Discord command fetch-back: `/work task max_length == 6000`, schema matches (0 mismatch).
+
+## Owner acceptance
+
+COMPLETE — real-Discord acceptance on build `e1d7a78` (Tiny Chat / Work / Stop / after-Stop
+recovery / `!status` all PASS). `main` is a pure merge of that verified content; no
+post-acceptance code change was made.
+
+## External limitation
+
+WorkBuddy gateway still returns `HTTP 403 request illegal` (`WorkBuddy status=FAIL`). It is
+external and does not block other providers, the updater or Bridge availability.
 
 ## Next action
 
-Execute `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` (PR #4/#5 merge + mainline closeout). Do **not** start P3.
+None. Do **not** start P3 until an explicit new task/branch is created.
