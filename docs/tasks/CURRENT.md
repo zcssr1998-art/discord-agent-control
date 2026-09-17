@@ -1,23 +1,18 @@
 # Active task
 
-`docs/tasks/CHAT_TIMEOUT_UNLIMITED_FIX.md` — remove Jarvis's default client-side Chat wall-clock timeout and make `CHAT_TIMEOUT_MS=0` the default/effective runtime policy.
+`docs/tasks/HUNYUAN3D_LOCAL_REPAIR_AND_SMOKE.md` — repair the existing local Hunyuan3D 2.1 installation under `D:\Hunyuan3d`, fill only the real dependency/runtime gaps, then prove the WebUI and a minimal real generation path work on the Windows machine.
 
-## Status
+## Known starting point
 
-Implemented and verified. Default `CHAT_TIMEOUT_MS=0` (no Jarvis client-side Chat timeout) with
-explicit positive overrides preserved; `npm test` 388/388 and `npm run check` green; live bridge
-restarted and a real pinned OpenCode Go grok-4.6 Chat request succeeded (`timeoutMs=unlimited`).
+- target app tree: `D:\Hunyuan3d\repo21`
+- existing venv: `D:\Hunyuan3d\venv`
+- current observed launch blocker: `ModuleNotFoundError: No module named 'gradio'`
+- preserve existing model caches, local compatibility patches, and the working Torch/CUDA stack unless evidence proves they are the blocker
 
-## Last completed release task
+## Required closeout
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` — P2 release merge / mainline closeout.
+Do not report PASS from code inspection or package installation alone. The task requires a real WebUI startup, local reachability, one minimal real shape-generation smoke, explicit texture-path status, and a tested one-click launcher at `D:\Hunyuan3d\start_hunyuan3d_2_1.bat`.
 
-Result: PR #4 (`jarvis-v4-p2-control-context`) merged to `main` first (`507df36`), then PR #5
-(`jarvis-v4-p2-2-hardening`) reconciled against the new `main` and merged (`f938e88`). All
-P2.2.1–P2.2.6 fixes are on `main`; deterministic and real-machine (Agent, only Discord transport
-faked) gates are green; the scheduled Supervisor runtime runs `main` with one Bridge and the
-updater source is `origin/main`.
+## Previous task
 
-## Do not
-
-Do not start P3. Complete the active Chat-timeout fix first; keep scope limited to the referenced task.
+`docs/tasks/CHAT_TIMEOUT_UNLIMITED_FIX.md` — implemented and verified before this task became active.
