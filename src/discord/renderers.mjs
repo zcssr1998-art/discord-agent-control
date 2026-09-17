@@ -129,9 +129,18 @@ export function settingsButtons({ workThread = false } = {}) {
     new ActionRowBuilder().addComponents(...top),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('set:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('set:reset').setLabel('♻️ 初始化设置').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('set:refresh').setLabel('🔄 刷新').setStyle(ButtonStyle.Primary),
     ),
   ];
+}
+
+/** Explicit confirmation for the destructive `初始化设置` reset. */
+export function resetConfirmButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('setreset:confirm').setLabel('确认初始化').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('setreset:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary),
+  );
 }
 
 export function settingsBackRow() {

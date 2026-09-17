@@ -101,9 +101,18 @@ export class SessionManager {
     return this.savedModelCandidatesForCwd(this.get(channelId).cwd);
   }
 
-  /** Same as savedModelCandidates() for a bare directory (startup card, /status). */
+  /**
+   * Same as savedModelCandidates() for a bare directory (startup card, /status).
+   * The durable owner default is the last-resort candidate, so inheritance
+   * precedence is: channel/thread override → workspace selection → last-anywhere
+   * selection → owner default → product built-in.
+   */
   savedModelCandidatesForCwd(cwd) {
-    const candidates = [this.state.getWorkspaceModel(cwd), this.state.getLastWorkModel()].filter(Boolean);
+    const owner = this.state.getOwnerDefaults?.() ?? null;
+    const ownerEntry = owner?.model
+      ? { providerId: owner.providerId ?? null, executorId: owner.executorId ?? null, model: owner.model }
+      : null;
+    const candidates = [this.state.getWorkspaceModel(cwd), this.state.getLastWorkModel(), ownerEntry].filter(Boolean);
     const seen = new Set();
     return candidates.filter((entry) => {
       const key = `${entry.providerId ?? '?'}:${entry.model}`;

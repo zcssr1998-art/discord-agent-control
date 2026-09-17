@@ -41,7 +41,7 @@ import { autostartSummary } from './autostart.mjs';
 import {
   clip, planResultDelivery,
   permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
-  providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, panelMainRows,
+  providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, resetConfirmButtons, panelMainRows,
   panelBackRow, panelHelpRows, panelModelRows, workControlRows, providerModelRows, choiceRows, pagedChoiceRows,
   modelPageButtons, protocolLabel, transportLabel, billingLabel, sanitizeThreadName, workTitle,
   SETTINGS_MODEL_LIMIT, DISCORD_LIMIT,
@@ -911,11 +911,77 @@ export class DiscordControlPlane {
       `Workspace: \`${state.cwd}\``,
       `Permission: ${PERM_SHORT[this.permissionManager.getLevel(channelId)]}`,
       `State: ${this.#workStateText(channelId)}`,
+      '',
+      `💾 持久默认（新会话/重启继承）：${this.#ownerDefaultsText()}`,
       ...(this.#isWorkThread(channelId) ? ['', '🛠 这是永久 Work 线程；请到父频道使用 Chat。'] : []),
       '',
       '使用下方按钮修改；文本指令仍然有效。',
     ];
     return { content: clip(lines.join('\n')), components: settingsButtons({ workThread: this.#isWorkThread(channelId) }) };
+  }
+
+  /** One concise line describing the durable owner-default profile. */
+  #ownerDefaultsText() {
+    const owner = this.state?.getOwnerDefaults?.();
+    if (!owner) return '未启用';
+    const executor = this.executorManager?.get(owner.executorId);
+    const provider = this.providerManager?.get(owner.providerId);
+    const chat = !owner.chatProviderId || owner.chatProviderId === 'auto'
+      ? 'AUTO'
+      : `${owner.chatProviderId}/${owner.chatModel ?? '—'}`;
+    return [
+      executor?.displayName || owner.executorId || '—',
+      provider?.displayName || owner.providerId || '—',
+      owner.model || '未选择',
+      PERM_SHORT[owner.permission] || owner.permission,
+      `Chat ${chat}`,
+    ].join(' · ');
+  }
+
+  /** Confirmation copy for `初始化设置`; never includes secret material. */
+  #resetConfirmationText() {
+    return [
+      '♻️ **初始化设置**',
+      '',
+      '将把用户可配置的设置恢复为产品默认值：',
+      '• Chat 路由 → AUTO',
+      '• Work 执行器 / Provider / 模型 → 默认',
+      '• 权限 → 标准',
+      '• 工作目录 → 配置默认',
+      '',
+      '**不会**删除：API Key / 凭据、Provider 账号、Discord 配置、聊天与任务历史、运行记录、日志。',
+      '',
+      '确认初始化？',
+    ].join('\n');
+  }
+
+  /**
+   * `初始化设置` core. Refuses cleanly while any Work is active (never kills a
+   * running task), otherwise resets the persisted settings layer and re-seeds the
+   * in-memory managers from the file. It disposes only cached, non-busy runners
+   * so the next Work uses the reset route.
+   */
+  async #factoryReset() {
+    const activity = this.runtimeActivity();
+    if (!activity.safe) {
+      return {
+        ok: false,
+        message: `⚠️ 初始化被拒绝：当前仍有运行中的 Work（${activity.reasons.join('、')}）。\n请等待任务结束或先使用 ⛔ Stop；设置保持不变，任务不会被终止。`,
+      };
+    }
+    for (const [channelId, runner] of [...this.runners]) {
+      if (runner?.busy) continue;
+      try { await runner.stop({ reason: 'settings reset' }); } catch { /* best effort */ }
+      this.runners.delete(channelId);
+    }
+    this.state.resetOwnerSettings();
+    this.permissionManager.resetAll(this.state.getOwnerDefaults().permission);
+    this.chatActual.clear();
+    console.log(`[settings] initialized to product defaults pid=${process.pid}`);
+    return {
+      ok: true,
+      message: '✅ 已初始化设置：Chat/Work 路由、权限与工作目录已恢复为产品默认值。凭据、历史与任务记录未受影响。',
+    };
   }
 
   #configCard(channelId) {
@@ -1017,6 +1083,7 @@ export class DiscordControlPlane {
     if (!executor) return '❌ 未知执行器。';
     if (!executor.available) return `❌ ${executor.displayName} · 未安装`;
     if (!executor.adapterReady) return `⚠️ ${executor.displayName} · ADAPTER_NOT_READY`;
+    this.state?.setOwnerDefaults?.({ executorId });
     const state = this.sessionManager.get(channelId);
     const provider = this.providerManager?.get(state.providerId);
     if (!provider || !this.executorManager.compatible(executorId, provider.protocol)) {
@@ -1038,6 +1105,7 @@ export class DiscordControlPlane {
       return `❌ 当前执行器不支持此 Provider 协议。${recommendations.length ? `\n可用执行器：${recommendations.join('、')}` : ''}`;
     }
     const model = provider.protocol === PROTOCOL.WORKBUDDY ? provider.models?.[0]?.id || null : null;
+    this.state?.setOwnerDefaults?.({ providerId, ...(model ? { model } : {}) });
     await this.sessionManager.change(channelId, { providerId, model }, 'provider changed');
     if (model) this.sessionManager.rememberWorkModel(channelId, { providerId, executorId: state.executorId, model });
     const hint = provider.protocol === PROTOCOL.OPENCODE_GO
@@ -1548,14 +1616,18 @@ export class DiscordControlPlane {
     }
 
     const parent = this.sessionManager.get(parentId);
+    // Inherit the parent's EFFECTIVE route (channel override, workspace, then
+    // durable owner default) so the first Work turn already uses the expected
+    // executor/provider/model instead of a hard-coded value.
+    const inherited = this.effectiveRuntimeState({ channelId: parentId });
     this.state.patchChannel(thread.id, {
       mode: MODE.WORK,
       workThread: true,
       parentChannelId: parentId,
-      cwd: parent.cwd,
-      executorId: parent.executorId,
-      providerId: parent.providerId,
-      model: parent.model,
+      cwd: inherited.workspace ?? parent.cwd,
+      executorId: inherited.executor?.id ?? parent.executorId,
+      providerId: inherited.provider?.id ?? parent.providerId,
+      model: inherited.model ?? parent.model,
       sessionId: null,
     }, this.config.defaultCwd);
     // Permission inheritance is explicit: copy the parent's current level,
@@ -2914,6 +2986,9 @@ export class DiscordControlPlane {
     }
     try {
       const selection = await this.sessionManager.resolveChatSelection(channelId, { providerId: normalizedProvider, model });
+      // An explicit Chat choice is durable owner configuration: persist it so new
+      // scopes and restarts inherit it instead of reverting to AUTO.
+      this.state?.setOwnerDefaults?.({ chatProviderId: selection.chatProviderId, chatModel: selection.chatModel });
       return { ok: true, selection };
     } catch (error) {
       if (error?.code === 'INVALID_CHAT_SELECTION') {
@@ -3515,8 +3590,31 @@ export class DiscordControlPlane {
         await this.#edit(interaction, this.#settingsModelMenu(channelId));
         return;
       }
+      if (id === 'reset') {
+        // Destructive: show an explicit confirmation instead of resetting on one
+        // accidental click.
+        await this.#edit(interaction, { content: clip(this.#resetConfirmationText()), components: [resetConfirmButtons()] });
+        return;
+      }
       // refresh / back / unknown
       await this.#edit(interaction, this.#settingsPanel(channelId));
+      return;
+    }
+    if (prefix === 'setreset') {
+      if (id === 'cancel') {
+        await this.#edit(interaction, { content: '已取消初始化，设置未改变。', components: [settingsBackRow()] });
+        return;
+      }
+      if (id === 'confirm') {
+        const result = await this.#factoryReset();
+        await this.#edit(interaction, result.ok
+          ? {
+            content: clip(`${result.message}\n\n${this.#settingsPanel(channelId).content}`),
+            components: settingsButtons({ workThread: this.#isWorkThread(channelId) }),
+          }
+          : { content: clip(result.message), components: [settingsBackRow()] });
+        return;
+      }
       return;
     }
     if (prefix === 'setmodelnav') {

@@ -1,16 +1,45 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { needsChatSelectionRepair } from './model-selection.mjs';
+import { DEFAULT_LEVEL } from './permission-manager.mjs';
 
-export function defaultChannelState(defaultCwd) {
+/** Bumped when the owner-default profile shape changes; read for migration. */
+export const OWNER_SETTINGS_VERSION = 1;
+
+/**
+ * The canonical product routing defaults. This is the ONE source of truth for
+ * "product defaults": per-channel defaults, owner-default fallbacks and the
+ * `初始化设置` reset all derive from it instead of duplicating literals.
+ *
+ * `workspace` is intentionally null here: the persistent workspace selection is
+ * owned by the existing global-workspace mechanism (`preferences.workspace`) and
+ * only surfaced through `getOwnerDefaults()`.
+ */
+export function productRoutingDefaults() {
   return {
-    mode: 'chat',
-    chatProviderId: 'auto',
-    chatModel: null,
-    cwd: defaultCwd,
     executorId: 'workbuddy',
     providerId: 'workbuddy-free',
     model: null,
+    chatProviderId: 'auto',
+    chatModel: null,
+    permission: DEFAULT_LEVEL,
+    workspace: null,
+  };
+}
+
+/** Channel fields that only exist to override the routing/settings defaults. */
+const ROUTING_CHANNEL_KEYS = ['executorId', 'providerId', 'model', 'chatProviderId', 'chatModel', 'cwd'];
+
+export function defaultChannelState(defaultCwd) {
+  const routing = productRoutingDefaults();
+  return {
+    mode: 'chat',
+    chatProviderId: routing.chatProviderId,
+    chatModel: routing.chatModel,
+    cwd: defaultCwd,
+    executorId: routing.executorId,
+    providerId: routing.providerId,
+    model: routing.model,
     sessionId: null,
   };
 }
@@ -43,14 +72,125 @@ export class StateStore {
     }
     catch { this.data = { channels: {}, workspaces: {}, preferences: {}, permissions: {} }; }
     this.#backfillWorkModels();
+    this.#seedOwnerDefaults();
     this.#repairChatSelections();
   }
   save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2));
   }
+
+  /**
+   * A channel's effective state. A scope the owner never configured inherits the
+   * persisted owner defaults (so a new Work thread / channel / DM does not fall
+   * back to hard-coded values); an existing channel entry wins because it is an
+   * explicit local override.
+   */
   getChannel(channelId, defaultCwd) {
-    return { ...defaultChannelState(defaultCwd), ...(this.data.channels[channelId] || {}) };
+    const base = defaultChannelState(defaultCwd);
+    const stored = this.data.channels?.[channelId];
+    if (!stored || typeof stored !== 'object') return { ...base, ...this.ownerRoutingOverrides(base) };
+    return { ...base, ...stored };
+  }
+
+  /**
+   * Owner defaults mapped onto the routing fields a channel state exposes. The
+   * Work model is intentionally NOT mapped here: it is resolved later by the
+   * model resolver as a lower-priority candidate, so a workspace-specific saved
+   * selection still wins over the owner default (see SessionManager).
+   */
+  ownerRoutingOverrides(base = {}) {
+    const owner = this.getOwnerDefaults();
+    const out = { ...base };
+    if (owner.executorId) out.executorId = owner.executorId;
+    if (owner.providerId) out.providerId = owner.providerId;
+    if (owner.chatProviderId) out.chatProviderId = owner.chatProviderId;
+    out.chatModel = owner.chatModel ?? null;
+    if (owner.workspace) out.cwd = owner.workspace;
+    return out;
+  }
+
+  // ---- durable owner defaults ----------------------------------------------
+  // One persisted profile of the owner's explicitly chosen settings. It is the
+  // fallback (after an explicit channel/workspace selection) for a scope with no
+  // local override, so a restart / new Work thread / new channel never silently
+  // reverts to hard-coded values. Only stable configuration belongs here:
+  // session ids, run state, approvals, cooldowns and transient cwd are excluded.
+
+  /** The owner-default profile merged over the canonical product defaults. */
+  getOwnerDefaults() {
+    const defaults = productRoutingDefaults();
+    const stored = this.data.preferences?.ownerDefaults;
+    if (stored && typeof stored === 'object') {
+      for (const key of Object.keys(defaults)) {
+        if (key === 'workspace') continue;
+        if (stored[key] !== undefined) defaults[key] = stored[key];
+      }
+    }
+    // The persistent workspace selection stays owned by the global-workspace
+    // mechanism; the profile only exposes it.
+    defaults.workspace = this.getGlobalWorkspace()?.path ?? null;
+    return defaults;
+  }
+
+  /** The durable owner-default permission tier (canonical default when unset). */
+  getOwnerDefaultPermission() {
+    return this.getOwnerDefaults().permission;
+  }
+
+  /**
+   * Persist an explicit owner choice as the durable default for future scopes.
+   * Unknown keys are ignored (schema-version-safe). `workspace` routes through
+   * the existing global-workspace mechanism rather than being duplicated.
+   */
+  setOwnerDefaults(patch = {}) {
+    const known = productRoutingDefaults();
+    const next = { ...(this.data.preferences?.ownerDefaults ?? {}) };
+    for (const key of Object.keys(known)) {
+      if (key === 'workspace') continue;
+      if (patch[key] !== undefined) next[key] = patch[key];
+    }
+    this.data.preferences = this.data.preferences ?? {};
+    this.data.preferences.ownerDefaults = next;
+    this.data.preferences.ownerSettingsVersion = OWNER_SETTINGS_VERSION;
+    if (patch.workspace !== undefined) {
+      if (patch.workspace) this.setGlobalWorkspace(patch.workspace);
+      else this.clearGlobalWorkspace();
+    }
+    this.save();
+    return this.getOwnerDefaults();
+  }
+
+  /**
+   * `初始化设置`: reset the user-configurable settings layer to the canonical
+   * product defaults. It removes the owner-default profile, the saved workspace
+   * model selections and the persisted permission tiers, and neutralizes
+   * per-channel routing overrides that would otherwise immediately reapply the
+   * old configuration.
+   *
+   * It deliberately does NOT touch credentials, provider accounts, the Discord
+   * token, chat/task history, the run database, logs, updater state, channel
+   * mode/thread/session bookkeeping or any repository files.
+   */
+  resetOwnerSettings() {
+    const preferences = this.data.preferences ?? {};
+    delete preferences.ownerDefaults;
+    delete preferences.lastWorkModel;
+    delete preferences.workspace;
+    preferences.ownerSettingsVersion = OWNER_SETTINGS_VERSION;
+    this.data.preferences = preferences;
+    // Workspace-scoped model entries exist only to override the routing default.
+    this.data.workspaces = {};
+    // Persisted tiers exist only to override the owner-default permission.
+    this.data.permissions = {};
+    for (const [channelId, value] of Object.entries(this.data.channels ?? {})) {
+      if (!value || typeof value !== 'object') continue;
+      const next = { ...value };
+      for (const key of ROUTING_CHANNEL_KEYS) delete next[key];
+      this.data.channels[channelId] = next;
+    }
+    this.save();
+    return this.getOwnerDefaults();
   }
   patchChannel(channelId, patch, defaultCwd) {
     const current = this.getChannel(channelId, defaultCwd);
@@ -94,6 +234,15 @@ export class StateStore {
     if (key) this.data.workspaces[key] = entry;
     this.data.preferences = this.data.preferences ?? {};
     this.data.preferences.lastWorkModel = entry;
+    // An explicit Work model selection is exactly the owner configuration that
+    // must become the durable default for future scopes.
+    this.data.preferences.ownerDefaults = {
+      ...(this.data.preferences.ownerDefaults ?? {}),
+      ...(executorId ? { executorId } : {}),
+      ...(providerId ? { providerId } : {}),
+      model,
+    };
+    this.data.preferences.ownerSettingsVersion = OWNER_SETTINGS_VERSION;
     this.save();
     return entry;
   }
@@ -187,6 +336,35 @@ export class StateStore {
       changed = true;
     }
     if (changed) this.save();
+  }
+
+  /**
+   * One-time upgrade seeding for the owner-default profile. It is derived ONLY
+   * from the already-unambiguous `lastWorkModel` selection (which the backfill
+   * derives from an existing channel's explicit model). Permission and Chat pins
+   * are scope-specific and ambiguous, so they are not guessed: they wait for the
+   * next explicit owner choice. Existing state with no selection is left alone.
+   */
+  #seedOwnerDefaults() {
+    const preferences = this.data.preferences ?? {};
+    if (preferences.ownerSettingsVersion === OWNER_SETTINGS_VERSION) return;
+    if (preferences.ownerDefaults && typeof preferences.ownerDefaults === 'object') {
+      preferences.ownerSettingsVersion = OWNER_SETTINGS_VERSION;
+      this.data.preferences = preferences;
+      this.save();
+      return;
+    }
+    const last = this.getLastWorkModel();
+    preferences.ownerSettingsVersion = OWNER_SETTINGS_VERSION;
+    if (last?.model) {
+      preferences.ownerDefaults = {
+        ...(last.executorId ? { executorId: last.executorId } : {}),
+        ...(last.providerId ? { providerId: last.providerId } : {}),
+        model: last.model,
+      };
+    }
+    this.data.preferences = preferences;
+    this.save();
   }
 
   /**

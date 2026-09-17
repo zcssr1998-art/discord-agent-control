@@ -69,12 +69,29 @@ export class PermissionManager {
     this.channelBySession.delete(sessionId);
   }
 
-  #setLevel(channelId, level) {
+  /**
+   * `meta.explicit` marks an owner-facing choice (switchLevel/confirmFull) as
+   * opposed to trusted internal inheritance (inheritLevel): only an explicit
+   * choice may become the durable owner default for future scopes.
+   */
+  #setLevel(channelId, level, meta = {}) {
     this.levelByChannel.set(channelId, level);
     for (const [sessionId, ownerChannelId] of this.channelBySession) {
       if (ownerChannelId === channelId) this.levelBySession.set(sessionId, level);
     }
-    try { this.onChange?.(channelId, level); } catch { /* persistence must never break a switch */ }
+    try { this.onChange?.(channelId, level, meta); } catch { /* persistence must never break a switch */ }
+  }
+
+  /**
+   * Reset every in-memory tier to the canonical default. Used by `初始化设置`
+   * after the persisted state has already been reset; it never fires `onChange`
+   * because the file is authoritative at that point.
+   */
+  resetAll(defaultLevel = DEFAULT_LEVEL) {
+    this.defaultLevel = defaultLevel ?? DEFAULT_LEVEL;
+    this.levelByChannel.clear();
+    this.levelBySession.clear();
+    this.channelBySession.clear();
   }
 
   /** 切换档位。返回 { ok, previous, current, needsConfirm, changed }。 */
@@ -89,14 +106,14 @@ export class PermissionManager {
       return { ok: false, previous, current: previous, needsConfirm: true, changed: false };
     }
 
-    this.#setLevel(channelId, level);
+    this.#setLevel(channelId, level, { explicit: true });
     return { ok: true, previous, current: level, needsConfirm: false, changed: true };
   }
 
   /** 确认 FULL 模式（二次确认后调用）。 */
   confirmFull(channelId) {
     const previous = this.getLevel(channelId);
-    this.#setLevel(channelId, LEVEL.FULL);
+    this.#setLevel(channelId, LEVEL.FULL, { explicit: true });
     return { ok: true, previous, current: LEVEL.FULL, changed: previous !== LEVEL.FULL };
   }
 
@@ -113,7 +130,7 @@ export class PermissionManager {
     if (!Object.values(LEVEL).includes(level)) {
       return { ok: false, previous, current: previous, changed: false };
     }
-    this.#setLevel(channelId, level);
+    this.#setLevel(channelId, level, { explicit: false });
     return { ok: true, previous, current: level, changed: previous !== level };
   }
 

@@ -17,6 +17,7 @@
     "smoke:p22-insert": "node scripts/p22-live-insert-e2e.mjs",
     "smoke:p22-model": "node scripts/p22-model-restart-e2e.mjs",
     "smoke:p22-workspace": "node scripts/p22-workspace-e2e.mjs",
+    "smoke:owner-settings": "node scripts/owner-settings-reset-e2e.mjs",
     "smoke:p223-full": "node scripts/p223-full-work-e2e.mjs",
     "smoke:p224-lifecycle": "node scripts/p224-lifecycle-e2e.mjs",
     "smoke:p225-limits": "node scripts/p225-limits-smoke.mjs",

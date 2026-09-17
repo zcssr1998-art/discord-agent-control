@@ -2,55 +2,51 @@
 
 ## Branch
 
-`main`
+`jarvis-settings-persistence-reset-task`
 
 ## Active task
 
-None. P2 release merge / mainline closeout is complete
-(`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`). Do **not** start P3.
+`docs/tasks/JARVIS_SETTINGS_PERSISTENCE_AND_FACTORY_RESET.md` — persistent owner
+settings + `初始化设置`. Implemented and verified; owner-typed Discord click
+confirmation is owner-only. Do **not** start P3.
 
-## Current status
+## What changed
 
-Jarvis V4 P2 is complete on `main`. PR #4 (`jarvis-v4-p2-control-context`, merge `507df36`)
-landed first; PR #5 (`jarvis-v4-p2-2-hardening`) was reconciled against the new `main` and merged
-as `f938e88`. `main` contains the P2/P2.1 control-panel/native-command work and every
-P2.2.1–P2.2.6 hardening fix (P2.2.4 lifecycle `aa6dc27` verified ancestor).
+- `src/state.mjs`: `preferences.ownerDefaults` (schema v1) + `getOwnerDefaults` /
+  `setOwnerDefaults` / `getOwnerDefaultPermission` / `resetOwnerSettings`;
+  `getChannel()` layers owner defaults for a scope with no explicit override;
+  `#seedOwnerDefaults` migrates from `lastWorkModel` only (permission/Chat pins are
+  ambiguous and wait for the next explicit choice); `rememberWorkModel` updates the
+  profile atomically. `productRoutingDefaults()` is the one canonical default table.
+- `src/permission-manager.mjs`: `onChange(channelId, level, { explicit })`;
+  `resetAll(defaultLevel)`.
+- `src/session-manager.mjs`: owner model is the last saved candidate.
+- `src/discord-ui.mjs`: explicit `#switchExecutor` / `#switchProvider` /
+  `#applyChatSelection` persist the profile; `#startWorkThread` inherits the parent's
+  effective route; `#factoryReset` refuses while Work is active; Settings shows the
+  persisted default line and the `♻️ 初始化设置` confirmation flow.
+- `src/discord/renderers.mjs`: `set:reset` + `resetConfirmButtons`.
+- `src/index.mjs`: permission `defaultLevel`/persistence wired to the profile and
+  a startup log line.
+- `scripts/owner-settings-reset-e2e.mjs` + `npm run smoke:owner-settings`.
 
-## Verified on main
+## Verified
 
-- `npm test` 386/0, `npm run check` 121/0.
-- `smoke:p2` 11/11, `smoke:p22` 10/10, `smoke:p222` 25/25, `smoke:p22-insert` 14/14,
-  `smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21, `smoke:p225-limits` 23/23,
-  `smoke:p226-update` 49/49, `verify:hook` 9/9.
-- `scripts/smoke-supervisor-recovery.ps1` 22/23 — the miss is only the test's negative
-  "supervisor really stopped" window; Task Scheduler restarted it faster than the 5s assertion.
-  All substantive recovery checks passed.
-- Live runtime: Task Scheduler -> Supervisor -> Bridge, one instance, checkout on `main`,
-  running `f938e88`, updater `source=origin/main` `UP_TO_DATE`.
-- Real Discord schema fetch-back (`npm run doctor:commands`): `/work task max_length == 6000`,
-  0 mismatches.
+- `npm test` 397/0; `npm run check` 123/0; `npm run smoke:owner-settings` 8/8
+  (real state copy, new node process per phase, one real Agent run, real supervised
+  bridge restart logged `[state] owner defaults: executor=claude provider=opencode-go
+  model=deepseek-v4.1-flash`).
+- Existing real-machine smoke `npm run smoke:p22-model` still 6/6 (no regression).
 
 ## Preserved invariants (do not regress)
 
-- Supervisor/LiteLLM/Task Scheduler recovery and exactly one Bridge;
-- Chat default AUTO + manual pin semantics + model persistence; AUTO never silently spends on
-  metered/unknown billing;
-- pagination/ACK/help consistency; FULL persistent owner semantics; unlimited default Work
-  duration; monotonic Work lifecycle, truthful insert accounting, one-shot Stop, stale-control
-  safety; P2.2.5 full result delivery, auto-compact, visible cooldown;
-- fast-forward-only safe self-update with rollback/quarantine and no second daemon;
-- secret/credential protection (no token in logs, diffs, notifications or state).
-
-## Owner acceptance
-
-COMPLETE on build `e1d7a78` (real Discord Tiny Chat / Work / Stop / after-Stop recovery /
-`!status`). `main` is a pure merge of that content; no post-acceptance code change.
-
-## External limitation
-
-WorkBuddy gateway `HTTP 403 request illegal` is external and must never block other providers,
-the updater state or Bridge availability.
+- Channel override > workspace selection > durable owner default > product built-in;
+  a saved model is still validated against the live provider and fails loudly.
+- Trusted Work-thread permission inheritance never overwrites an explicit owner tier.
+- `初始化设置` deletes no credentials/providers/Discord config/chat/task history/run
+  database/logs/updater state/repo files and echoes no secrets.
 
 ## Next
 
-No active task. P3 requires a fresh explicit task/branch.
+Owner-only Discord confirmation, then merge to `main`. P3 requires a fresh explicit
+task/branch.

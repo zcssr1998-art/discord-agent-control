@@ -2,15 +2,32 @@
 
 ## Branch
 
-`main`
+`jarvis-settings-persistence-reset-task`
 
 ## Current milestone
 
-Jarvis V4 P2 is **complete and merged to `main`**. No active task.
+Persistent owner settings + `初始化设置` (implemented and verified on this branch;
+owner-typed Discord click confirmation is owner-only). Task:
+`docs/tasks/JARVIS_SETTINGS_PERSISTENCE_AND_FACTORY_RESET.md`.
 
-Release merge / closeout task (complete):
+- `StateStore.preferences.ownerDefaults` (schema v1) is the single durable owner
+  profile: Work executor/provider/model, Chat pin, permission tier and the saved
+  workspace. `getChannel()` applies it to a scope with no explicit override; the
+  Work model is resolved as a lower-priority candidate so channel > workspace >
+  owner default > built-in still holds.
+- Explicit choices persist it: `rememberWorkModel`, `#switchExecutor`,
+  `#switchProvider`, `#applyChatSelection`, and an owner-facing permission switch
+  (`onChange` meta `explicit`; trusted thread inheritance never overwrites it).
+- `♻️ 初始化设置` in Settings uses `确认初始化`/`取消`; it resets settings only
+  (owner profile, lastWorkModel, workspace, workspace model selections, persisted
+  tiers and per-channel routing overrides) and refuses while Work is active.
+- Verification: `npm test` 397/0, `npm run check` 123/0,
+  `npm run smoke:owner-settings` 8/8 (real state copy, new process per phase, real
+  Agent run); live supervised bridge restart logged
+  `[state] owner defaults: executor=claude provider=opencode-go model=deepseek-v4.1-flash`.
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
+Jarvis V4 P2 is complete and merged to `main`. Release merge / closeout task
+(complete): `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`.
 
 ## Merge result
 
@@ -59,9 +76,11 @@ observation window, so the Task Scheduler restart semantics are verified determi
 ## Live runtime
 
 - Existing chain only: Task Scheduler -> `scripts/start-supervisor.ps1` -> Bridge.
-- One Supervisor + one Bridge; live checkout on `main`, running SHA `086899e`.
-- Updater live: `[update] enabled source=origin/main` and
-  `check(startup) ... UP_TO_DATE`.
+- One Supervisor + one Bridge; the live checkout is on
+  `jarvis-settings-persistence-reset-task` (verification of this task).
+- The live supervised bridge was restarted (bridge pid 45836) and logged the
+  persisted owner defaults; the updater reports BLOCKED because the live branch is
+  not `AUTO_UPDATE_BRANCH=main` (expected until this branch is merged).
 - Real Discord command fetch-back: `/work task max_length == 6000`, schema matches (0 mismatch).
 
 ## Owner acceptance
@@ -77,4 +96,7 @@ external and does not block other providers, the updater or Bridge availability.
 
 ## Next action
 
-None. Do **not** start P3 until an explicit new task/branch is created.
+Merge `jarvis-settings-persistence-reset-task` to `main` (not done here), then have
+the owner confirm the Discord-only parts on the live bridge: select a non-default
+setting, restart, reopen `/settings`, press `♻️ 初始化设置` (confirm/cancel), and
+check a brand-new Work thread. Do **not** start P3 yet.

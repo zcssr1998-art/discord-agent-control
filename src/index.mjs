@@ -83,6 +83,8 @@ async function main() {
     const lastModel = state.getLastWorkModel();
     const workspaces = state.savedWorkspaceModelCount();
     console.log(`[state] restored model selection: workspaces=${workspaces} lastWorkModel=${lastModel ? `${lastModel.providerId ?? '?'}/${lastModel.model}` : 'none'}`);
+    const owner = state.getOwnerDefaults();
+    console.log(`[state] owner defaults: executor=${owner.executorId ?? '-'} provider=${owner.providerId ?? '-'} model=${owner.model ?? 'none'} chat=${owner.chatProviderId ?? 'auto'}${owner.chatModel ? `/${owner.chatModel}` : ''} permission=${owner.permission} workspace=${owner.workspace ?? 'config-default'}`);
   }
 
   // ---- P2.2D durable operational store (SQLite WAL) -------------------------
@@ -101,8 +103,16 @@ async function main() {
   // survives a bridge restart and is never reset by a model/provider/workspace
   // change or a new Agent session.
   const permissions = new PermissionManager({
+    // A persisted owner tier (e.g. a confirmed FULL) is the default for every
+    // scope the owner has not explicitly configured, including after restart.
+    defaultLevel: state.getOwnerDefaultPermission(),
     initialLevels: state.allPermissionLevels(),
-    onChange: (channelId, level) => state.setPermissionLevel(channelId, level),
+    onChange: (channelId, level, meta) => {
+      state.setPermissionLevel(channelId, level);
+      // Only an owner-facing choice becomes the durable default; trusted thread
+      // inheritance must not silently overwrite it.
+      if (meta?.explicit) state.setOwnerDefaults({ permission: level });
+    },
   });
   const secret = ensureHookSecret();
   // Repair a stale global hook (a hook installed from a different checkout
