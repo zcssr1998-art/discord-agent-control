@@ -394,6 +394,8 @@ async function main() {
     branch: config.autoUpdateBranch,
     intervalMs: config.autoUpdateIntervalMs,
     stateFile: path.join(root, 'data', 'update-state.json'),
+    // The SHA this process actually loaded decides freshness, not the checkout.
+    runningSha: buildIdentity.commit,
     safeToRestart: async () => (discord ? discord.runtimeActivity() : { safe: false, reasons: ['bridge starting'] }),
     onReconcileSchema: async () => (discord ? discord.reconcileCommandSchema() : null),
     onRequestRestart: (info) => shutdownForUpdate(info),

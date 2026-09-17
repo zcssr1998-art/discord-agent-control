@@ -156,6 +156,30 @@ async function main() {
     updater.stop();
   }
 
+  // ------------------- running process stale vs externally advanced checkout
+  {
+    const pair = makePair('stale');
+    const v0 = pair.head();
+    const remote = pair.advance();
+    // The checkout advances externally (e.g. a manual pull) but the process was
+    // NOT restarted: freshness must be judged by the running SHA, not the HEAD,
+    // otherwise a stale runtime would look current (the original drift bug).
+    git(pair.work, ['fetch', '--quiet', 'origin', 'main']);
+    git(pair.work, ['merge', '--ff-only', 'origin/main']);
+    check('stale runtime: checkout advanced but process SHA is old', pair.head() === remote && v0 !== remote);
+
+    const { updater, restarts, stateFile } = makeUpdater(pair, { runningSha: v0 });
+    const v = await updater.refresh({ force: true });
+    check('stale runtime: not reported UP_TO_DATE', v.status !== UPDATE_STATUS.UP_TO_DATE, v.status);
+    check('stale runtime: restart requested to run the fresh code', restarts.length === 1 && v.appliedSha === remote && v.previousGoodSha === v0);
+    updater.stop();
+
+    const { updater: fresh } = makeUpdater(pair, { stateFile, runningSha: remote });
+    const verified = await fresh.reconcileAfterRestart();
+    check('stale runtime: fresh process verifies and goes UP_TO_DATE', verified.status === UPDATE_STATUS.UP_TO_DATE && verified.applyPendingVerify === false);
+    fresh.stop();
+  }
+
   // ------------------------------------------- Work busy -> pending -> idle
   {
     const pair = makePair('busy');

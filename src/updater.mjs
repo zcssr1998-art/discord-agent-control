@@ -88,6 +88,7 @@ export function defaultUpdateState() {
     pauseReason: null,
     lastCheckAt: null,
     localSha: null,
+    checkoutSha: null,
     remote: null,
     branch: null,
     remoteSha: null,
@@ -370,6 +371,7 @@ export class Updater {
     enabled = true,
     intervalMs = 300000,
     stateFile = null,
+    runningSha = null,
     safeToRestart = null,
     onRequestRestart = null,
     onNotify = null,
@@ -387,6 +389,10 @@ export class Updater {
     this.enabled = enabled !== false;
     this.intervalMs = Number(intervalMs) > 0 ? Number(intervalMs) : 300000;
     this.stateFile = stateFile || path.join(root, 'data', 'update-state.json');
+    // The code the running process actually loaded (build identity at startup).
+    // This — not the checkout HEAD — decides whether the runtime is fresh: an
+    // externally advanced checkout must never make a stale process look current.
+    this.runningSha = isValidSha(runningSha) ? runningSha.trim() : null;
     this.safeToRestart = safeToRestart;
     this.onRequestRestart = onRequestRestart;
     this.onNotify = onNotify;
@@ -424,6 +430,8 @@ export class Updater {
       remote: this.remote,
       branch: this.branch,
       localSha: s.localSha,
+      checkoutSha: s.checkoutSha,
+      runningSha: this.runningSha,
       remoteSha: s.remoteSha,
       relation: s.relation,
       dirty: Boolean(s.dirty),
@@ -450,6 +458,9 @@ export class Updater {
       `Source: ${v.remote}/${v.branch}`,
       `Local : ${shortSha(v.localSha)}  Remote: ${shortSha(v.remoteSha)}${v.relation && v.relation !== 'unknown' ? ` (${v.relation})` : ''}`,
     ];
+    if (v.checkoutSha && v.localSha && v.checkoutSha !== v.localSha) {
+      lines.push(`Checkout: ${shortSha(v.checkoutSha)} (differs from running ${shortSha(v.localSha)})`);
+    }
     if (v.paused) lines.push(`Paused: yes${this.store.state.pauseReason ? ` (${this.store.state.pauseReason})` : ''}`);
     if (v.pendingSha) lines.push(`Pending: ${shortSha(v.pendingSha)}`);
     if (v.previousGoodSha) lines.push(`Known good: ${shortSha(v.previousGoodSha)}`);
@@ -540,6 +551,13 @@ export class Updater {
       this.store.save();
       return this.statusSnapshot();
     }
+    // A verified candidate was already applied and the Supervisor restart was
+    // requested. Never re-deploy while that restart is in flight.
+    if (this.store.state.applyPendingVerify) {
+      this.store.state.status = UPDATE_STATUS.UPDATING;
+      this.store.save();
+      return this.statusSnapshot();
+    }
     const nowMs = this.now();
     if (!force) {
       const last = this.store.state.lastCheckAt ? Date.parse(this.store.state.lastCheckAt) : 0;
@@ -557,12 +575,16 @@ export class Updater {
       return this.statusSnapshot();
     }
 
-    const local = await this.#head();
-    if (!local) {
+    const checkoutHead = await this.#head();
+    if (!checkoutHead) {
       this.#block('cannot read local HEAD');
       return this.statusSnapshot();
     }
+    // Freshness is measured against the RUNNING code, not just the checkout.
+    const local = this.runningSha || checkoutHead;
+    if (!this.runningSha) this.runningSha = checkoutHead;
 
+    this.store.state.checkoutSha = checkoutHead;
     this.store.state.localSha = local;
     this.store.state.remote = this.remote;
     this.store.state.branch = this.branch;
@@ -666,8 +688,13 @@ export class Updater {
       const branchNow = await this.#currentBranch();
       if (branchNow !== this.branch) { this.#fail(candidateSha, `branch changed to '${branchNow}' during deploy`); return; }
       const head = await this.#head();
-      if (head !== localSha) { this.#fail(candidateSha, `HEAD moved (${shortSha(head)}) during deploy`, { quarantine: false }); return; }
-      const stillAncestor = await this.#isAncestor(localSha, candidateSha);
+      // The checkout may already be at the candidate (advanced externally or a
+      // no-op re-apply); that is still a valid fast-forward target.
+      if (head !== localSha && head !== candidateSha) {
+        this.#fail(candidateSha, `HEAD moved (${shortSha(head)}) during deploy`, { quarantine: false });
+        return;
+      }
+      const stillAncestor = head === candidateSha ? true : await this.#isAncestor(head, candidateSha);
       if (!stillAncestor) { this.#fail(candidateSha, 'candidate is not a fast-forward descendant', { quarantine: false }); return; }
       if (await this.#isDirty()) { this.#fail(candidateSha, 'worktree became dirty during deploy', { quarantine: false }); return; }
 
@@ -683,6 +710,7 @@ export class Updater {
       const at = new Date().toISOString();
       state.previousGoodSha = localSha;
       state.appliedSha = candidateSha;
+      state.checkoutSha = candidateSha;
       state.appliedAt = at;
       state.pendingSha = candidateSha;
       state.applyPendingVerify = true;
@@ -709,7 +737,9 @@ export class Updater {
    */
   async reconcileAfterRestart() {
     const head = await this.#head();
-    this.store.state.localSha = head;
+    if (isValidSha(head)) this.runningSha = head.trim();
+    this.store.state.checkoutSha = head;
+    this.store.state.localSha = this.runningSha || head;
     if (this.store.state.applyPendingVerify) {
       const applied = this.store.state.appliedSha;
       if (head && applied && head === applied) {
