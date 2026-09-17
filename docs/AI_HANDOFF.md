@@ -8,66 +8,55 @@
 
 `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
 
-This is a priority preflight blocker before the already-prepared AI TechLead Shadow task.
+Queued next:
 
-Queued next task after P3.0 passes:
+1. `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
+2. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+## Current objective
 
-## Objective
+P3.0 removes/redesigns Jarvis-owned elapsed-time limits that can make valid Chat/Work/result-delivery flows fail merely because an internal timer fired.
 
-Remove/redesign Jarvis-owned elapsed-time limits that can make valid Chat/Work/result-delivery flows fail merely because an internal timer fired.
+Invariant:
 
-The user-facing invariant is now:
-
-> Time alone is not a failure condition for valid owner work. Low-level per-attempt transport deadlines may exist only as internal recoverable safety mechanisms and must never discard completed work/results or require rerunning the original Work.
-
-## Triggering failure
-
-Real Discord result delivery surfaced a 10-second connect timeout and the full result was not available through the normal delivery path. Treat this as a systemic timeout-policy issue, not a one-line magic-number patch.
+> Time alone is not a failure condition for valid owner work. Per-attempt transport deadlines may exist only as recoverable safety mechanisms; they must not discard completed work/results or require rerunning the original Work.
 
 ## Preserve
 
 P2/P2.1/P2.2.1–P2.2.6 are complete on `main`. Preserve:
 
-- one process Supervisor + one Bridge recovery chain;
+- one process Supervisor + one Bridge;
 - Chat/Work separation;
-- Work wall-clock timeout default `0` unlimited;
-- approval timeout default `0`;
-- unlimited default Work follow-ups;
+- Work timeout default unlimited;
+- approval timeout default unlimited;
 - persistent Work lifecycle/session state;
 - truthful insert accounting;
-- owner Stop/process-tree cancellation/stale-control safety;
+- owner Stop/process-tree cancellation;
 - permission controls;
-- AUTO billing safety and manual pin semantics;
+- AUTO billing safety/manual pin semantics;
 - updater rollback/quarantine;
 - secret redaction/credential isolation.
 
-## Key P3.0 decisions
-
-- Do not blindly delete every timer.
-- Remove arbitrary total-duration/user-expiry semantics.
-- Keep real Discord/platform deadlines and rate-limit/backoff/throttle/cleanup timers that do not expire owner work.
-- A Discord/HTTP connect timeout is transport failure, not Worker failure.
-- Persist complete result before delivery attempt.
-- `Work SUCCEEDED + delivery PENDING` must remain a valid state.
-- Retry transport delivery without rerunning the Worker.
-- Immediate retry count may be bounded, but exhaustion must become durable pending/delayed retry, not data loss.
-- Prefer progress/state-based watchdogs over elapsed-time kill switches.
-- No new daemon/database/queue framework.
-
-## Worker startup
-
-Do not create a second plan. Read the active task and inspect only timeout/result-delivery/Work-lifecycle/Discord transport paths needed to implement it.
+## P3.0 completion handoff
 
 After P3.0 passes:
 
-1. write/update the timeout audit evidence requested by the task;
-2. restore `docs/tasks/CURRENT.md` to `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`;
+1. save compact timeout audit evidence;
+2. set `docs/tasks/CURRENT.md` to `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`;
 3. commit/push and verify remote HEAD;
-4. stop. Do not implement TechLead in the same Worker job.
+4. stop that Worker job.
 
-## Completion contract
+Do not jump directly to TechLead.
+
+## P3.1 intent
+
+Implement native Chat web search in the normal Chat path, using a lightweight search/evidence layer rather than a coding Agent. AUTO search should be selective, cite real sources, preserve billing/privacy safeguards, and never create a Work session just to search.
+
+## TechLead intent
+
+After P3.1 passes, continue to `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`: zero-token standby, deterministic incident detection first, Grok 4.6 only on meaningful incidents, advisory Shadow Mode.
+
+## Current Worker completion contract
 
 ```text
 PASS | FAIL
