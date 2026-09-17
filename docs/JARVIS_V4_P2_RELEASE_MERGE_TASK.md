@@ -20,7 +20,10 @@ Current stacked branches / PRs:
 - PR #5: `jarvis-v4-p2-2-hardening` -> `jarvis-v4-p2-control-context`
   - title: `Jarvis V4 P2.2: hardening, autostart, durable runtime`
   - currently Draft
-  - head includes P2.2.1–P2.2.4 through commit `aa6dc27521527b86f1122292abe5d97179623915`
+  - head includes P2.2.1–P2.2.4 through commit `aa6dc27521527b86f1122292abe5d97179623915`,
+    plus P2.2.5 limits cleanup and P2.2.6 runtime freshness / safe self-update.
+  - P2.2.6 baseline: `npm run smoke:p226-update` 45/45; real Discord command fetch-back
+    `/work task max_length == 6000`; bootstrap restart loaded the new runtime.
 
 Both PRs were reported mergeable before this task was created; re-check live state before acting.
 
@@ -111,6 +114,8 @@ npm run smoke:p222
 npm run smoke:p22-insert
 npm run smoke:p223-full
 npm run smoke:p224-lifecycle
+npm run smoke:p225-limits
+npm run smoke:p226-update
 ```
 
 Also run:
@@ -170,6 +175,8 @@ npm run smoke:p222
 npm run smoke:p22-insert
 npm run smoke:p223-full
 npm run smoke:p224-lifecycle
+npm run smoke:p225-limits
+npm run smoke:p226-update
 ```
 
 If merge/rebase touched runtime/autostart/supervisor files, also run the supervisor recovery smoke.

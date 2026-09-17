@@ -863,7 +863,7 @@ Known external blocker unchanged: WorkBuddy gateway returns
 and WorkBuddy-executor Work tasks remain BLOCKED_BY_WORKBUDDY. Other providers
 remain usable and the bridge reports WorkBuddy as unavailable.
 
-## P2.2.4 Work lifecycle / insert / Stop ¡ª 2026-09-17
+## P2.2.4 Work lifecycle / insert / Stop ï¿½ï¿½ 2026-09-17
 
 ```text
 npm test                             -> 356 pass / 0 fail
@@ -881,13 +881,13 @@ Claude Code CLI through the local adapter, real hook server, real Windows
 process tree; only the Discord transport is the in-process fake):
 
 - a real Work with a live insert AND a queued continuation never rendered an
-  intermediate `? ÒÑÍê³É` (continuous monitor clean) and produced exactly one DONE;
-- the completed turn result was preserved on its own message (`µÚ 1 ÂÖÒÑÍê³É`);
+  intermediate `? ï¿½ï¿½ï¿½ï¿½ï¿½` (continuous monitor clean) and produced exactly one DONE;
+- the completed turn result was preserved on its own message (`ï¿½ï¿½ 1 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½`);
 - the live insert settled `CONSUMED`, the continuation `EXECUTED`; a later Stop
   did not report any unprocessed insert;
 - a second real Work was terminated by ONE `!stop`: the captured Agent pid was
   reported dead by `tasklist`, no run remained, the STOPPED card had no controls;
-- a re-materialised stale Stop control returned `¸ÃÈÎÎñÒÑ½áÊø` and created/killed
+- a re-materialised stale Stop control returned `ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ½ï¿½ï¿½ï¿½` and created/killed
   nothing.
 
 ## P2.2.5 user-hostile limits cleanup - 2026-09-17
@@ -912,3 +912,57 @@ npm run smoke:p224-lifecycle         -> 21/21  (real Work lifecycle + single-pre
   ran on the real machine with only the Discord transport faked. The live
   real-Discord owner smoke (section E) was NOT performed by this Worker and is
   reported PENDING_OWNER, not manufactured.
+
+## P2.2.6 runtime freshness / safe self-update â€” 2026-09-17
+
+The owner-visible failure this task fixes: GitHub already had `/work task max_length=6000` while
+the live Windows runtime and the Discord-registered command schema still showed 1500, because the
+Bridge had not been restarted/redeployed.
+
+Deterministic gates (real modules, no network, no secrets):
+
+```text
+npm test                     -> 381 pass / 0 fail
+npm run check                -> 120 file(s), 0 failed
+npm run smoke:p226-update    -> 45/45  (real temp git repos)
+npm run smoke:p225-limits    -> 23/23
+npm run smoke:p223-full      -> 15/15  (real Agent Work + Stop)
+npm run smoke:p224-lifecycle -> 21/21  (real Work lifecycle + single-press Stop)
+npm run verify:hook          -> 9/9
+```
+
+`smoke:p226-update` drives the real `src/updater.mjs` against real temporary bare/working Git
+repos and covers: up-to-date; remote fast-forward applied at an idle boundary; Work busy ->
+`UPDATE_PENDING` (no deploy) then idle -> deploy; dirty -> `BLOCKED` preserving local edits;
+diverged -> `BLOCKED` with no merge/rebase/reset; candidate-gate failure -> `LAST_UPDATE_FAILED`
++ quarantine (no mutation); the same quarantined SHA cannot loop; a new remote SHA retries;
+pause/resume persistence; exactly one restart request per candidate; the real staging-worktree
+candidate gate (missing scripts fail closed, cleanup always happens); command-schema
+match/mismatch against a fetched remote payload (6000 vs stale 1500); and secret redaction in
+logs/notifications/persisted state.
+
+Real-machine bootstrap (existing `Task Scheduler -> Supervisor -> Bridge` chain):
+
+- the scheduled supervisor was stopped and restarted through `Start-ScheduledTask`; exactly one
+  Bridge came back;
+- new runtime: `[instance] acquired lock ... build=jarvis-v4-p2-2-hardening@496de33`;
+- updater live: `[update] enabled source=origin/jarvis-v4-p2-2-hardening intervalMs=30000` then
+  `[update] check(startup) local=496de33 remote=496de33 relation=up_to_date dirty=false -> UP_TO_DATE`;
+- command registration re-synced: `[commands] registered=12 changed=2`.
+
+Real Discord command fetch-back (not a local constant):
+
+```text
+npm run doctor:commands
+OK    application resolved
+OK    /work task max_length == 6000  â€” got 6000
+OK    fetched Discord command schema matches desired  â€” 0 mismatch(es)
+```
+
+This is the objective proof the task requires: the actual registered Discord schema was fetched
+back and matched, and `/work task` advertises the real 6000-character platform maximum.
+
+After bootstrap, a later verified commit on the configured branch is detected by the live
+updater, verified in a staging worktree, fast-forwarded, and applied by a Supervisor restart
+(exit code 74) without owner action â€” no in-process hot reload and no second Bridge.
+
