@@ -6,39 +6,35 @@
 
 ## Active task
 
-`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
+`docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md`
 
 ## Current status
 
 P2.2.1–P2.2.4 fixes are complete and owner P2.2.4 real-Discord validation is PASS.
 
-Owner evidence:
+Before release merge, source inspection found a final class of owner-hostile hidden limits that must be cleaned up: artificial Work input caps, silent Chat/Work output truncation, permission tier resets, permanent channel lockout from historical failures/restarts, aggressive Chat timeout, opaque provider cooldowns, silent Chat-history trimming, approval expiry, follow-up queue cap and hard-coded Anthropic output ceiling.
 
-- live insert/lifecycle Work: no false intermediate DONE, inserted path requirement executed in the same Work, one final completion;
-- Stop Work: one Stop killed the real Agent process tree, no false pending-insert report, stable STOPPED terminal, no terminal live controls.
+The previous release-integration task `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` is deferred until P2.2.5 passes. Do not merge PR #4/#5 in this Worker job.
 
-The next task is release integration only: merge the stacked P2 PRs into `main` in the correct order and verify the resulting mainline runtime.
+## Execute
 
-## Required order
-
-1. Re-check remote/PR state and run the release gates on the latest hardening head.
-2. PR #4 (`jarvis-v4-p2-control-context` -> `main`) first: Ready/checks/merge.
-3. Retarget PR #5 (`jarvis-v4-p2-2-hardening`) to the new `main`; reconcile/verify its diff and tests.
-4. Merge PR #5 second.
-5. Run final short real-machine Discord/Chat/Work/Stop/single-instance smoke from `main`.
-6. Update closeout docs on `main`, then stop.
-
-Do not start P3 in this task and do not delete remote feature branches automatically.
+1. Read the active P2.2.5 task and inspect only the relevant limit/config/UI/history/runtime code.
+2. Create/update `docs/P2_2_5_LIMIT_AUDIT.md` and classify every meaningful user-facing limit as PLATFORM / SECURITY / RESOURCE / POLICY.
+3. Implement the mandatory fixes and focused `smoke:p225-limits` coverage.
+4. Run required regression gates and one short real-Discord smoke where possible.
+5. Commit/push/verify remote head.
+6. Point the next active task back to `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`, then stop. Do not execute that merge in the same job.
 
 ## Preserve
 
 - Supervisor/LiteLLM/Task Scheduler recovery and one bridge instance;
 - Chat AUTO/manual selection and model persistence;
 - model pagination/ACK/help consistency;
-- FULL means no routine prompts and Work threads inherit it exactly;
 - Work duration unlimited by default;
 - monotonic Work lifecycle, truthful insert accounting, one-shot Stop and stale-control safety;
-- no secrets in repo/logs.
+- AUTO must not silently spend on metered/unknown providers;
+- manual pins must not silently switch;
+- secrets/credentials remain protected.
 
 ## External limitation
 
