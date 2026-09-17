@@ -6,20 +6,31 @@
 
 ## Active task
 
-`docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
+`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md` (P3.0 complete and committed).
 
-Queued next:
+## P3.0 outcome (done)
 
-1. `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
-2. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+- Default Chat/Work/result-delivery path has no arbitrary total-duration limit;
+  remaining explicit caps are default-off operator overrides (`TASK_TIMEOUT_MS`,
+  `CHAT_TIMEOUT_MS`, `APPROVAL_TIMEOUT_MS`).
+- New durable result outbox: `src/result-delivery.mjs` +
+  `data/jarvis.db` schema v2 `result_deliveries`. `#deliverResult` persists the
+  full result before the first send; a connect/send timeout is `PENDING` then
+  `DEGRADED` (recoverable), retried with bounded backoff, and never fails the Work.
+- `!status` shows `📨 Result delivery:`; `!redeliver` re-attempts; startup
+  `resumePendingDeliveries()` recovers after restart.
+- Audit: `docs/P3_0_TIMEOUT_AUDIT.md`.
+- Verified: `npm test` 395/0; `npm run check` 123/0; P2 smokes all green
+  (`p2` 11/11, `p22` 10/10, `p222` 25/25, `p22-insert` 14/14, `p223-full` 15/15,
+  `p224-lifecycle` 21/21, `p225-limits` 23/23, `p226-update` 49/49, `verify:hook`
+  9/9, supervisor recovery 23/23). Real Discord owner full-result run: PENDING.
 
-## Current objective
+## Current objective (P3.1)
 
-P3.0 removes/redesigns Jarvis-owned elapsed-time limits that can make valid Chat/Work/result-delivery flows fail merely because an internal timer fired.
-
-Invariant:
-
-> Time alone is not a failure condition for valid owner work. Per-attempt transport deadlines may exist only as recoverable safety mechanisms; they must not discard completed work/results or require rerunning the original Work.
+Native Chat web search without the Work/coding-agent runtime: deterministic
+freshness/intent policy, pluggable `WebSearchService`, compact evidence packet,
+visible sources, explicit billing classification, graceful degradation. One search
+phase + one answer phase.
 
 ## Preserve
 
@@ -37,21 +48,6 @@ P2/P2.1/P2.2.1–P2.2.6 are complete on `main`. Preserve:
 - updater rollback/quarantine;
 - secret redaction/credential isolation.
 
-## P3.0 completion handoff
-
-After P3.0 passes:
-
-1. save compact timeout audit evidence;
-2. set `docs/tasks/CURRENT.md` to `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`;
-3. commit/push and verify remote HEAD;
-4. stop that Worker job.
-
-Do not jump directly to TechLead.
-
-## P3.1 intent
-
-Implement native Chat web search in the normal Chat path, using a lightweight search/evidence layer rather than a coding Agent. AUTO search should be selective, cite real sources, preserve billing/privacy safeguards, and never create a Work session just to search.
-
 ## TechLead intent
 
 After P3.1 passes, continue to `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`: zero-token standby, deterministic incident detection first, Grok 4.6 only on meaningful incidents, advisory Shadow Mode.
@@ -62,7 +58,9 @@ After P3.1 passes, continue to `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`: 
 PASS | FAIL
 commit: <sha or none>
 tests: <compact result>
-timeout-audit: <remaining arbitrary total limits: 0 | blocker>
-real-smoke: <PASS | PENDING + reason>
+search: <actual backend / billing class>
+auto-policy: <PASS|FAIL>
+agent-started-for-chat-search: <NO required>
+real-smoke: <PASS|PENDING + reason>
 blocker: <none or one key blocker>
 ```

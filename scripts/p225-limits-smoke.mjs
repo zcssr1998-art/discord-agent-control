@@ -111,7 +111,7 @@ async function main() {
   process.env.DISCORD_OWNER_ID = process.env.DISCORD_OWNER_ID || '0';
   const config = loadConfig();
   check('config approval timeout default is 0 (no auto-deny)', config.approvalTimeoutMs === 0, `got ${config.approvalTimeoutMs}`);
-  check('config chat timeout default is 120000', config.chatTimeoutMs === 120000, `got ${config.chatTimeoutMs}`);
+  check('config chat timeout default is unlimited (0)', config.chatTimeoutMs === 0, `got ${config.chatTimeoutMs}`);
   check('config anthropic output ceiling default is 8192 (not 4096)', config.chatMaxOutputTokens === 8192, `got ${config.chatMaxOutputTokens}`);
   check('config follow-up cap default is 0 (unlimited)', config.maxWorkFollowUps === 0, `got ${config.maxWorkFollowUps}`);
   check('config Work duration stays unlimited by default', config.taskTimeoutMs === 0, `got ${config.taskTimeoutMs}`);

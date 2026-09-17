@@ -38,8 +38,9 @@ import {
 import { registerApplicationCommands, verifyApplicationCommands, COMMAND_NAMES, MODAL_TASK_MAX_LENGTH } from './commands.mjs';
 import { shortSha as shortUpdateSha } from './updater.mjs';
 import { autostartSummary } from './autostart.mjs';
+import { ResultDelivery, DELIVERY } from './result-delivery.mjs';
 import {
-  clip, planResultDelivery,
+  clip,
   permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
   providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, panelMainRows,
   panelBackRow, panelHelpRows, panelModelRows, workControlRows, providerModelRows, choiceRows, pagedChoiceRows,
@@ -209,6 +210,22 @@ export class DiscordControlPlane {
     // P2.2D durable store. Both optional so existing test harnesses work.
     this.runtimeIdentity = runtimeIdentity;
     this.durableStore = durableStore;
+    // P3.0: durable result delivery. The full result is persisted before any
+    // network attempt; a Discord connect/send failure schedules a bounded retry
+    // and never fails the (already completed) Worker execution.
+    this.delivery = new ResultDelivery({
+      store: durableStore,
+      logger: console,
+      maxAttempts: config.deliveryMaxAttempts,
+      backoffMs: config.deliveryBackoffMs,
+      sweepIntervalMs: config.deliverySweepIntervalMs,
+      setTimer: config.deliverySetTimer,
+      clearTimer: config.deliveryClearTimer,
+      now: config.deliveryNow,
+    });
+    // Test seam: inject a transport that can simulate the observed connect
+    // timeout without a real Discord client.
+    this.deliverySendOverride = config.deliverySend ?? null;
     // P2.2.6 safe self-update. All updater access is read-only from the UI; the
     // updater itself owns the checkout/Supervisor restart lifecycle.
     this.updater = updater;
@@ -283,6 +300,17 @@ export class DiscordControlPlane {
     if (this.autoLogin) await this.client.login(this.config.discordToken);
     if (this.autoLogin && this.config.autoRegisterCommands !== false) await this.registerCommands();
     if (this.config.notifyOnStart !== false) await this.notifyReady();
+    // P3.0: recover results whose delivery was pending when the bridge stopped.
+    await this.resumePendingDeliveries().catch((error) => console.warn(`[delivery] resume failed: ${redact(error?.message || error)}`));
+  }
+
+  /**
+   * Recover durable PENDING/DEGRADED result deliveries. Never reruns the Work;
+   * it only re-attempts the Discord transport for an already-completed result.
+   */
+  async resumePendingDeliveries() {
+    if (!this.delivery) return [];
+    return this.delivery.resumePending({ resolveSend: (record) => this.#resolveDeliverySend(record) });
   }
 
   /**
@@ -398,6 +426,8 @@ export class DiscordControlPlane {
     for (const task of [...this.tasks.values()]) {
       await task.finish().catch(() => {});
     }
+    // Stop retry timers; the outbox rows stay durable and resume next start.
+    try { this.delivery?.stop?.(); } catch { /* best effort */ }
     return runners.length;
   }
 
@@ -800,7 +830,27 @@ export class DiscordControlPlane {
     if (ownerId) lines.push(`Instance: ${ownerId.split(':')[0]}`);
     const updateLine = this.#updateLine();
     if (updateLine) lines.push(updateLine);
+    const deliveryLine = this.#deliveryText();
+    if (deliveryLine) lines.push(deliveryLine);
     return lines.length ? `${text}\n\n${lines.join('\n')}` : text;
+  }
+
+  /**
+   * Compact execution-vs-delivery status (P3.0). It never invents a delivery
+   * failure: it only reports a real pending/degraded outbox row.
+   */
+  #deliveryText() {
+    const local = this.delivery?.status?.() ?? null;
+    const store = this.durableStore?.status?.() ?? null;
+    const pending = Math.max(local?.pending ?? 0, Number(store?.pendingDeliveries) || 0);
+    const degraded = local?.degraded ?? 0;
+    if (!pending && !degraded) return null;
+    const parts = [];
+    if (pending) parts.push(`PENDING x${pending}`);
+    if (degraded) parts.push(`DEGRADED x${degraded}`);
+    const last = local?.last;
+    if (last?.id && last.lastError) parts.push(`last=${last.id} (${redact(last.lastError).slice(0, 80)})`);
+    return `📨 Result delivery: ${parts.join(' · ')}`;
   }
 
   /** Deterministic local diagnostics for /doctor and !doctor. No model call. */
@@ -812,7 +862,9 @@ export class DiscordControlPlane {
       lines.push(`🖥 Instance: PID ${process.pid} · uptime ${formatUptime(process.uptime() * 1000)} · build ${identity.describe}`);
       lines.push(`🔒 Instance lock: ${identity.guard?.acquired ? 'yes' : 'NO'}`);
       const store = this.durableStore?.status?.();
-      lines.push(`💾 Durable store: ${store?.open ? `open (v${store.schemaVersion}, ${store.runCount} runs, ${store.pendingFollowups} pending follow-up(s))` : 'unavailable'}`);
+      lines.push(`💾 Durable store: ${store?.open ? `open (v${store.schemaVersion}, ${store.runCount} runs, ${store.pendingFollowups} pending follow-up(s), ${store.pendingDeliveries ?? 0} pending delivery(ies))` : 'unavailable'}`);
+      const delivery = this.delivery?.status?.();
+      if (delivery) lines.push(`📨 Delivery: pending=${delivery.pending} degraded=${delivery.degraded} delivered=${delivery.delivered}`);
     }
 
     let discord = 'offline';
@@ -1169,6 +1221,22 @@ export class DiscordControlPlane {
     }
     if (text === '!doctor') {
       await message.reply(clip(await this.#doctorText()));
+      return;
+    }
+    // P3.0 owner recovery: re-attempt delivery of any saved-but-undelivered
+    // result. It never reruns the Work; it only retries the Discord transport.
+    if (text === '!redeliver') {
+      const pending = this.delivery?.pending?.() ?? [];
+      if (!pending.length) {
+        await message.reply('📨 没有待投递的结果。');
+        return;
+      }
+      let ok = 0;
+      for (const record of pending) {
+        const result = await this.delivery.retry(record, { manual: true }).catch(() => ({ ok: false }));
+        if (result.ok) ok += 1;
+      }
+      await message.reply(clip(`📨 已重投 ${ok}/${pending.length} 条待投递结果。`));
       return;
     }
     if (text === '!config') {
@@ -2424,48 +2492,62 @@ export class DiscordControlPlane {
   }
 
   /**
-   * P2.2.5 K3: the ONE long-result delivery path for user-visible Chat/Work
-   * answers. It never replaces a real answer with a `…(truncated)` preview:
-   *   - short  → one normal message;
-   *   - medium → ordered Discord chunks preserving every character;
-   *   - very long → short preview + generated `.md` attachment with the full text.
-   * If delivery itself fails, the failure is reported explicitly and the full
-   * text is written to the run log so it is never lost. Status cards, labels and
-   * diagnostics keep using compact `clip()`.
+   * P2.2.5 K3 + P3.0: the ONE long-result delivery path for user-visible
+   * Chat/Work answers. It never replaces a real answer with a truncated preview:
+   *   - short  -> one normal message;
+   *   - medium -> ordered Discord chunks preserving every character;
+   *   - very long -> short preview + generated `.md` attachment with the full text.
+   *
+   * P3.0 durability: the full result + a PENDING outbox row are persisted BEFORE
+   * the first send. A transport failure (e.g. the observed 10s connect timeout)
+   * marks delivery PENDING/DEGRADED and schedules a bounded retry; it never
+   * discards the result and never turns a SUCCEEDED Work into a failed one.
    */
-  async #deliverResult(message, text, { header = null, footer = null, runLog = null, label = 'result' } = {}) {
+  async #deliverResult(message, text, { header = null, footer = null, runLog = null, label = 'result', runId = null } = {}) {
     const full = String(text ?? '');
     const combined = [header, full, footer].filter((part) => part != null && part !== '').join('\n\n');
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const plan = planResultDelivery(combined, { fileName: `jarvis-${label}-${stamp}.md` });
-    try {
-      if (plan.mode === 'message') {
-        await message.reply?.({ content: plan.chunks[0] });
-        return { ok: true, mode: 'message', chars: plan.totalChars };
-      }
-      if (plan.mode === 'chunks') {
-        for (const chunk of plan.chunks) await message.reply?.({ content: chunk });
-        return { ok: true, mode: 'chunks', chunks: plan.chunks.length, chars: plan.totalChars };
-      }
-      const preview = [
-        `🧾 结果较长（${plan.totalChars} 字符），完整内容见附件 \`${plan.attachment.name}\`。`,
-        '',
-        plan.preview,
-        ...(footer ? ['', footer] : []),
-      ].join('\n');
-      await message.reply?.({
-        content: clip(preview),
-        files: [new AttachmentBuilder(Buffer.from(plan.attachment.content, 'utf8'), { name: plan.attachment.name })],
-      });
-      return { ok: true, mode: 'attachment', chars: plan.totalChars, name: plan.attachment.name };
-    } catch (error) {
-      const detail = redact(error?.message || error);
-      console.error(`[delivery] ${label} full delivery failed: ${detail}`);
-      try { runLog?.log?.({ type: 'result_full', text: combined }); } catch { /* best effort */ }
-      const logNote = runLog?.path ? `完整内容已写入运行日志 \`${path.basename(runLog.path)}\`。` : '完整内容未能写入运行日志。';
-      await message.reply?.({ content: `⚠️ 完整结果投递失败：${detail}\n${logNote}` }).catch(() => {});
-      return { ok: false, mode: 'failed', error, chars: plan.totalChars };
+    const channelId = message?.channelId ?? message?.channel?.id ?? null;
+    // Durable local persistence first: run transcript (when present) + outbox row.
+    // Neither depends on the network, so the result is never lost.
+    try { runLog?.log?.({ type: 'result_full', text: combined }); } catch { /* best effort */ }
+    const record = this.delivery.prepare({ runId, channelId, label, content: combined });
+    const send = (payload) => this.#sendDeliveryPayload(message, payload);
+    const resolveSend = (rec) => this.#resolveDeliverySend(rec);
+    const outcome = await this.delivery.deliver(record, { send, resolveSend });
+    if (outcome.ok) {
+      return { ok: true, mode: outcome.mode, chars: combined.length, deliveryId: record.id };
     }
+    const detail = redact(outcome.error?.message || outcome.error);
+    console.error(`[delivery] ${label} ${record.state} id=${record.id} attempts=${record.attempts} error=${detail}`);
+    const note = record.state === DELIVERY.PENDING
+      ? `⚠️ Discord 投递暂时失败：${detail}\n完整结果已保存，正在自动重试（任务执行不受影响）。`
+      : `⚠️ Discord 投递失败（已重试 ${record.attempts} 次）：${detail}\n完整结果已保存为待投递，连接恢复后会自动重试，也可用 \`!redeliver\`。`;
+    await this.#sendDeliveryPayload(message, { content: note }).catch(() => {});
+    return { ok: false, state: record.state, pending: true, chars: combined.length, deliveryId: record.id, error: outcome.error };
+  }
+
+  /** Build and send one planned delivery part (message / chunk / attachment). */
+  async #sendDeliveryPayload(message, payload, target = null) {
+    const body = { content: payload.content };
+    if (payload.file) {
+      body.files = [new AttachmentBuilder(Buffer.from(payload.file.content, 'utf8'), { name: payload.file.name })];
+    }
+    if (this.deliverySendOverride) return this.deliverySendOverride(body, { message, target });
+    if (target?.send) return target.send(body);
+    if (typeof message?.reply === 'function') return message.reply(body);
+    if (message?.channel?.send) return message.channel.send(body);
+    throw new Error('no Discord send target');
+  }
+
+  /** Rebuild a send function for a retry (the original message may be gone). */
+  async #resolveDeliverySend(record) {
+    if (this.deliverySendOverride) return (payload) => this.#sendDeliveryPayload(null, payload);
+    const channelId = record?.channelId;
+    const channel = channelId && this.client?.channels?.fetch
+      ? await this.client.channels.fetch(channelId).catch(() => null)
+      : null;
+    if (!channel || typeof channel.send !== 'function') return null;
+    return (payload) => this.#sendDeliveryPayload(null, payload, channel);
   }
 
   /**
@@ -3259,7 +3341,7 @@ export class DiscordControlPlane {
       const body = [progress.render(), extras || null].filter((line) => line !== null).join('\n');
       await editor.flushNow(`${body}${inline}`, []);
       if (finalText.length > CARD_RESULT_BUDGET) {
-        await this.#deliverResult(message, finalText, { runLog, label: 'work' });
+        await this.#deliverResult(message, finalText, { runLog, label: 'work', runId: run?.id ?? null });
       }
     } catch (error) {
       if (run) run.drainable = false;

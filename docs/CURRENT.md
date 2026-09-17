@@ -6,16 +6,25 @@
 
 ## Current milestone
 
-Jarvis V4 P3 preflight — **P3.0 timeout policy cleanup**.
+Jarvis V4 P3 — **P3.0 complete, P3.1 active**.
 
-Active task:
+Done (P3.0): `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`.
 
-`docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
+- Default Chat/Work/result-delivery path has no arbitrary total-duration limit;
+  the only total caps left are explicit, default-off operator overrides.
+- Durable result outbox (`data/jarvis.db` schema v2 `result_deliveries`) persists
+  the full result before the first send; a Discord connect/send failure becomes
+  `PENDING`/`DEGRADED` and is retried, never failing the Worker execution.
+- `!status` distinguishes `📨 Result delivery` state; `!redeliver` re-attempts.
+- Audit: `docs/P3_0_TIMEOUT_AUDIT.md` (remaining arbitrary total limits: 0).
 
-Queued next:
+Active now:
 
-1. `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
-2. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
+
+Queued after P3.1:
+
+1. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
 
 ## Baseline to preserve
 
@@ -48,12 +57,18 @@ Owner-friendly defaults that must not regress:
 
 ## P3 sequence
 
-### P3.0 — Timeout policy cleanup
+### P3.0 — Timeout policy cleanup (DONE)
 
-- eliminate arbitrary total-duration failures;
-- separate Worker execution state from Discord delivery state;
-- persist full result before delivery attempts;
-- network timeout -> durable pending/retry, never rerun completed Work.
+- eliminate arbitrary total-duration failures (done; audit remaining = 0);
+- separate Worker execution state from Discord delivery state (done);
+- persist full result before delivery attempts (done);
+- network timeout -> durable pending/retry, never rerun completed Work (done).
+
+Verification: `npm test` 395/0; `npm run check` 123/0; `smoke:p2` 11/11,
+`smoke:p22` 10/10, `smoke:p222` 25/25, `smoke:p22-insert` 14/14,
+`smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21, `smoke:p225-limits` 23/23,
+`smoke:p226-update` 49/49, `verify:hook` 9/9,
+`smoke-supervisor-recovery.ps1` 23/23. Real Discord owner run: PENDING (owner-only).
 
 ### P3.1 — Native Chat Web Search
 
@@ -76,4 +91,5 @@ Production remains the verified P2 `main` chain until P3 work is implemented, te
 
 ## Next action
 
-Execute P3.0. After PASS, point `docs/tasks/CURRENT.md` to P3.1 and stop that Worker job.
+Execute P3.1 (`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`), then stop for owner
+acceptance. Do not start P3 TechLead until the owner accepts P3.1.

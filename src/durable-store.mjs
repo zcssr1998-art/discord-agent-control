@@ -13,7 +13,10 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 1;
+// v2 adds `result_deliveries`: a durable outbox so a completed result is never
+// lost just because Discord delivery failed. Execution state (`runs.state`) stays
+// independent from delivery state.
+export const SCHEMA_VERSION = 2;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -55,6 +58,20 @@ CREATE TABLE IF NOT EXISTS queued_followups (
   created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_followups_state ON queued_followups(state);
+CREATE TABLE IF NOT EXISTS result_deliveries (
+  id TEXT PRIMARY KEY,
+  run_id TEXT,
+  channel_id TEXT,
+  label TEXT,
+  state TEXT,
+  attempts INTEGER DEFAULT 0,
+  delivered_parts INTEGER DEFAULT 0,
+  content TEXT,
+  last_error TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deliveries_state ON result_deliveries(state);
 `;
 
 const STARTABLE_STATES = new Set(['RUNNING', 'QUEUED']);
@@ -158,6 +175,51 @@ export class DurableStore {
       .run(channelId, state, 'QUEUED');
   }
 
+  // ---- result delivery outbox (P3.0) ---------------------------------------
+  // `runs.state` is the Worker execution state; these rows are the independent
+  // Discord delivery state, so a completed result survives a transport outage.
+
+  deliveryCreate({ id, runId = null, channelId, label = 'result', state = 'PENDING', content = '',
+    attempts = 0, deliveredParts = 0, createdAt = null }) {
+    this.#assertOpen();
+    const now = createdAt ?? new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO result_deliveries (id, run_id, channel_id, label, state, attempts,
+        delivered_parts, content, last_error, created_at, updated_at)
+      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9,?9)
+      ON CONFLICT(id) DO UPDATE SET label=excluded.label, content=excluded.content,
+        channel_id=excluded.channel_id, updated_at=excluded.updated_at
+    `).run(id, runId, channelId, label, state, attempts, deliveredParts, content, now);
+  }
+
+  deliveryUpdate(id, { state, attempts = null, deliveredParts = null, lastError = null }) {
+    this.#assertOpen();
+    this.db.prepare(`
+      UPDATE result_deliveries SET state = ?2,
+        attempts = COALESCE(?3, attempts), delivered_parts = COALESCE(?4, delivered_parts),
+        last_error = ?5, updated_at = ?6
+      WHERE id = ?1
+    `).run(id, state, attempts, deliveredParts,
+      lastError == null ? null : String(lastError).slice(0, 500), new Date().toISOString());
+  }
+
+  /** PENDING + DEGRADED rows are all recoverable (never a terminal failure). */
+  pendingDeliveries(limit = 50) {
+    this.#assertOpen();
+    return this.db.prepare(`
+      SELECT id, run_id, channel_id, label, state, attempts, delivered_parts, content, last_error, created_at
+      FROM result_deliveries WHERE state IN ('PENDING','DEGRADED') ORDER BY created_at ASC LIMIT ?
+    `).all(limit);
+  }
+
+  deliveryCounts() {
+    this.#assertOpen();
+    const rows = this.db.prepare('SELECT state, COUNT(*) AS count FROM result_deliveries GROUP BY state').all();
+    const out = { PENDING: 0, DELIVERED: 0, DEGRADED: 0 };
+    for (const row of rows) out[row.state] = row.count;
+    return out;
+  }
+
   /** Startup semantics: probe what this store would do WITHOUT changing rows. */
   pendingActiveRuns() {
     this.#assertOpen();
@@ -188,7 +250,10 @@ export class DurableStore {
     const [{ user_version: version }] = this.db.prepare('PRAGMA user_version').all();
     const [{ runCount }] = this.db.prepare('SELECT COUNT(*) AS runCount FROM runs').all();
     const [{ pending }] = this.db.prepare(`SELECT COUNT(*) AS pending FROM queued_followups WHERE state = 'QUEUED'`).all();
-    return { open: true, file: this.file, schemaVersion: version, runCount, pendingFollowups: pending };
+    const [{ pendingDeliveries }] = this.db.prepare(
+      `SELECT COUNT(*) AS pendingDeliveries FROM result_deliveries WHERE state IN ('PENDING','DEGRADED')`,
+    ).all();
+    return { open: true, file: this.file, schemaVersion: version, runCount, pendingFollowups: pending, pendingDeliveries };
   }
 }
 
