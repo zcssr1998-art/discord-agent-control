@@ -12,17 +12,10 @@ Active task:
 
 `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md`
 
-The prepared AI TechLead Shadow task is queued after P3.0:
+Queued next:
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
-
-## Why P3.0 is first
-
-A real Discord result-delivery path surfaced a `Connect Timeout Error (... timeout: 10000ms)` and the full result was not available through the normal delivery path. This exposed a broader UX issue: internal elapsed-time limits can still leak into owner-visible failures.
-
-Product rule now:
-
-> Valid owner work must not terminally fail merely because Jarvis waited N seconds. Per-attempt transport deadlines may exist only as internal recoverable safety mechanisms; they must not discard completed work/results or require the original Work to be rerun.
+1. `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
+2. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
 
 ## Baseline to preserve
 
@@ -45,29 +38,42 @@ npm run verify:hook      -> 9/9
 scripts/smoke-supervisor-recovery.ps1 -> 23/23
 ```
 
-Already-established owner-friendly defaults that must not regress:
+Owner-friendly defaults that must not regress:
 
 - Work wall-clock timeout default `0` (unlimited);
-- approval timeout default `0` (no auto-expiry);
-- Work follow-up cap default `0` (unlimited);
-- long Chat/Work output must remain recoverable in full;
-- historical failures must not permanently poison a channel.
+- approval timeout default `0`;
+- Work follow-up cap default `0`;
+- long Chat/Work output recoverable in full;
+- historical failures do not permanently poison a channel.
 
-## P3.0 target
+## P3 sequence
 
-- audit every user-facing timeout in Chat/Work/result-delivery paths;
-- eliminate arbitrary total-duration deadlines;
-- make Chat default client-side timeout unlimited where safely supported;
-- separate Worker execution success from Discord delivery state;
+### P3.0 — Timeout policy cleanup
+
+- eliminate arbitrary total-duration failures;
+- separate Worker execution state from Discord delivery state;
 - persist full result before delivery attempts;
-- transient Discord/network timeout -> durable pending/retry state, never task rerun/data loss;
-- preserve mandatory protocol deadlines, rate-limit pacing, backoff, liveness repaint and cleanup TTLs;
-- prove behavior with deterministic tests plus minimum real Windows/Discord smoke.
+- network timeout -> durable pending/retry, never rerun completed Work.
+
+### P3.1 — Native Chat Web Search
+
+- modern Chat-style AUTO web search;
+- normal Chat remains lightweight;
+- no coding Agent startup for search;
+- current-info questions retrieve live evidence and show real sources;
+- no silent metered/unknown search spend.
+
+### P3 — AI TechLead Shadow Mode
+
+- event-driven, near-zero-token standby;
+- deterministic monitoring first;
+- Grok 4.6 reviewer on meaningful incidents only;
+- advisory Shadow Mode before any automatic intervention.
 
 ## Live runtime
 
-Production/live runtime remains the already-verified P2 `main` chain until P3 work is implemented, tested and explicitly promoted.
+Production remains the verified P2 `main` chain until P3 work is implemented, tested and explicitly promoted.
 
 ## Next action
 
-Execute `docs/tasks/JARVIS_V4_P3_0_TIMEOUT_POLICY_CLEANUP.md` on this branch. After it passes, restore `docs/tasks/CURRENT.md` to the existing AI TechLead Shadow task and stop that Worker job.
+Execute P3.0. After PASS, point `docs/tasks/CURRENT.md` to P3.1 and stop that Worker job.

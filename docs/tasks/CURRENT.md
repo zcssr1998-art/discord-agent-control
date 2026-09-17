@@ -8,13 +8,14 @@
 
 ## Status
 
-P3.0 timeout-policy cleanup is the **priority blocker** before AI TechLead implementation.
+P3.0 timeout-policy cleanup is the current priority blocker.
 
-The previously prepared TechLead task remains queued at:
+Queued sequence after P3.0:
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+1. `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
+2. `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
 
-Do not start TechLead implementation until P3.0 passes.
+Do not skip P3.1 and do not start TechLead until both P3.0 and P3.1 pass.
 
 Already landed on `main` and merged into this branch: `docs/tasks/CHAT_TIMEOUT_UNLIMITED_FIX.md`
 (default `CHAT_TIMEOUT_MS=0`; no Jarvis client-side Chat wall-clock timeout). P3.0 generalizes this
@@ -24,12 +25,11 @@ into a single timeout policy across Chat/Work/Agent/result delivery.
 
 Remove/redesign Jarvis-owned elapsed-time limits that can make valid owner work fail merely because an internal timer fired.
 
-Key product rule:
+Key invariant:
 
-- Work/Chat/result delivery must not terminally fail because Jarvis waited N seconds;
-- low-level per-attempt transport timeouts may remain only as internal failure detectors with durable state + automatic recovery;
-- completed results must survive Discord/network timeout and must never require rerunning the Agent;
-- preserve real Discord/platform deadlines, rate-limit pacing, retry backoff, cleanup TTLs, progress repaint timers and necessary safety controls that do not expire owner work.
+- time alone must not terminally fail valid Chat/Work/result delivery;
+- transport timeouts may only be recoverable per-attempt safety mechanisms;
+- completed results must survive network failure without rerunning the Agent.
 
 ## Required startup order
 
@@ -48,11 +48,11 @@ Do not generate a second architecture plan. The task file is authoritative.
 
 ## After P3.0 passes
 
-Restore this pointer to:
+Set this pointer to:
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`
 
-Then stop that Worker job. Do not implement TechLead in the same job.
+Then stop that Worker job. Do not implement P3.1 or TechLead in the same job unless explicitly requested.
 
 ## Do not
 
