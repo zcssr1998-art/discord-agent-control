@@ -6,36 +6,43 @@
 
 ## Active task
 
-`docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md`
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` — P2 PR merge + mainline closeout.
 
 ## Current status
 
-P2.2.1–P2.2.4 fixes are complete and owner P2.2.4 real-Discord validation is PASS.
+P2.2.5 user-hostile limits cleanup is complete. The limit audit
+(`docs/P2_2_5_LIMIT_AUDIT.md`) classifies every user-facing cap/timeout/cooldown/
+lockout/truncation/reset: 33 audited, 11 changed, 22 retained platform/security/
+resource. No silent data-loss boundary remains for user-visible results.
 
-Before release merge, source inspection found a final class of owner-hostile hidden limits that must be cleaned up: artificial Work input caps, silent Chat/Work output truncation, permission tier resets, permanent channel lockout from historical failures/restarts, aggressive Chat timeout, opaque provider cooldowns, silent Chat-history trimming, approval expiry, follow-up queue cap and hard-coded Anthropic output ceiling.
-
-The previous release-integration task `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` is deferred until P2.2.5 passes. Do not merge PR #4/#5 in this Worker job.
-
-## Execute
-
-1. Read the active P2.2.5 task and inspect only the relevant limit/config/UI/history/runtime code.
-2. Create/update `docs/P2_2_5_LIMIT_AUDIT.md` and classify every meaningful user-facing limit as PLATFORM / SECURITY / RESOURCE / POLICY.
-3. Implement the mandatory fixes and focused `smoke:p225-limits` coverage.
-4. Run required regression gates and one short real-Discord smoke where possible.
-5. Commit/push/verify remote head.
-6. Point the next active task back to `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`, then stop. Do not execute that merge in the same job.
+Delivered behavior: real Discord input maxima, full long-result delivery, persisted
+permission tier, non-blocking failure/restart diagnostics, practical configurable
+Chat timeout, observable/overridable cooldowns, auto-compacting Chat history,
+non-expiring approvals by default, unlimited follow-ups by default, configurable
+Anthropic output ceiling.
 
 ## Preserve
 
 - Supervisor/LiteLLM/Task Scheduler recovery and one bridge instance;
 - Chat AUTO/manual selection and model persistence;
 - model pagination/ACK/help consistency;
-- Work duration unlimited by default;
-- monotonic Work lifecycle, truthful insert accounting, one-shot Stop and stale-control safety;
-- AUTO must not silently spend on metered/unknown providers;
-- manual pins must not silently switch;
-- secrets/credentials remain protected.
+- Work duration unlimited by default; monotonic Work lifecycle, truthful insert
+  accounting, one-shot Stop, stale-control safety;
+- AUTO never silently spends on metered/unknown providers; manual pins never switch;
+- secret/credential protection.
 
 ## External limitation
 
-WorkBuddy gateway may still return `HTTP 403 request illegal`; keep it documented as external if unchanged. It must not block other providers or the bridge.
+WorkBuddy gateway may still return `HTTP 403 request illegal`; keep documented as
+external if unchanged. It must not block other providers or the bridge.
+
+## Delivery
+
+Implementation, focused regression `tests/v4-p225-limits.test.mjs`, deterministic
+smoke `smoke:p225-limits`, and state/handoff updates are committed and pushed.
+The live real-Discord owner smoke (P2.2.5 section E) was not performed and is
+`PENDING_OWNER`.
+
+## Next
+
+Run `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`. Do not start P3.

@@ -25,7 +25,7 @@ export function workspaceKey(cwd) {
 export class StateStore {
   constructor(file) {
     this.file = file;
-    this.data = { channels: {}, workspaces: {}, preferences: {} };
+    this.data = { channels: {}, workspaces: {}, preferences: {}, permissions: {} };
     this.load();
   }
   load() {
@@ -39,8 +39,9 @@ export class StateStore {
       if (!this.data.channels || typeof this.data.channels !== 'object') this.data.channels = {};
       if (!this.data.workspaces || typeof this.data.workspaces !== 'object') this.data.workspaces = {};
       if (!this.data.preferences || typeof this.data.preferences !== 'object') this.data.preferences = {};
+      if (!this.data.permissions || typeof this.data.permissions !== 'object') this.data.permissions = {};
     }
-    catch { this.data = { channels: {}, workspaces: {}, preferences: {} }; }
+    catch { this.data = { channels: {}, workspaces: {}, preferences: {}, permissions: {} }; }
     this.#backfillWorkModels();
     this.#repairChatSelections();
   }
@@ -100,6 +101,34 @@ export class StateStore {
   /** Count of workspaces with a restored selection (for startup logging). */
   savedWorkspaceModelCount() {
     return Object.keys(this.data.workspaces ?? {}).length;
+  }
+
+  // ---- persistent owner permission tier -------------------------------------
+  // The selected level is product configuration, not Agent session state: it is
+  // persisted so a bridge restart, new Work thread, model/provider/executor or
+  // workspace change never silently downgrades the owner (e.g. FULL -> STANDARD).
+  // Existing state without a persisted tier naturally migrates to the manager's
+  // default (STANDARD).
+
+  /** The persisted level for a channel, or null when the owner never chose one. */
+  getPermissionLevel(channelId) {
+    if (!channelId) return null;
+    const level = this.data.permissions?.[channelId];
+    return typeof level === 'string' ? level : null;
+  }
+
+  /** All persisted channel levels, for restoring the PermissionManager on start. */
+  allPermissionLevels() {
+    return { ...(this.data.permissions ?? {}) };
+  }
+
+  /** Persist one explicit owner permission choice. */
+  setPermissionLevel(channelId, level) {
+    if (!channelId || typeof level !== 'string') return null;
+    this.data.permissions = this.data.permissions ?? {};
+    this.data.permissions[channelId] = level;
+    this.save();
+    return level;
   }
 
   // ---- global workspace (user-chosen default task directory) ----------------

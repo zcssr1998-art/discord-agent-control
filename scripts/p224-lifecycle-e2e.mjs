@@ -177,7 +177,13 @@ clearInterval(monitor);
 await sleep(500);
 
 check('L1 the card never claimed DONE while the Work was still running', !falseDone);
-check('L2 the completed turn result is preserved as its own message', /第 1 轮已完成/.test(allText()) && /FIRST_TURN_DONE/.test(allText()));
+// Structural, model-agnostic: the completed turn must be preserved as its own
+// message carrying the header AND the turn's real result text (which token the
+// model emits is not deterministic and must not decide this check).
+const turnResultMsg = fake.messagesIn(channelId).find((m) => /第 1 轮已完成/.test(m.content));
+check('L2 the completed turn result is preserved as its own message',
+  Boolean(turnResultMsg && /DONE/.test(turnResultMsg.content) && !/✅ 已完成/.test(turnResultMsg.content)),
+  turnResultMsg ? turnResultMsg.content.split('\n').slice(-1)[0] : 'no turn-result message');
 const doneTokens = (allText().match(/✅ 已完成/g) ?? []).length;
 check('L1 exactly one terminal DONE for the whole Work', doneTokens === 1, `doneTokens=${doneTokens}`);
 check('L3 the inserted side effect is part of the run', fs.existsSync(path.join(workdir, 'inserted-live.txt'))

@@ -889,3 +889,26 @@ process tree; only the Discord transport is the in-process fake):
   reported dead by `tasklist`, no run remained, the STOPPED card had no controls;
 - a re-materialised stale Stop control returned `该任务已结束` and created/killed
   nothing.
+
+## P2.2.5 user-hostile limits cleanup - 2026-09-17
+
+```text
+npm test                             -> 372 pass / 0 fail
+npm run check                        -> 114 file(s), 0 failed
+npm run smoke:p225-limits            -> 23/23  (deterministic K1-K11 limits audit)
+npm run smoke:p2                     -> 11/11  (real Chat + vision + Work thread)
+npm run smoke:p22                    -> 10/10  (instance lock, durable store, autostart)
+npm run smoke:p222                   -> 25/25  (real Chat model selection / restart)
+npm run smoke:p22-insert             -> 14/14  (real live insert, one Agent/session)
+npm run smoke:p223-full              -> 15/15  (K4/K5 real FULL Work, 0 prompts, real Stop)
+npm run smoke:p224-lifecycle         -> 21/21  (real Work lifecycle + single-press Stop)
+```
+
+- `smoke:p225-limits` is deterministic and model-free: config defaults, slash/modal
+  platform maxima, ~8k result recoverability, FULL persistence, failure/restart
+  non-lockout, Chat timeout, cooldown observability/clear, history auto-compact,
+  approval non-expiry and the configurable Anthropic output ceiling.
+- The P2.2.5 real-agent gates (`smoke:p2`, `smoke:p223-full`, `smoke:p224-lifecycle`)
+  ran on the real machine with only the Discord transport faked. The live
+  real-Discord owner smoke (section E) was NOT performed by this Worker and is
+  reported PENDING_OWNER, not manufactured.

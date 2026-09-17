@@ -17,6 +17,61 @@ export function clip(text, n = DISCORD_LIMIT) {
   return s.length <= n ? s : `${s.slice(0, n - 20)}\n…(truncated)`;
 }
 
+// --- long user-visible results (P2.2.5 K3) ---------------------------------
+// `clip()` stays a bounded preview for status cards, labels and diagnostics. It
+// must never be the delivery boundary for a real Chat/Work answer: this planner
+// preserves EVERY character of a long result, either as ordered Discord chunks
+// or as a generated attachment with a short preview.
+export const RESULT_MAX_MESSAGE_CHUNKS = 5;
+export const RESULT_PREVIEW_CHARS = 1200;
+
+/**
+ * Split text into Discord-sized chunks without dropping or rewriting a single
+ * character. Splitting prefers the last newline inside the window so code blocks
+ * and paragraphs stay as intact as practical, while `chunks.join('') === text`
+ * always holds (no injected markers, so nothing is ever silently lost).
+ */
+export function chunkDiscordText(text, { limit = DISCORD_LIMIT } = {}) {
+  const full = String(text ?? '');
+  if (!full) return [''];
+  const size = Math.max(1, Math.floor(limit));
+  const chunks = [];
+  let index = 0;
+  while (index < full.length) {
+    if (full.length - index <= size) { chunks.push(full.slice(index)); break; }
+    const hardEnd = index + size;
+    const newline = full.lastIndexOf('\n', hardEnd);
+    const end = newline > index ? newline + 1 : hardEnd;
+    chunks.push(full.slice(index, end));
+    index = end;
+  }
+  return chunks;
+}
+
+/**
+ * Decide how to deliver a full result: one normal message, ordered chunks, or a
+ * preview plus a generated attachment for very long content. Pure: callers only
+ * execute the returned plan, so delivery can be proven without a Discord client.
+ */
+export function planResultDelivery(text, {
+  limit = DISCORD_LIMIT,
+  maxChunks = RESULT_MAX_MESSAGE_CHUNKS,
+  previewChars = RESULT_PREVIEW_CHARS,
+  fileName = 'jarvis-result.md',
+} = {}) {
+  const full = String(text ?? '');
+  const chunks = chunkDiscordText(full, { limit });
+  if (chunks.length <= 1) return { mode: 'message', chunks, totalChars: full.length };
+  if (chunks.length <= maxChunks) return { mode: 'chunks', chunks, totalChars: full.length };
+  return {
+    mode: 'attachment',
+    chunks: [],
+    totalChars: full.length,
+    preview: full.slice(0, previewChars),
+    attachment: { name: fileName, content: full, bytes: Buffer.byteLength(full, 'utf8') },
+  };
+}
+
 export function permissionButtons() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('perm:strict').setLabel(PERM_LABEL.strict).setStyle(ButtonStyle.Secondary),

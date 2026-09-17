@@ -2,28 +2,27 @@
 
 Current execution specification:
 
-`docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md`
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`
 
 Branch: `jarvis-v4-p2-2-hardening`
 
-## Scope
+P2.2.5 (`docs/JARVIS_V4_P2_2_5_USER_HOSTILE_LIMITS_CLEANUP_TASK.md`) is complete and
+the active-task pointer is returned to the deferred P2 release merge. Do not run the
+merge in the same Worker job that completed P2.2.5.
 
-Pre-release cleanup of Jarvis-imposed user-hostile limits:
+## Evidence to carry into the merge
 
-1. audit meaningful caps/timeouts/cooldowns/lockouts/truncation/reset behavior;
-2. use real Discord limits for `/work` slash + modal input;
-3. stop silently truncating Chat/Work final results;
-4. persist owner-selected permission tier across restart/session/model/provider/workspace changes;
-5. remove permanent historical failure/restart channel lockout;
-6. make Chat timeout practical/configurable;
-7. expose/override provider cooldown;
-8. auto-compact Chat history instead of silently dropping oldest context;
-9. make approval expiry and follow-up caps owner-configurable/non-surprising;
-10. replace hard-coded Anthropic `max_tokens: 4096` with documented config;
-11. add focused deterministic smoke and short real-Discord verification.
+- `docs/P2_2_5_LIMIT_AUDIT.md` — 33 audited limits, 11 changed, 22 retained.
+- `npm test` 372/372; `npm run check` 114 files / 0 failed.
+- `smoke:p225-limits` 23/23 plus P2/P2.2 smokes all green.
+- Real-Discord owner smoke remains `PENDING_OWNER`.
 
-## Preserve
+## Do not redo
 
-Do not regress P2.2.1–P2.2.4, AUTO billing safeguards, manual-pin semantics, secret protection, one-active-Work-per-workspace, or unlimited default Work duration.
+- P2.2.1 Supervisor/autostart/watchdog recovery;
+- P2.2.2 Chat AUTO/manual selection;
+- P2.2.3 K1–K5 fixes;
+- P2.2.4 K6 lifecycle fixes;
+- P2.2.5 limits cleanup.
 
-Do not start P3. Do not merge PR #4/#5 during this task. The release merge task resumes only after P2.2.5 passes.
+Do not start P3.

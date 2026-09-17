@@ -56,7 +56,10 @@ export function loadConfig() {
     discordProxy: process.env.DISCORD_PROXY ?? null,
     approvalHost: process.env.APPROVAL_HOST || '127.0.0.1',
     approvalPort: int('APPROVAL_PORT', 37911),
-    approvalTimeoutMs: int('APPROVAL_TIMEOUT_MS', 540000),
+    // No automatic approval expiry by default: an unattended run must not be
+    // terminated just because the owner did not tap a button in time. A positive
+    // value is an opt-in operator bound; stop/reset still cancels pending gates.
+    approvalTimeoutMs: int('APPROVAL_TIMEOUT_MS', 0),
     // Keep the user-level agent hook pointing at this checkout on every start.
     // Disable with DISCORD_AUTO_HOOK=0 (e.g. test harnesses).
     autoInstallHook: bool('DISCORD_AUTO_HOOK', true),
@@ -87,8 +90,13 @@ export function loadConfig() {
     // Optional explicit default Work model for a workspace that has never
     // selected one. Never inferred from a provider's model list.
     defaultWorkModel: process.env.DEFAULT_WORK_MODEL || process.env.JARVIS_DEFAULT_WORK_MODEL || null,
-    // Wall-clock cap on one direct Chat request.
-    chatTimeoutMs: int('CHAT_TIMEOUT_MS', 25000),
+    // Wall-clock cap on one direct Chat request. A slow-but-legitimate model
+    // response must not be aborted by an aggressive default; a positive value is
+    // the operator override and `0` means no client-side timeout at all.
+    chatTimeoutMs: int('CHAT_TIMEOUT_MS', 120000),
+    // Output-token ceiling for Chat transports that require one (Anthropic
+    // Messages). OpenAI-compatible transports are never artificially capped.
+    chatMaxOutputTokens: int('CHAT_MAX_OUTPUT_TOKENS', 8192),
 
     // --- native Discord application commands (P2.1) -----------------------
     // Register the /-commands idempotently at startup (best effort).
@@ -98,8 +106,10 @@ export function loadConfig() {
     commandsGuildId: process.env.DISCORD_COMMANDS_GUILD_ID || null,
 
     // --- interactive Work follow-ups (P2.1) -------------------------------
-    // Pending appended requirements per active Work chain.
-    maxWorkFollowUps: int('MAX_WORK_FOLLOWUPS', 10),
+    // Pending appended requirements per active Work chain. `0` (the default)
+    // means unlimited for this single-owner bridge; a positive value is an
+    // explicit physical-resource policy that the UI reports truthfully.
+    maxWorkFollowUps: int('MAX_WORK_FOLLOWUPS', 0),
 
     // --- runaway protection ----------------------------------------------
     // NO hard wall-clock cap on one task by default. A healthy Agent runs until

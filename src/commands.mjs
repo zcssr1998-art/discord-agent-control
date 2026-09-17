@@ -13,6 +13,12 @@
 const CHAT_INPUT = 1;
 const STRING = 3;
 
+// Real Discord platform maxima (not Jarvis policy): an application-command
+// STRING option caps at 6000 characters, while a modal Text Input caps at 4000.
+// They are deliberately different and must not be advertised as interchangeable.
+export const SLASH_TASK_MAX_LENGTH = 6000;
+export const MODAL_TASK_MAX_LENGTH = 4000;
+
 export const COMMAND_NAMES = Object.freeze([
   'panel', 'work', 'model', 'settings', 'permission', 'status', 'doctor', 'stop', 'new', 'compact', 'help',
 ]);
@@ -30,7 +36,7 @@ export function buildCommandPayloads() {
       description: '新建 Work 任务（留空则打开输入窗口）',
       type: CHAT_INPUT,
       options: [
-        { type: STRING, name: 'task', description: '任务内容（可选）', required: false, max_length: 1500 },
+        { type: STRING, name: 'task', description: '任务内容（可选）', required: false, max_length: SLASH_TASK_MAX_LENGTH },
       ],
     },
     simple('model', '切换 Chat / Work 模型'),

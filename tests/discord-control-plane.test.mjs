@@ -287,7 +287,7 @@ test('!reset clears the session and re-arms session approvals', async () => {
   assert.match(last.content, /会话：`新会话`/);
 });
 
-test('permission commands and buttons share one manager, FULL confirms, reset/cwd restore STANDARD', async () => {
+test('permission commands and buttons share one manager, FULL confirms, and reset/cwd keep the explicit tier', async () => {
   const { fake, plane } = makePlane();
   await plane.start();
 
@@ -307,11 +307,12 @@ test('permission commands and buttons share one manager, FULL confirms, reset/cw
   await fake.clickButton('permfull:confirm');
   assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full');
 
+  // A session reset and a workspace change are not permission decisions: the
+  // owner-selected FULL tier must survive both (P2.2.5 K4).
   await fake.sendAsUser({ content: '!reset' });
-  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'standard');
-  plane.permissionManager.confirmFull(fake.channelId);
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full', 'reset must not silently downgrade FULL');
   await fake.sendAsUser({ content: `!cwd ${os.tmpdir()}` });
-  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'standard');
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full', 'a cwd change must not silently downgrade FULL');
 });
 
 test('!cwd rejects bad paths and accepts a real absolute path', async () => {

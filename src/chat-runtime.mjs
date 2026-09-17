@@ -149,7 +149,8 @@ export class ChatRuntime {
     credentialStore,
     fetchImpl = fetch,
     health = null,
-    timeoutMs = 25000,
+    timeoutMs = 120000,
+    maxOutputTokens = 8192,
     preferredModelPatterns = DEFAULT_MODEL_PATTERNS,
     allowMeteredFallback = false,
     visionRoute = null,
@@ -159,6 +160,9 @@ export class ChatRuntime {
     this.fetchImpl = fetchImpl;
     this.health = health || new ProviderHealthRegistry();
     this.timeoutMs = timeoutMs;
+    // Only transports that require an explicit output ceiling (Anthropic
+    // Messages) use this. OpenAI-compatible transports stay uncapped.
+    this.maxOutputTokens = maxOutputTokens;
     this.preferredModelPatterns = [...preferredModelPatterns];
     this.allowMeteredFallback = allowMeteredFallback;
     // A configured image-capable route (e.g. a LiteLLM `vision` alias). AUTO
@@ -318,20 +322,27 @@ export class ChatRuntime {
       url = endpoint(profile.baseUrl, '/v1/messages');
       body = {
         model: model.id,
-        max_tokens: 4096,
+        ...(Number.isFinite(this.maxOutputTokens) && this.maxOutputTokens > 0
+          ? { max_tokens: this.maxOutputTokens }
+          : {}),
         ...(system ? { system: String(system) } : {}),
         messages: messages.map((message) => ({ role: message.role, content: toAnthropicContent(message.content) })),
       };
       parse = textFromAnthropic;
     }
 
+    // CHAT_TIMEOUT_MS=0 means no client-side deadline: never pass an invalid
+    // timeout into AbortSignal.timeout (that would throw synchronously).
+    const signal = Number.isFinite(this.timeoutMs) && this.timeoutMs > 0
+      ? AbortSignal.timeout(this.timeoutMs)
+      : undefined;
     let response;
     try {
       response = await this.fetchImpl(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        ...(signal ? { signal } : {}),
       });
     } catch (error) {
       const code = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'TIMEOUT' : 'UNREACHABLE';

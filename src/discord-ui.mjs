@@ -4,6 +4,7 @@ import './discord-proxy.mjs';
 
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -34,10 +35,10 @@ import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import {
   downloadWorkAttachments, buildWorkManifest, readChatAttachments, buildChatContent, buildChatHistoryText,
 } from './attachments.mjs';
-import { registerApplicationCommands, COMMAND_NAMES } from './commands.mjs';
+import { registerApplicationCommands, COMMAND_NAMES, MODAL_TASK_MAX_LENGTH } from './commands.mjs';
 import { autostartSummary } from './autostart.mjs';
 import {
-  clip,
+  clip, planResultDelivery,
   permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
   providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, panelMainRows,
   panelBackRow, panelHelpRows, panelModelRows, workControlRows, providerModelRows, choiceRows, pagedChoiceRows,
@@ -219,7 +220,9 @@ export class DiscordControlPlane {
     // chain tracks the per-channel follow-up queue that drains after each turn.
     this.workRuns = new Map();
     this.workChains = new Map();
-    this.maxWorkFollowUps = config.maxWorkFollowUps ?? 10;
+    // 0 (default) means unlimited for this single-owner bridge. A positive value
+    // is a finite, owner-visible resource policy.
+    this.maxWorkFollowUps = Number(config.maxWorkFollowUps) > 0 ? Number(config.maxWorkFollowUps) : 0;
     this.followUpSeq = 0;
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
@@ -445,7 +448,7 @@ export class DiscordControlPlane {
     this.state.setGlobalWorkspace(resolved);
     await this.sessionManager.change(channelId, { cwd: resolved }, 'workspace changed');
     console.log(`[workspace] selected channel=${channelId} workspace=${resolved}`);
-    return `✅ 已切换并持久化工作目录：\`${resolved}\`\n会话已清除，权限已恢复为 🛡️ 标准。重启后会恢复该目录。`;
+    return `✅ 已切换并持久化工作目录：\`${resolved}\`\n会话已清除（权限档位保持不变）。重启后会恢复该目录。`;
   }
 
   /**
@@ -661,6 +664,9 @@ export class DiscordControlPlane {
     const s = this.sessionManager.get(channelId);
     const runner = this.runners.get(channelId);
     const blocked = this.limits?.blocked(channelId);
+    // Historical failure/restart counters are diagnostics, never a lockout: they
+    // are shown as a warning but a new Work is always accepted.
+    const limitWarning = blocked?.warning ?? (blocked?.blocked ? blocked.reason : null);
     // Same resolved runtime state as the startup card and task launch: this is
     // what prevents `/status` from drifting back to WorkBuddy/fast-model.
     const effective = this.effectiveRuntimeState({ channelId });
@@ -685,7 +691,7 @@ export class DiscordControlPlane {
       idleSec: runner?.busy ? Math.round((runner.idleMs ?? 0) / 1000) : null,
       pendingApprovals: this.approvalManager.pending.size,
       permissionLabel: permLabel,
-      blocked: blocked?.blocked ? blocked.reason : providerBlocked,
+      blocked: [limitWarning, providerBlocked].filter(Boolean).join(' · ') || null,
       mode: s.mode,
       workState: this.#workStateText(channelId),
       workWorkspace: this.scheduler.stateFor(channelId).workspace || s.cwd,
@@ -743,6 +749,15 @@ export class DiscordControlPlane {
       lines.push(`⏰ Autostart: ${await autostartSummary()}`);
     } catch {
       lines.push('⏰ Autostart: unknown');
+    }
+
+    // Chat provider/model cooldowns must be visible here, not silently swallow
+    // routes: provider/model, reason and remaining time (K7).
+    if (this.chatRuntime?.health?.list) {
+      const cooldowns = this.chatRuntime.health.list().filter((item) => item.remainingMs > 0);
+      lines.push(cooldowns.length
+        ? `💬 Chat cooldowns: ${cooldowns.map((c) => `${c.providerId}/${c.modelId} ${formatUptime(c.remainingMs)} (${c.lastErrorCode || 'UNKNOWN'})`).join(', ')}`
+        : '💬 Chat cooldowns: (none)');
     }
     return lines.join('\n');
   }
@@ -920,7 +935,7 @@ export class DiscordControlPlane {
       return `⚠️ 已选择执行器：${executor.displayName}，但它不支持当前 Provider。\n请在 \`/model\` → Work 模型 或 \`/settings\` → 提供商 中选择兼容 Provider；配置完成前不会启动任务。`;
     }
     await this.sessionManager.change(channelId, { executorId }, 'executor changed');
-    return `✅ 已切换执行器：${executor.displayName}\n已创建新安全 Session，权限恢复为 🛡️ 标准。`;
+    return `✅ 已切换执行器：${executor.displayName}\n已创建新安全 Session（权限档位保持不变）。`;
   }
 
   async #switchProvider(channelId, providerId) {
@@ -939,7 +954,7 @@ export class DiscordControlPlane {
     const hint = provider.protocol === PROTOCOL.OPENCODE_GO
       ? '\n请使用 `!models` 选择模型；只有当前执行器兼容的协议才能被选中。'
       : '\n请使用 `!models` 选择模型。';
-    return `✅ 已切换 Provider：${provider.displayName}\n已创建新安全 Session，权限恢复为 🛡️ 标准。${model ? `\n🧠 模型：${model}` : hint}`;
+    return `✅ 已切换 Provider：${provider.displayName}\n已创建新安全 Session（权限档位保持不变）。${model ? `\n🧠 模型：${model}` : hint}`;
   }
 
   async #selectModel(channelId, modelId) {
@@ -956,7 +971,7 @@ export class DiscordControlPlane {
     // Persist the selection beyond the ephemeral Discord channel: a new Work
     // thread, a bridge restart or a fresh process must restore it.
     this.sessionManager.rememberWorkModel(channelId, { providerId: state.providerId, executorId: state.executorId, model: modelId });
-    return `✅ 已切换模型：\`${modelId}\`\n已创建新安全 Session，权限恢复为 🛡️ 标准。`;
+    return `✅ 已切换模型：\`${modelId}\`\n已创建新安全 Session（权限档位保持不变）。`;
   }
 
   #providerAdded(channelId, added, deleted) {
@@ -1161,6 +1176,38 @@ export class DiscordControlPlane {
       await message.reply(await this.#chatModelCommand(message.channelId, chatModelCommand[1]?.trim() || null));
       return;
     }
+    const cooldownCommand = text.match(/^!cooldown(?:\s+(.+))?$/i);
+    if (cooldownCommand) {
+      const argument = (cooldownCommand[1] || '').trim();
+      if (!argument) {
+        await message.reply(this.#chatCooldownText());
+        return;
+      }
+      const [action, providerArg, modelArg] = argument.split(/\s+/);
+      if (action.toLowerCase() !== 'clear') {
+        await message.reply('用法：`!cooldown` 查看冷却；`!cooldown clear [providerId] [modelId]` 清除并立即重试。');
+        return;
+      }
+      if (!this.chatRuntime?.health?.reset) {
+        await message.reply('❌ Chat 健康状态未接入。');
+        return;
+      }
+      const selection = this.sessionManager.get(message.channelId);
+      const pinnedProvider = selection.chatProviderId && selection.chatProviderId !== 'auto' ? selection.chatProviderId : null;
+      const targetProvider = providerArg || pinnedProvider;
+      const targetModel = modelArg || (targetProvider && targetProvider === pinnedProvider ? (selection.chatModel || null) : null);
+      // Clear ONLY the intended entry (or the intended provider's models); a
+      // manual retry must never reset unrelated providers. AUTO safeguards stay.
+      if (targetProvider && targetModel) this.chatRuntime.health.reset(targetProvider, targetModel);
+      else if (targetProvider) this.chatRuntime.health.reset(targetProvider);
+      else this.chatRuntime.health.reset();
+      const scope = targetProvider
+        ? `${targetProvider}${targetModel ? ` / ${targetModel}` : '（全部模型）'}`
+        : '全部 provider';
+      console.log(`[chat] cooldown cleared by owner scope=${scope}`);
+      await message.reply(`✅ 已清除 ${scope} 的 Chat 冷却；下一条 Chat 会立即重试。`);
+      return;
+    }
     if (text === '!health') {
       const state = this.sessionManager.snapshot(message.channelId);
       const executor = this.executorManager?.get(state.executorId);
@@ -1168,6 +1215,7 @@ export class DiscordControlPlane {
       const providerHealth = provider ? await this.providerManager.health(provider.id) : { ok: false };
       const compatible = Boolean(executor && provider && this.executorManager.compatible(executor.id, provider.protocol));
       const modelExists = Boolean(state.model && provider?.models?.some((model) => model.id === state.model));
+      const cooldowns = this.chatRuntime?.health?.list?.().filter((item) => item.remainingMs > 0) ?? [];
       await message.reply([
         '🩺 **Agent 健康检查**', '',
         `${executor?.available && executor.adapterReady ? '✅' : '❌'} 执行器：${executor?.displayName || '未选择'} · ${executor?.status || 'MISSING'}`,
@@ -1177,6 +1225,7 @@ export class DiscordControlPlane {
         `${modelExists ? '✅' : '❌'} Model：${state.model || '未选择'}`,
         `${compatible ? '✅' : '❌'} Executor × Provider 兼容性`,
         `${state.executorSessionId ? '✅' : '⚠️'} Session：${state.executorSessionId || '新会话'}`,
+        `${cooldowns.length ? '🕒' : '✅'} Chat 冷却：${cooldowns.length ? cooldowns.map((c) => `${c.providerId}/${c.modelId} ${formatUptime(c.remainingMs)}`).join('、') : '无'}`,
       ].join('\n'));
       return;
     }
@@ -1220,7 +1269,7 @@ export class DiscordControlPlane {
       await this.sessionManager.reset(message.channelId);
       this.limits?.reset(message.channelId);
       this.backendVerdictByChannel.delete(message.channelId);
-      await message.reply('✅ 会话已重置。下一个任务将使用新会话，权限已恢复为 🛡️ 标准，失败/重启计数已清零。');
+      await message.reply('✅ 会话已重置。下一个任务将使用新会话（权限档位保持不变），失败/重启诊断计数已清零。');
       return;
     }
     if (text === '!handoff') {
@@ -1259,7 +1308,7 @@ export class DiscordControlPlane {
         return;
       }
       await this.sessionManager.change(message.channelId, { cwd: requested }, 'cwd changed');
-      await message.reply(`✅ 当前频道已绑定到 \`${requested}\`。\n会话已清除，权限已恢复为 🛡️ 标准。`);
+      await message.reply(`✅ 当前频道已绑定到 \`${requested}\`。\n会话已清除（权限档位保持不变）。`);
       return;
     }
 
@@ -1509,9 +1558,29 @@ export class DiscordControlPlane {
 
     // Append exactly one user + one assistant turn, and only after success. A
     // failed attempt/fallback inside ChatRuntime never reaches this point twice.
-    if (this.chatHistory) {
-      const userText = buildChatHistoryText({ prompt: text, ...extracted });
-      if (userText.trim()) this.chatHistory.appendTurn(channelId, { user: userText, assistant: result.text });
+    // K8: before an append would destructively trim, auto-compact older context
+    // into the existing summary. If compaction cannot run we do NOT silently drop
+    // history: the stored context is preserved and a warning is surfaced.
+    const userText = buildChatHistoryText({ prompt: text, ...extracted });
+    const incoming = [];
+    if (userText.trim()) incoming.push({ role: 'user', content: userText });
+    if (String(result.text ?? '').trim()) incoming.push({ role: 'assistant', content: result.text });
+    let historyNote = null;
+    let mayAppend = true;
+    if (this.chatHistory && incoming.length
+      && this.chatHistory.wouldTrim(channelId, { extraMessages: incoming })) {
+      const compacted = await this.#compactContext(channelId);
+      if (compacted.ok) {
+        historyNote = `🧹 上下文已自动压缩：${compacted.olderTurns} 轮较早内容 -> 摘要（旧事实保留在摘要中），最近 ${compacted.keepTurns} 轮保持原样。`;
+        console.log(`[chat] auto-compact channel=${channelId} olderTurns=${compacted.olderTurns} keepTurns=${compacted.keepTurns}`);
+      } else {
+        mayAppend = false;
+        historyNote = `⚠️ 上下文已达上限，自动压缩未成功（${compacted.reason}）；为避免静默丢弃旧内容，本轮未写入历史，原上下文保持不变。请发送 \`/compact\` 重试。`;
+        console.warn(`[chat] auto-compact failed channel=${channelId} reason=${compacted.reason}`);
+      }
+    }
+    if (this.chatHistory && mayAppend && incoming.length) {
+      this.chatHistory.appendTurn(channelId, { user: userText, assistant: result.text });
     }
 
     const durationMs = Date.now() - startedAt;
@@ -1526,14 +1595,19 @@ export class DiscordControlPlane {
       served, fallback, durationMs, at: Date.now(),
     });
     const footer = [
-      '💬 Chat',
-      result.providerName || result.providerId || providerId,
-      served,
-      ...(fallback ? ['fallback'] : []),
-      `${(durationMs / 1000).toFixed(1)}s`,
-    ].join(' · ');
+      [
+        '💬 Chat',
+        result.providerName || result.providerId || providerId,
+        served,
+        ...(fallback ? ['fallback'] : []),
+        `${(durationMs / 1000).toFixed(1)}s`,
+      ].join(' · '),
+      historyNote,
+    ].filter(Boolean).join('\n');
     console.log(`[chat] done channel=${channelId} provider=${result.providerId} model=${result.model} served=${served} fallback=${fallback} durationMs=${durationMs}`);
-    await message.reply(clip(`${result.text}\n\n${footer}`));
+    // K3: deliver the FULL answer (chunked or as an attachment for very long
+    // text). A real model answer is never replaced by a truncated preview.
+    await this.#deliverResult(message, result.text, { footer, label: 'chat' });
   }
 
   #chatFailureText(error, { providerId, model }) {
@@ -1581,7 +1655,26 @@ export class DiscordControlPlane {
     const providerId = selection.chatProviderId || 'auto';
     if (providerId === 'auto' || !this.chatRuntime?.health) return null;
     const snapshot = this.chatRuntime.health.snapshot(providerId, selection.chatModel || '*');
-    return snapshot.status === 'unknown' ? 'healthy' : snapshot.status;
+    if (snapshot.status !== 'cooldown') return snapshot.status === 'unknown' ? 'healthy' : snapshot.status;
+    const remaining = Math.max(0, (snapshot.cooldownUntil ?? 0) - Date.now());
+    return `冷却 ${formatUptime(remaining)} · ${snapshot.lastErrorCode || 'UNKNOWN'}（!cooldown clear 可立即重试）`;
+  }
+
+  /** Owner-visible Chat/provider cooldowns with reason + remaining time (K7). */
+  #chatCooldownText() {
+    const health = this.chatRuntime?.health;
+    if (!health?.list) return '❌ Chat 健康状态未接入。';
+    const items = health.list().filter((item) => item.remainingMs > 0);
+    const lines = ['🕒 **Chat 冷却状态**', ''];
+    if (!items.length) {
+      lines.push('当前没有冷却中的 Chat provider/model。');
+    } else {
+      for (const item of items.slice(0, 8)) {
+        lines.push(`• ${item.providerId} / ${item.modelId} · 剩余 ${formatUptime(item.remainingMs)} · ${item.lastErrorCode || 'UNKNOWN'}（失败 ${item.failures} 次）`);
+      }
+    }
+    lines.push('', '清除并立即重试：`!cooldown clear [providerId] [modelId]`');
+    return lines.join('\n');
   }
 
   // ---- P2 control panel + daily UX -----------------------------------------
@@ -1778,7 +1871,9 @@ export class DiscordControlPlane {
           .setLabel('任务内容')
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(true)
-          .setMaxLength(1500),
+          // Real Discord Text Input maximum. The slash option has a different
+          // (larger) platform limit, so the two are not advertised as the same.
+          .setMaxLength(MODAL_TASK_MAX_LENGTH),
       ));
   }
 
@@ -1989,18 +2084,21 @@ export class DiscordControlPlane {
       : '🆕 已开始新对话：本频道没有可清除的 Chat 上下文。';
   }
 
-  async #compactChat(channelId) {
-    if (this.#isWorkThread(channelId)) return '这是 Work 线程；压缩上下文请在父频道 Chat 使用。';
-    if (!this.chatHistory) return '❌ Chat 历史未启用，无法压缩。';
-    if (!this.chatRuntime) return '❌ Chat 运行时未接入。';
+  /**
+   * Shared compaction core for the manual `/compact` action and K8 auto-compact.
+   * It reuses the CURRENTLY selected Chat route and billing policy (never a
+   * metered fallback just to compact) and never recurses. Returns a structured
+   * result so the auto path can refuse to append rather than silently trim.
+   */
+  async #compactContext(channelId, { keepCount = 4 } = {}) {
+    if (this.#isWorkThread(channelId)) return { ok: false, reason: '这是 Work 线程，请在父频道 Chat 压缩' };
+    if (!this.chatHistory) return { ok: false, reason: 'Chat 历史未启用' };
+    if (!this.chatRuntime) return { ok: false, reason: 'Chat 运行时未接入' };
     const stored = this.chatHistory.get(channelId);
-    const stats = this.chatHistory.stats(channelId);
-    if (stored.messages.length <= 6 && !stored.summary) {
-      return `无需压缩（当前 ${stats.turns} 轮 / ${stats.chars} 字符）。`;
-    }
-    const selection = this.sessionManager.get(channelId);
-    const keepTail = stored.messages.slice(-4);
+    const keepTail = stored.messages.slice(-keepCount);
     const older = stored.messages.slice(0, Math.max(0, stored.messages.length - keepTail.length));
+    if (!older.length) return { ok: false, reason: '没有可压缩的较早消息' };
+    const selection = this.sessionManager.get(channelId);
     const transcript = older.map((message) => `${message.role === 'user' ? '用户' : '助手'}：${message.content}`).join('\n');
     const prompt = [
       stored.summary ? `已有摘要：\n${stored.summary}\n` : '',
@@ -2016,15 +2114,36 @@ export class DiscordControlPlane {
         providerId: selection.chatProviderId || 'auto', model: selection.chatModel || null,
       });
     } catch (error) {
-      console.error(`[chat] compact failed channel=${channelId} code=${error?.code ?? 'UNKNOWN'} ${redact(error?.message || error)}`);
-      return `❌ 压缩失败，原上下文保持不变：${redact(error?.message || error)}`;
+      const detail = redact(error?.message || error);
+      console.error(`[chat] compact failed channel=${channelId} code=${error?.code ?? 'UNKNOWN'} ${detail}`);
+      return { ok: false, reason: detail };
     }
     this.chatHistory.replace(channelId, { summary: result.text, messages: keepTail });
-    const served = result.upstreamModel && result.upstreamModel !== result.model
-      ? `${result.model} → ${result.upstreamModel}` : result.model;
+    return {
+      ok: true,
+      olderTurns: Math.ceil(older.length / 2),
+      keepTurns: Math.ceil(keepTail.length / 2),
+      summary: result.text,
+      result,
+    };
+  }
+
+  async #compactChat(channelId) {
+    if (this.#isWorkThread(channelId)) return '这是 Work 线程；压缩上下文请在父频道 Chat 使用。';
+    if (!this.chatHistory) return '❌ Chat 历史未启用，无法压缩。';
+    if (!this.chatRuntime) return '❌ Chat 运行时未接入。';
+    const stored = this.chatHistory.get(channelId);
+    const stats = this.chatHistory.stats(channelId);
+    if (stored.messages.length <= 6 && !stored.summary) {
+      return `无需压缩（当前 ${stats.turns} 轮 / ${stats.chars} 字符）。`;
+    }
+    const compacted = await this.#compactContext(channelId);
+    if (!compacted.ok) return `❌ 压缩失败，原上下文保持不变：${compacted.reason}`;
+    const served = compacted.result.upstreamModel && compacted.result.upstreamModel !== compacted.result.model
+      ? `${compacted.result.model} → ${compacted.result.upstreamModel}` : compacted.result.model;
     return [
-      `🧹 已压缩上下文：${Math.ceil(older.length / 2)} 轮 -> 摘要 + ${Math.ceil(keepTail.length / 2)} 轮最近消息。`,
-      `模型：${result.providerName || result.providerId} · ${served}`,
+      `🧹 已压缩上下文：${compacted.olderTurns} 轮 -> 摘要 + ${compacted.keepTurns} 轮最近消息。`,
+      `模型：${compacted.result.providerName || compacted.result.providerId} · ${served}`,
     ].join('\n');
   }
 
@@ -2216,20 +2335,65 @@ export class DiscordControlPlane {
   }
 
   /**
+   * P2.2.5 K3: the ONE long-result delivery path for user-visible Chat/Work
+   * answers. It never replaces a real answer with a `…(truncated)` preview:
+   *   - short  → one normal message;
+   *   - medium → ordered Discord chunks preserving every character;
+   *   - very long → short preview + generated `.md` attachment with the full text.
+   * If delivery itself fails, the failure is reported explicitly and the full
+   * text is written to the run log so it is never lost. Status cards, labels and
+   * diagnostics keep using compact `clip()`.
+   */
+  async #deliverResult(message, text, { header = null, footer = null, runLog = null, label = 'result' } = {}) {
+    const full = String(text ?? '');
+    const combined = [header, full, footer].filter((part) => part != null && part !== '').join('\n\n');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const plan = planResultDelivery(combined, { fileName: `jarvis-${label}-${stamp}.md` });
+    try {
+      if (plan.mode === 'message') {
+        await message.reply?.({ content: plan.chunks[0] });
+        return { ok: true, mode: 'message', chars: plan.totalChars };
+      }
+      if (plan.mode === 'chunks') {
+        for (const chunk of plan.chunks) await message.reply?.({ content: chunk });
+        return { ok: true, mode: 'chunks', chunks: plan.chunks.length, chars: plan.totalChars };
+      }
+      const preview = [
+        `🧾 结果较长（${plan.totalChars} 字符），完整内容见附件 \`${plan.attachment.name}\`。`,
+        '',
+        plan.preview,
+        ...(footer ? ['', footer] : []),
+      ].join('\n');
+      await message.reply?.({
+        content: clip(preview),
+        files: [new AttachmentBuilder(Buffer.from(plan.attachment.content, 'utf8'), { name: plan.attachment.name })],
+      });
+      return { ok: true, mode: 'attachment', chars: plan.totalChars, name: plan.attachment.name };
+    } catch (error) {
+      const detail = redact(error?.message || error);
+      console.error(`[delivery] ${label} full delivery failed: ${detail}`);
+      try { runLog?.log?.({ type: 'result_full', text: combined }); } catch { /* best effort */ }
+      const logNote = runLog?.path ? `完整内容已写入运行日志 \`${path.basename(runLog.path)}\`。` : '完整内容未能写入运行日志。';
+      await message.reply?.({ content: `⚠️ 完整结果投递失败：${detail}\n${logNote}` }).catch(() => {});
+      return { ok: false, mode: 'failed', error, chars: plan.totalChars };
+    }
+  }
+
+  /**
    * Post a completed intermediate turn's result as its OWN immutable message,
    * before the next continuation repaints the mutable progress card. Without
    * this the continuation's RUNNING edit erased the turn's useful output
-   * (P2.2.4 K6/L2).
+   * (P2.2.4 K6/L2). P2.2.5 K3: the full turn text is delivered, never clipped.
    */
   async #postTurnResult(message, turn, result, runLog) {
-    const body = [
+    const header = [
       `🟡 第 ${turn} 轮已完成，仍有插入需求/后续工作，任务继续。`,
       runLog?.path ? `日志：\`${path.basename(runLog.path)}\`` : null,
-      '',
-      clip(redact(result?.text || '（无最终文本）'), 1800),
     ].filter((line) => line !== null).join('\n');
     try {
-      await message.reply?.({ content: body });
+      await this.#deliverResult(message, redact(result?.text || '（无最终文本）'), {
+        header, runLog, label: 'work-turn',
+      });
       console.log(`[work-lifecycle] preserved turn=${turn} result as its own message`);
     } catch (error) {
       console.warn(`[work-lifecycle] could not preserve turn ${turn} result: ${redact(error?.message || error)}`);
@@ -2300,7 +2464,9 @@ export class DiscordControlPlane {
       stateLine,
       `🤖 ${model}`,
       `📁 ${s.cwd}`,
-      ...(chain.followUps.length ? [`➕ 待执行追加需求：${chain.followUps.length}`] : []),
+      ...(chain.followUps.length
+        ? [`➕ 待执行追加需求：${chain.followUps.length}${this.maxWorkFollowUps > 0 ? ` / ${this.maxWorkFollowUps}` : ''}`]
+        : []),
     ].join('\n');
     const rows = [];
     if (chain.threadId && chain.guildId) {
@@ -2352,7 +2518,10 @@ export class DiscordControlPlane {
       if (chain.dedupe.has(dedupeKey)) return { ok: false, reason: 'duplicate' };
       chain.dedupe.add(dedupeKey);
     }
-    if (chain.followUps.length >= this.maxWorkFollowUps) return { ok: false, reason: 'full' };
+    // 0 = unlimited; only a positive operator policy can reject a follow-up.
+    if (this.maxWorkFollowUps > 0 && chain.followUps.length >= this.maxWorkFollowUps) {
+      return { ok: false, reason: 'full' };
+    }
 
     const list = attachments ?? [];
     let prepared = String(prompt ?? '').trim() || '请查看并处理这些附件。';
@@ -2468,7 +2637,7 @@ export class DiscordControlPlane {
       return true;
     }
     if (result.reason === 'full') {
-      await message.reply(`⛔ 追加队列已满（最多 ${this.maxWorkFollowUps} 条），请等待当前任务结束后再发送。`);
+      await message.reply(`⛔ 追加队列已满（配置上限 ${this.maxWorkFollowUps} 条，可用 MAX_WORK_FOLLOWUPS 调整），请等待当前任务结束后再发送。`);
       return true;
     }
     return false;
@@ -2674,6 +2843,9 @@ export class DiscordControlPlane {
    */
   async runTask(message, prompt, { attachments = null } = {}) {
     const channelId = message.channelId;
+    // A new Work always starts a fresh recovery episode: an earlier crash loop
+    // can never require `!reset` before this valid task is accepted (K5).
+    this.limits?.beginWork(channelId);
     const chState = this.sessionManager.get(channelId);
     const workspace = chState.cwd || this.config.defaultCwd;
 
@@ -2958,13 +3130,17 @@ export class DiscordControlPlane {
       progress.costUsd = result.costUsd ?? 0;
       // progress.render() already carries the state, project, last action, test
       // result and tool histogram — reuse it instead of rebuilding the summary.
-      const body = [
-        progress.render(),
-        extras || null,
-        '',
-        clip(redact(result.text || '（无最终文本）'), 1200),
-      ].filter((line) => line !== null).join('\n');
-      await editor.flushNow(body, []);
+      const finalText = redact(result.text || '（无最终文本）');
+      // The mutable progress card stays compact. A short final answer is shown
+      // inline; a longer one is delivered in FULL as its own immutable message
+      // (or attachment) so the card never truncates the real result (K3).
+      const CARD_RESULT_BUDGET = 1200;
+      const inline = finalText.length <= CARD_RESULT_BUDGET ? `\n\n${finalText}` : '';
+      const body = [progress.render(), extras || null].filter((line) => line !== null).join('\n');
+      await editor.flushNow(`${body}${inline}`, []);
+      if (finalText.length > CARD_RESULT_BUDGET) {
+        await this.#deliverResult(message, finalText, { runLog, label: 'work' });
+      }
     } catch (error) {
       if (run) run.drainable = false;
       const detail = redact(error?.message || error);

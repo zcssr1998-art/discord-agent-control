@@ -96,7 +96,13 @@ async function main() {
     credentialStore: credentials,
   });
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
-  const permissions = new PermissionManager();
+  // The owner's explicit permission tier is durable product configuration, so it
+  // survives a bridge restart and is never reset by a model/provider/workspace
+  // change or a new Agent session.
+  const permissions = new PermissionManager({
+    initialLevels: state.allPermissionLevels(),
+    onChange: (channelId, level) => state.setPermissionLevel(channelId, level),
+  });
   const secret = ensureHookSecret();
   // Repair a stale global hook (a hook installed from a different checkout
   // reads a different data/hook-secret and 401s every tool call). The hook
@@ -269,6 +275,7 @@ async function main() {
     credentialStore: credentials,
     health: chatHealth,
     timeoutMs: config.chatTimeoutMs,
+    maxOutputTokens: config.chatMaxOutputTokens,
     allowMeteredFallback: config.allowMeteredChatFallback,
     visionRoute,
   });
@@ -374,7 +381,7 @@ async function main() {
   console.log(`[bridge] Model: ${backendState.backend?.model ?? 'unknown'}`);
   console.log(`[bridge] Billing route: ${backendState.billingRoute}`);
   console.log(`[bridge] Paid fallback: ${config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`[chat] mode=CHAT(default) route=AUTO meteredFallback=${config.allowMeteredChatFallback ? 'ENABLED' : 'DISABLED'} timeoutMs=${config.chatTimeoutMs}`);
+  console.log(`[chat] mode=CHAT(default) route=AUTO meteredFallback=${config.allowMeteredChatFallback ? 'ENABLED' : 'DISABLED'} timeoutMs=${config.chatTimeoutMs > 0 ? config.chatTimeoutMs : 'unlimited'} maxOutputTokens=${config.chatMaxOutputTokens}`);
   console.log(`[discord] control plane ready | log dir=${config.logDir || path.join(root, 'logs')} default cwd=${config.defaultCwd}`);
 
   const shutdown = async (signal) => {
