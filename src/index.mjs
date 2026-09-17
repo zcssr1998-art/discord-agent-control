@@ -29,12 +29,42 @@ import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import { loadLiteLLMConfig, checkLiteLLMHealth, readOpenCodeGoKey } from './litellm.mjs';
 import { cleanupInbox } from './attachments.mjs';
 import { redactSecrets } from './secrets.mjs';
+import { InstanceGuard } from './instance-guard.mjs';
+import { resolveBuildIdentity, describeBuild } from './build-identity.mjs';
+import { DurableStore } from './durable-store.mjs';
+import { Updater, RESTART_EXIT_CODE, shortSha as shortUpdateSha } from './updater.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 async function main() {
+  const buildIdentity = resolveBuildIdentity(root);
+  // The lock lives under git-ignored runtime data. A test/harness may isolate it
+  // with JARVIS_INSTANCE_LOCK so the real entry point can be exercised without
+  // fighting a real running bridge.
+  const lockFile = process.env.JARVIS_INSTANCE_LOCK ? path.resolve(process.env.JARVIS_INSTANCE_LOCK) : null;
+  const guard = new InstanceGuard({ root, build: buildIdentity, lockFile });
+  const lockResult = guard.acquire();
+  if (!lockResult.ok) {
+    const holder = lockResult.holder;
+    if (lockResult.reason === 'already-running' && holder) {
+      console.error(`[instance] another live Jarvis bridge already holds the instance lock (pid=${holder.pid}, started=${holder.startedAt}${holder.branch ? ` ${holder.branch}@${String(holder.commit).slice(0, 7)}` : ''}).`);
+      console.error('[instance] Refusing to start a second bridge. Stop the existing instance first, or run scripts/uninstall-autostart.ps1 if a scheduled launch is stale. The other process was NOT killed.');
+    } else {
+      console.error(`[instance] could not acquire the instance lock: ${lockResult.reason}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`[instance] acquired lock pid=${process.pid} build=${describeBuild(buildIdentity)} instance=${lockResult.info.instanceId}`);
+
   const config = loadConfig();
+  // The Jarvis checkout root is the last-resort default workspace; it is never
+  // inferred from process.cwd() or a model/history directory.
+  config.repoRoot = config.repoRoot || root;
+  config.defaultWorkspace = config.defaultWorkspace || config.repoRoot;
+  console.log(`[workspace] default=${config.defaultWorkspace} (repoRoot=${config.repoRoot})`);
+
   const stateFile = path.join(root, 'data', 'state.json');
   const state = new StateStore(stateFile);
   // Log the effective per-channel routing on startup so the live bridge state is
@@ -46,12 +76,34 @@ async function main() {
     console.log(`[state] channel=${channelId} mode=${channel.mode} executor=${channel.executorId} provider=${channel.providerId} model=${channel.model ?? 'none'} cwd=${channel.cwd}${channel.workThread ? ` workThread=parent:${channel.parentChannelId}` : ''}`);
   }
   const credentials = new CredentialStore(path.join(root, 'data', 'credentials.json'));
+
+  // P2.2 model persistence: the restored model selection is logged so a
+  // post-restart run is verifiable from the bridge log instead of assumed.
+  {
+    const lastModel = state.getLastWorkModel();
+    const workspaces = state.savedWorkspaceModelCount();
+    console.log(`[state] restored model selection: workspaces=${workspaces} lastWorkModel=${lastModel ? `${lastModel.providerId ?? '?'}/${lastModel.model}` : 'none'}`);
+  }
+
+  // ---- P2.2D durable operational store (SQLite WAL) -------------------------
+  const durableStore = new DurableStore({ file: path.join(root, 'data', 'jarvis.db') });
+  try {
+    durableStore.open();
+  } catch (error) {
+    console.warn(`[store] durable store unavailable (${redactSecrets(error?.message || error)}); run history this session is memory-only`);
+  }
   const providers = new ProviderManager({
     file: path.join(root, 'data', 'providers.json'),
     credentialStore: credentials,
   });
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
-  const permissions = new PermissionManager();
+  // The owner's explicit permission tier is durable product configuration, so it
+  // survives a bridge restart and is never reset by a model/provider/workspace
+  // change or a new Agent session.
+  const permissions = new PermissionManager({
+    initialLevels: state.allPermissionLevels(),
+    onChange: (channelId, level) => state.setPermissionLevel(channelId, level),
+  });
   const secret = ensureHookSecret();
   // Repair a stale global hook (a hook installed from a different checkout
   // reads a different data/hook-secret and 401s every tool call). The hook
@@ -78,6 +130,7 @@ async function main() {
   // back online automatically.
   let discord = null;
   let hookServer = null;
+  let updater = null;
   let shuttingDown = false;
 
   const fatalShutdown = async (label, error) => {
@@ -113,6 +166,43 @@ async function main() {
 
   process.on('uncaughtException', (error) => { fatalShutdown('uncaughtException', error); });
   process.on('unhandledRejection', (reason) => { fatalShutdown('unhandledRejection', reason); });
+
+  // A verified self-update must NOT become two bridges: the live bridge exits
+  // with a dedicated code and the existing Supervisor relaunches it from the
+  // same (now fast-forwarded) checkout. Children are reaped first so no Agent
+  // tree survives the restart.
+  const shutdownForUpdate = async ({ sha, previousSha } = {}) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[update] restarting bridge for verified update ${shortUpdateSha(previousSha)} -> ${shortUpdateSha(sha)}`);
+    try { await discord?.stopAll?.({ reason: 'update deploy' }); } catch { /* best effort */ }
+    try { hookServer?.close?.(); } catch { /* best effort */ }
+    try { await discord?.client?.destroy?.(); } catch { /* best effort */ }
+    try { updater?.stop?.(); } catch { /* best effort */ }
+    guard.release();
+    process.exit(RESTART_EXIT_CODE);
+  };
+
+  // Owner-visible update notices: only meaningful transitions, never per-poll.
+  const updateNoticeText = (event) => {
+    if (event.type === 'update-pending') {
+      return `⬆️ **更新可用，等待空闲部署**\n\`${shortUpdateSha(event.previousSha)} → ${shortUpdateSha(event.sha)}\`\n`
+        + `当前有运行中的任务，更新保持 pending，不会中断 Work。任务完成后会自动部署。`;
+    }
+    if (event.type === 'update-applied') {
+      return `✅ **更新已应用**\n\`${shortUpdateSha(event.previousSha)} → ${shortUpdateSha(event.sha)}\`\nSupervisor 正在重启 Jarvis（单实例）。`;
+    }
+    if (event.type === 'update-verified') {
+      return `✅ **更新已验证**\n运行 SHA：\`${shortUpdateSha(event.sha)}\``;
+    }
+    if (event.type === 'update-blocked') {
+      return `⛔ **更新已阻止**${event.reason ? `\n原因：${event.reason}` : ''}`;
+    }
+    if (event.type === 'update-failed') {
+      return `⚠️ **更新失败/已回滚**\n\`${shortUpdateSha(event.sha)}\`${event.reason ? `\n原因：${event.reason}` : ''}`;
+    }
+    return null;
+  };
 
   // Last-resort orphan reap. `exit` can only run synchronous code, so this is
   // the one place a blocking taskkill is correct — see src/kill-tree.mjs for why
@@ -224,6 +314,7 @@ async function main() {
     credentialStore: credentials,
     health: chatHealth,
     timeoutMs: config.chatTimeoutMs,
+    maxOutputTokens: config.chatMaxOutputTokens,
     allowMeteredFallback: config.allowMeteredChatFallback,
     visionRoute,
   });
@@ -244,7 +335,9 @@ async function main() {
     extraEnv: workbuddyProbeEnv.env,
     envUnset: workbuddyProbeEnv.envUnset,
     inheritEnv: false,
-    timeoutMs: config.taskTimeoutMs,
+    // Bounded independently: taskTimeoutMs may be 0 (unlimited Work), but the
+    // startup preflight must never hang forever on a wedged CLI.
+    timeoutMs: config.backendProbeTimeoutMs,
   });
   const verdict = assertBackendAllowed(probe.backend, { allowPaidFallback: config.allowPaidFallback, expected: config.agentBackend });
   const probeDetail = `${probe.text || ''} ${probe.error || ''}`;
@@ -290,6 +383,36 @@ async function main() {
   // queued-but-not-started task would add complexity without recovery value.
   const workspaceScheduler = new WorkspaceScheduler();
 
+  // ---- safe self-update (P2.2.6) ------------------------------------------
+  // Detection only: the updater fast-forwards the clean checkout after a
+  // staging-worktree candidate gate, then asks the Supervisor to restart. It
+  // never hot-swaps modules and never kills active Work.
+  updater = new Updater({
+    root,
+    enabled: config.autoUpdateEnabled,
+    remote: config.autoUpdateRemote,
+    branch: config.autoUpdateBranch,
+    intervalMs: config.autoUpdateIntervalMs,
+    stateFile: path.join(root, 'data', 'update-state.json'),
+    // The SHA this process actually loaded decides freshness, not the checkout.
+    runningSha: buildIdentity.commit,
+    safeToRestart: async () => (discord ? discord.runtimeActivity() : { safe: false, reasons: ['bridge starting'] }),
+    onReconcileSchema: async () => (discord ? discord.reconcileCommandSchema() : null),
+    onRequestRestart: (info) => shutdownForUpdate(info),
+    onNotify: async (event) => {
+      try {
+        const text = updateNoticeText(event);
+        if (!text) return;
+        const owner = await discord?.client?.users?.fetch?.(config.ownerId);
+        await owner?.send?.(text);
+      } catch { /* notifications are best-effort */ }
+    },
+    logger: console,
+  });
+  if (config.autoUpdateEnabled && config.autoUpdateBranch !== buildIdentity.branch) {
+    console.warn(`[update] live checkout branch '${buildIdentity.branch}' != AUTO_UPDATE_BRANCH '${config.autoUpdateBranch}'; the updater will report BLOCKED until they match.`);
+  }
+
   discord = new DiscordControlPlane({
     config,
     state,
@@ -307,6 +430,9 @@ async function main() {
     gatewayHealth,
     workspaceScheduler,
     attachmentInbox,
+    runtimeIdentity: { guard, build: buildIdentity, describe: describeBuild(buildIdentity) },
+    durableStore,
+    updater,
     extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });
@@ -325,18 +451,25 @@ async function main() {
   console.log(`[bridge] Model: ${backendState.backend?.model ?? 'unknown'}`);
   console.log(`[bridge] Billing route: ${backendState.billingRoute}`);
   console.log(`[bridge] Paid fallback: ${config.allowPaidFallback ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`[chat] mode=CHAT(default) route=AUTO meteredFallback=${config.allowMeteredChatFallback ? 'ENABLED' : 'DISABLED'} timeoutMs=${config.chatTimeoutMs}`);
+  console.log(`[chat] mode=CHAT(default) route=AUTO meteredFallback=${config.allowMeteredChatFallback ? 'ENABLED' : 'DISABLED'} timeoutMs=${config.chatTimeoutMs > 0 ? config.chatTimeoutMs : 'unlimited'} maxOutputTokens=${config.chatMaxOutputTokens}`);
   console.log(`[discord] control plane ready | log dir=${config.logDir || path.join(root, 'logs')} default cwd=${config.defaultCwd}`);
+
+  // Only now that Discord is online can the updater's notifications/schema
+  // reconcile reach the owner. reconcileAfterRestart() proves the running SHA
+  // and the fetched Discord command schema.
+  await updater.start().catch((error) => console.warn(`[update] startup check failed: ${error?.message || error}`));
 
   const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\n[bridge] shutting down (${signal})`);
+    try { updater.stop(); } catch { /* best effort */ }
     // Kill every agent tree before we go, so a Ctrl+C can never leave orphan
     // PowerShell / cmd / node processes behind.
     try { await discord.stopAll({ reason: `bridge shutdown (${signal})` }); } catch { /* best effort */ }
     try { hookServer.close(); } catch { /* best effort */ }
     try { await discord.client.destroy(); } catch { /* best effort */ }
+    guard.release();
     process.exitCode = 0;
   };
   process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });

@@ -221,6 +221,8 @@ export function providerErrorMessage(error) {
     RATE_LIMIT: '❌ Provider 达到频率或额度限制。',
     PROVIDER_ERROR: '❌ Provider 服务异常。',
     MODEL_INVALID: '❌ Model ID 无效或真实调用失败。',
+    MODEL_REQUIRED: '❌ 请先选择模型：使用 /model 或 !models 浏览后选择。',
+    MODEL_UNAVAILABLE: '❌ 已保存模型当前不可用，请重新使用 /model 或 !models 选择模型。',
     INCOMPATIBLE: '❌ 当前执行器不支持此模型协议。',
     WORKBUDDY_QUOTA: '❌ WorkBuddy 当前额度不足。',
     WORKBUDDY_UNAVAILABLE: '❌ WorkBuddy 当前不可用。',

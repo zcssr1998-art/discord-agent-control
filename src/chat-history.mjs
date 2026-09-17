@@ -160,6 +160,18 @@ export class ChatHistoryStore {
     return true;
   }
 
+  /**
+   * True when appending `extraMessages` would force `#trim()` to drop older
+   * stored messages. The chat path uses this to auto-compact BEFORE any
+   * destructive trim instead of silently discarding history.
+   */
+  wouldTrim(channelId, { extraMessages = [] } = {}) {
+    const channel = this.#channel(channelId);
+    const extra = (extraMessages ?? []).map(normalizeMessage).filter(Boolean);
+    const combined = [...channel.messages, ...extra];
+    return this.#trim(combined).length < combined.length;
+  }
+
   stats(channelId) {
     const channel = this.#channel(channelId);
     const chars = channel.messages.reduce((sum, message) => sum + messageChars(message), 0);

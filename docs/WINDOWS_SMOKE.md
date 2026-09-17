@@ -824,3 +824,186 @@ npm run verify:opencode-go   -> 17/17（MiniMax anthropic-messages 直连路线�
 npm run verify:claude-opencode-chat -> 30/30
 verify:hook / smoke:discord  -> WorkBuddy 403，标记 BLOCKED_BY_WORKBUDDY
 ```
+
+
+---
+
+## 15. P2.2.3 repository stabilization evidence (2026-09-17)
+
+Real Windows machine. All commands run against the real branch
+`jarvis-v4-p2-2-hardening`; no secret is printed.
+
+```text
+npm test                             -> 350 pass / 0 fail
+npm run check                        -> 111 file(s), 0 failed
+npm run smoke:p2                     -> 11/11  (real Chat + vision + Work thread)
+npm run smoke:p22                    -> 10/10  (instance lock, durable store, autostart)
+npm run smoke:p222                   -> 25/25  (real Chat model selection / restart)
+npm run smoke:p22-insert             -> 14/14  (real live insert, one Agent/session)
+npm run smoke:p22-model              -> 6/6    (real model restore across processes)
+npm run smoke:p22-workspace          -> 8/8    (real workspace persistence)
+npm run smoke:p223-full              -> 15/15  (K4/K5 real FULL Work, 0 prompts, real Stop)
+npm run verify:hook                  -> 9/9    (global hook fires; inert otherwise)
+npm run doctor:discord               -> login OK (Jarvis#8605, 1 guild)
+verify:opencode-go                   -> 17/17
+verify:claude-opencode-chat          -> 30/30
+scripts/smoke-supervisor-recovery.ps1-> 23/23  (kill bridge/LiteLLM/supervisor auto-recovery)
+```
+
+K4/K5 real-machine behavior after the fix:
+
+- setting the parent channel to FULL once yields a Work thread that reports
+  全开放 and completes a multi-step repo task with **zero** approval prompts;
+- `git add .env` is still hard-denied (secret guard independent of FULL);
+- production Work has **no** wall-clock cap (`TASK_TIMEOUT_MS=0`); a real 45s
+  `Start-Sleep` task stayed RUNNING and was terminated only by owner `!stop`.
+
+Known external blocker unchanged: WorkBuddy gateway returns
+`HTTP 403 provider 11140 request illegal`, so `smoke:local` agent-driven checks
+and WorkBuddy-executor Work tasks remain BLOCKED_BY_WORKBUDDY. Other providers
+remain usable and the bridge reports WorkBuddy as unavailable.
+
+## P2.2.4 Work lifecycle / insert / Stop �� 2026-09-17
+
+```text
+npm test                             -> 356 pass / 0 fail
+npm run check                        -> 113 file(s), 0 failed
+npm run smoke:p2                     -> 11/11  (real Chat + vision + Work thread)
+npm run smoke:p22                    -> 10/10  (instance lock, durable store, autostart)
+npm run smoke:p222                   -> 25/25  (real Chat model selection / restart)
+npm run smoke:p22-insert             -> 14/14  (real live insert, one Agent/session)
+npm run smoke:p223-full              -> 15/15  (K4/K5 real FULL Work, 0 prompts, real Stop)
+npm run smoke:p224-lifecycle         -> 21/21  (real Work lifecycle + single-press Stop)
+```
+
+`smoke:p224-lifecycle` real-machine evidence (real OpenCode Go credential,
+Claude Code CLI through the local adapter, real hook server, real Windows
+process tree; only the Discord transport is the in-process fake):
+
+- a real Work with a live insert AND a queued continuation never rendered an
+  intermediate `? �����` (continuous monitor clean) and produced exactly one DONE;
+- the completed turn result was preserved on its own message (`�� 1 �������`);
+- the live insert settled `CONSUMED`, the continuation `EXECUTED`; a later Stop
+  did not report any unprocessed insert;
+- a second real Work was terminated by ONE `!stop`: the captured Agent pid was
+  reported dead by `tasklist`, no run remained, the STOPPED card had no controls;
+- a re-materialised stale Stop control returned `�������ѽ���` and created/killed
+  nothing.
+
+## P2.2.5 user-hostile limits cleanup - 2026-09-17
+
+```text
+npm test                             -> 372 pass / 0 fail
+npm run check                        -> 114 file(s), 0 failed
+npm run smoke:p225-limits            -> 23/23  (deterministic K1-K11 limits audit)
+npm run smoke:p2                     -> 11/11  (real Chat + vision + Work thread)
+npm run smoke:p22                    -> 10/10  (instance lock, durable store, autostart)
+npm run smoke:p222                   -> 25/25  (real Chat model selection / restart)
+npm run smoke:p22-insert             -> 14/14  (real live insert, one Agent/session)
+npm run smoke:p223-full              -> 15/15  (K4/K5 real FULL Work, 0 prompts, real Stop)
+npm run smoke:p224-lifecycle         -> 21/21  (real Work lifecycle + single-press Stop)
+```
+
+- `smoke:p225-limits` is deterministic and model-free: config defaults, slash/modal
+  platform maxima, ~8k result recoverability, FULL persistence, failure/restart
+  non-lockout, Chat timeout, cooldown observability/clear, history auto-compact,
+  approval non-expiry and the configurable Anthropic output ceiling.
+- The P2.2.5 real-agent gates (`smoke:p2`, `smoke:p223-full`, `smoke:p224-lifecycle`)
+  ran on the real machine with only the Discord transport faked. The live
+  real-Discord owner smoke (section E) was NOT performed by this Worker and is
+  reported PENDING_OWNER, not manufactured.
+
+## P2.2.6 runtime freshness / safe self-update — 2026-09-17
+
+The owner-visible failure this task fixes: GitHub already had `/work task max_length=6000` while
+the live Windows runtime and the Discord-registered command schema still showed 1500, because the
+Bridge had not been restarted/redeployed.
+
+Deterministic gates (real modules, no network, no secrets):
+
+```text
+npm test                     -> 381 pass / 0 fail
+npm run check                -> 120 file(s), 0 failed
+npm run smoke:p226-update    -> 45/45  (real temp git repos)
+npm run smoke:p225-limits    -> 23/23
+npm run smoke:p223-full      -> 15/15  (real Agent Work + Stop)
+npm run smoke:p224-lifecycle -> 21/21  (real Work lifecycle + single-press Stop)
+npm run verify:hook          -> 9/9
+```
+
+`smoke:p226-update` drives the real `src/updater.mjs` against real temporary bare/working Git
+repos and covers: up-to-date; remote fast-forward applied at an idle boundary; Work busy ->
+`UPDATE_PENDING` (no deploy) then idle -> deploy; dirty -> `BLOCKED` preserving local edits;
+diverged -> `BLOCKED` with no merge/rebase/reset; candidate-gate failure -> `LAST_UPDATE_FAILED`
++ quarantine (no mutation); the same quarantined SHA cannot loop; a new remote SHA retries;
+pause/resume persistence; exactly one restart request per candidate; the real staging-worktree
+candidate gate (missing scripts fail closed, cleanup always happens); command-schema
+match/mismatch against a fetched remote payload (6000 vs stale 1500); and secret redaction in
+logs/notifications/persisted state.
+
+Real-machine bootstrap (existing `Task Scheduler -> Supervisor -> Bridge` chain):
+
+- the scheduled supervisor was stopped and restarted through `Start-ScheduledTask`; exactly one
+  Bridge came back;
+- new runtime: `[instance] acquired lock ... build=jarvis-v4-p2-2-hardening@496de33`;
+- updater live: `[update] enabled source=origin/jarvis-v4-p2-2-hardening intervalMs=30000` then
+  `[update] check(startup) local=496de33 remote=496de33 relation=up_to_date dirty=false -> UP_TO_DATE`;
+- command registration re-synced: `[commands] registered=12 changed=2`.
+
+Real Discord command fetch-back (not a local constant):
+
+```text
+npm run doctor:commands
+OK    application resolved
+OK    /work task max_length == 6000  — got 6000
+OK    fetched Discord command schema matches desired  — 0 mismatch(es)
+```
+
+This is the objective proof the task requires: the actual registered Discord schema was fetched
+back and matched, and `/work task` advertises the real 6000-character platform maximum.
+
+After bootstrap, a later verified commit on the configured branch is detected by the live
+updater, verified in a staging worktree, fast-forwarded, and applied by a Supervisor restart
+(exit code 74) without owner action — no in-process hot reload and no second Bridge.
+
+Observed live auto-deploy (owner action not required):
+
+- the Supervisor log shows `Bridge DOWN: exited code=74` followed by
+  `Bridge requested a self-update restart (code 74); relaunching` and a new `Bridge UP` — the
+  supervisor PID is preserved and exactly one Bridge owns the lock before and after;
+- the new runtime logs `[instance] ... build=jarvis-v4-p2-2-hardening@<new sha>` and
+  `[update] verified running SHA <new sha> after restart`;
+- after the reconcile fix, startup reports `[commands] fetch-back schema PASS — /work task
+  max_length=6000` and `[update] command schema reconcile: PASS`;
+- freshness is judged by the RUNNING SHA, not the checkout HEAD: a stale process whose checkout
+  had already advanced was still detected and restarted (proved deterministically in
+  `smoke:p226-update` and on the real machine).
+
+Post-update real-agent smokes (Discord transport faked; owner button clicks now covered below):
+
+```text
+npm run smoke:p2             -> 11/11  (real Chat/vision + real Work thread + file)
+npm run smoke:p223-full      -> 15/15  (real FULL Work, 0 prompts, single-press Stop)
+npm run smoke:p224-lifecycle -> 21/21  (real Work lifecycle + single-press Stop kills the tree)
+```
+
+Final live runtime state: one Bridge + one Supervisor, no orphan Agent tree, scheduled task
+action points at this checkout's `scripts/start-supervisor.ps1`.
+
+### P2.2.6 Owner-side acceptance — COMPLETE (2026-09-17, build e1d7a78)
+
+Real owner interactions via Discord on the live bridge; `PENDING_OWNER` is cleared.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Tiny Chat | PASS | `你好，只回复：TINY_CHAT_OK` -> `TINY_CHAT_OK` in ~2.1s, no duplicate reply, no permission prompt |
+| Work | PASS | real Agent wrote `D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`; PowerShell tool call succeeded |
+| Owner Stop | PASS | foreground PowerShell task stopped once; card showed 已由 OWNER 停止; Agent tree (pid 52988) terminated; 0 pending approvals; task did not complete naturally |
+| After-Stop residue | PASS | `D:\deepseeek\STOP_TEST_RESULT.txt` absent, so the stopped task did not run to its end |
+| After-Stop recovery | PASS | a new Work after Stop completed and returned `STOP_RECOVERY_OK` |
+| `!status` | PASS | LiteLLM online, Work idle, project `D:\deepseeek`, 0 approvals, Build e1d7a78, Update `UP_TO_DATE · e1d7a78 → e1d7a78` |
+
+The transient `D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` test artifact was deleted during closeout.
+
+
+

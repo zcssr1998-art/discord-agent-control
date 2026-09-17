@@ -100,20 +100,21 @@ export function helpText() {
     '**指令列表**',
     '`chat` / `/chat` / `!chat` — 切回 Chat 模式（直接调用模型 API，不启动 Agent）',
     '`work` / `/work` / `!work` — 切换到 Work 模式（使用 Agent）',
-    '`chat <问题>` / `work <任务>` — 一步切换并立即执行',
-    '`!chatmodel [auto | <provider-id> <model-id>]` — 查看或设置 Chat 模型路由',
+    '`chat` + 问题 / `work` + 任务 — 一步切换并立即执行',
+    '`!chatmodel auto` — 切回 Chat AUTO；`!chatmodel` — 打开 Chat 模型选择菜单',
     '`!status` — 查看当前状态（模式 / Chat / Work / 权限 / 会话）',
     '`!config` — 打开 Agent 统一配置',
     '`!executor [id]` — 查看或切换执行器',
     '`!providers` / `!provider [id]` — 查看或切换 Provider',
-    '`!models` / `!model [model-id]` — 查看或切换模型',
+    '`!models` — 浏览模型列表；`!model` — 查看或切换当前 Work 模型',
     '`!api` — 在私聊中添加兼容 API',
     '`!health` — 检查当前执行器、Provider、模型与 Session',
     '`!perm` 或 `!permission` — 查看或切换权限档位',
-    '`!perm [strict|standard|relaxed|full]` — 直接切换权限',
+    '`!perm [strict|standard|relaxed|full]` — 直接切换权限（会持久保存，重启/换模型/换目录不丢失）',
+    '`!cooldown` — 查看 Chat provider/model 冷却；`!cooldown clear [providerId] [modelId]` 立即重试',
     '`!stop` — 停止当前运行中的 Agent',
-    '`!reset` — 停止 + 重置会话和权限为默认值',
-    '`!cwd <绝对路径>` — 绑定当前频道到指定项目',
+    '`!reset` — 停止 + 重置 Agent 会话（权限档位保持不变）',
+    '`!cwd` + 绝对路径 — 绑定当前频道到指定项目',
     '`!handoff` — 生成交接信息',
     '`!help` — 显示此帮助',
     '',
@@ -122,19 +123,31 @@ export function helpText() {
 }
 
 /** 启动通知。 */
-export function readyText({ executor, provider, protocol, backend, model, billingRoute, paidFallback, defaultCwd, permissionLabel }) {
-  return [
-    '✅ **Bridge 已就绪**',
-    `执行器：${executor ?? 'WorkBuddy'}`,
-    `${provider ? 'Provider' : '后端'}：${provider ?? backend ?? 'unknown'}`,
-    `协议：${protocol ?? 'workbuddy'}`,
-    `模型：${model ?? 'unknown'}`,
-    `计费线路：${billingRoute ?? 'unknown'}`,
-    `付费回退：${paidFallback ? '已启用' : '已禁用'}`,
-    `权限：${permissionLabel ?? '🛡️ 标准'}`,
-    `默认目录：\`${defaultCwd}\``,
-    '发送任务开始，或输入 `!help` 查看指令。',
-  ].join('\n');
+/**
+ * Startup card. Every field comes from the resolved runtime state (the same
+ * source as task launch and `!status`); unknown values are omitted or marked
+ * 未配置 instead of falling back to a historical WorkBuddy/fast-model default.
+ */
+export function readyText({ ok = true, executor, provider, backend, protocol, adapter, model, billingType, paidFallback, workspace, permissionLabel, note = null }) {
+  const lines = [
+    ok ? '✅ **Bridge 已就绪**' : '⚠️ **Bridge 已启动，但当前 Provider 不可用**',
+    `执行器：${executor || '未配置'}`,
+    // A provider route is shown when one is configured; otherwise the actually
+    // observed backend of the direct runner is reported (never a historical default).
+    provider ? `Provider：${provider}` : (backend ? `后端：${backend}` : null),
+    `协议：${protocol || '未标注'}`,
+    ...(adapter ? [`兼容层：${adapter}`] : []),
+    `模型：${model || '未配置'}`,
+    // Only shown when the active route actually has billing metadata.
+    ...(billingType ? [`计费：${billingType}`] : []),
+    // Only meaningful for the WorkBuddy route; omitted otherwise.
+    ...(paidFallback == null ? [] : [`付费回退：${paidFallback ? '已启用' : '已禁用'}`]),
+    `权限：${permissionLabel ?? '未配置'}`,
+    `工作目录：\`${workspace ?? '未配置'}\``,
+  ].filter(Boolean);
+  if (note) lines.push(`⚠️ ${note}`);
+  lines.push('发送任务开始，或输入 `!help` 查看指令。');
+  return lines.join('\n');
 }
 
 /** 格式化 !status 输出。 */

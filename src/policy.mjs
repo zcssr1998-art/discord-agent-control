@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'TodoRead']);
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
@@ -121,17 +121,25 @@ function sensitivePath(value) {
   return SENSITIVE_PATH_PATTERNS.some((re) => re.test(candidate));
 }
 
+/**
+ * Async on purpose: this runs inside the bridge process (hook server), and the
+ * bridge must keep answering Discord while git inspects a large staged diff.
+ * A synchronous spawn here is the documented AGENTS.md event-loop trap.
+ */
 function stagedSecretRisk(cwd) {
-  const result = spawnSync('git', ['diff', '--cached', '--unified=0', '--no-color'], {
-    cwd,
-    encoding: 'utf8',
-    timeout: 3000,
-    windowsHide: true,
+  return new Promise((resolve) => {
+    execFile('git', ['diff', '--cached', '--unified=0', '--no-color'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+    }, (error, stdout) => {
+      if (error) { resolve(false); return; }
+      const added = String(stdout || '').split(/\r?\n/).filter((line) => /^\+(?!\+\+)/.test(line)).join('\n');
+      resolve(/(?:token|secret|api[_-]?key|authorization|cookie)\s*[:=]\s*["'][^"']{12,}["']/i.test(added)
+        || /bearer\s+[A-Za-z0-9._~+/-]{16,}/i.test(added));
+    });
   });
-  if (result.status !== 0) return false;
-  const added = String(result.stdout || '').split(/\r?\n/).filter((line) => /^\+(?!\+\+)/.test(line)).join('\n');
-  return /(?:token|secret|api[_-]?key|authorization|cookie)\s*[:=]\s*["'][^"']{12,}["']/i.test(added)
-    || /bearer\s+[A-Za-z0-9._~+/-]{16,}/i.test(added);
 }
 
 function commandTouchesSensitivePath(command) {
@@ -139,9 +147,10 @@ function commandTouchesSensitivePath(command) {
   return tokens.some((token) => sensitivePath(token.replace(/^["']|["']$/g, '')));
 }
 
-function secretGitRisk(command, cwd) {
+async function secretGitRisk(command, cwd) {
   if (/\bgit\s+add\b/i.test(command) && commandTouchesSensitivePath(command)) return true;
-  return /\bgit\s+commit\b/i.test(command) && stagedSecretRisk(cwd);
+  if (!/\bgit\s+commit\b/i.test(command)) return false;
+  return stagedSecretRisk(cwd);
 }
 
 /**
@@ -149,21 +158,28 @@ function secretGitRisk(command, cwd) {
  *
  * @param {string} permissionLevel - 'strict' | 'standard' | 'relaxed' | 'full'
  */
-export function classifyToolCall({ toolName, toolInput = {}, cwd, permissionLevel = 'standard' }) {
+export async function classifyToolCall({ toolName, toolInput = {}, cwd, permissionLevel = 'standard' }) {
   const targetPath = filePathFromInput(toolInput);
-  if (targetPath && sensitivePath(targetPath)) {
-    return { decision: 'ask', reason: 'sensitive file access', ruleKey: 'sensitive-file' };
+  const command = String(toolInput.command || '');
+
+  // HARD guards run first and for every tier, including FULL. These are
+  // deterministic fail-closed protections that no permission level may bypass.
+  if (SHELL_TOOLS.has(toolName) && await secretGitRisk(command, cwd)) {
+    return { decision: 'deny', reason: 'secret-like content must not be committed', ruleKey: 'secret-git' };
   }
 
-  const command = String(toolInput.command || '');
-  if (SHELL_TOOLS.has(toolName) && secretGitRisk(command, cwd)) {
-    return { decision: 'deny', reason: 'secret-like content must not be committed', ruleKey: 'secret-git' };
+  // FULL is the owner's explicit execution policy: after they confirmed it once,
+  // routine tool calls must not keep prompting. This includes unclassified shell
+  // commands, sensitive-by-name paths and unknown/MCP tools. Only the hard guards
+  // above (and the no-approval product limits enforced elsewhere) still apply.
+  if (permissionLevel === 'full') return { decision: 'allow', reason: 'FULL mode', ruleKey: 'full' };
+
+  if (targetPath && sensitivePath(targetPath)) {
+    return { decision: 'ask', reason: 'sensitive file access', ruleKey: 'sensitive-file' };
   }
   if (SHELL_TOOLS.has(toolName) && commandTouchesSensitivePath(command)) {
     return { decision: 'ask', reason: 'sensitive file access', ruleKey: 'sensitive-file' };
   }
-
-  if (permissionLevel === 'full') return { decision: 'allow', reason: 'FULL mode', ruleKey: 'full' };
 
   if (READ_ONLY_TOOLS.has(toolName)) {
     return { decision: 'allow', reason: 'read-only tool', ruleKey: 'read-only' };

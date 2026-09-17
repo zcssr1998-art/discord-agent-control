@@ -102,6 +102,12 @@ function makeWorkPlane({
     if (!runner) {
       runner = {
         sessionId: `sess-${channelId}`, model: 'deepseek-v4.1-flash', busy: false, sent: [], stopped: false, idleMs: 0,
+        injected: [],
+        injectRequirement(prompt) {
+          if (!this.busy) return { ok: false, delivered: false, reason: 'not-busy' };
+          this.injected.push(prompt);
+          return { ok: true, delivered: true, bytes: prompt.length + 40 };
+        },
         async send(prompt) {
           this.busy = true;
           this.sent.push(prompt);
@@ -222,7 +228,7 @@ test('an active Work card exposes 追加需求 + Stop controls; a queued card do
   assert.ok(card.buttonIds.some((id) => id.startsWith('workctl:append:')));
   assert.ok(card.buttonIds.some((id) => id.startsWith('workctl:stop:')));
   const cardLabels = card.components.flatMap((row) => row.components.map((b) => b.data.label));
-  assert.ok(cardLabels.includes('➕ 追加需求'));
+  assert.ok(cardLabels.includes('➕ 插入需求'), 'the card must label the steering control 插入需求');
   assert.ok(cardLabels.includes('⛔ Stop'));
   release(fake.channelId);
   await pending;
@@ -246,27 +252,29 @@ test('an active Work card exposes 追加需求 + Stop controls; a queued card do
   await b;
 });
 
-test('card Stop matches !stop for active and queued work and clears follow-ups', async () => {
-  // Active + pending follow-ups.
+test('card Stop matches !stop for active and queued work and clears unconsumed inserts', async () => {
+  // Active run with steered demands.
   const { fake, plane, runners, release } = makeWorkPlane();
   await plane.start();
   const task = fake.sendAsUser({ content: 'long task' });
   await waitFor(() => cardMessage(fake, fake.channelId, 'stop'));
-  await fake.sendAsUser({ content: 'follow-up one' });
-  await fake.sendAsUser({ content: 'follow-up two' });
-  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 2);
+  const liveRunId = runIdFromCard(cardMessage(fake, fake.channelId, 'stop'));
+  await fake.submitModal(`workinsert:${liveRunId}`, { values: { requirement: 'inserted one' } });
+  await fake.sendAsUser({ content: 'inserted two' });
+  assert.equal(plane.workRuns.get(liveRunId).injected.length, 2, 'both demands were steered into the live run');
 
   const card = cardMessage(fake, fake.channelId, 'stop');
   const stopId = card.buttonIds.find((id) => id.startsWith('workctl:stop:'));
   await fake.clickButton(stopId);
   assert.equal(runners.get(fake.channelId).stopped, true, 'the active agent tree is killed');
-  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 0, 'Stop clears pending follow-ups');
+  assert.equal(plane.workRuns.get(liveRunId) ?? null, null, 'Stop ends the run');
   const replies = fake.texts().join('\n');
-  assert.match(replies, /已清空 2 条待执行的追加需求/);
+  assert.match(replies, /已清空 2 条未处理的插入需求/);
   release(fake.channelId);
   await task;
   await tick(40);
-  assert.deepEqual(runners.get(fake.channelId).sent, ['long task'], 'no follow-up may start after Stop');
+  assert.deepEqual(runners.get(fake.channelId).sent, ['long task'], 'no extra turn may start after Stop');
+  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 0, 'Stop also clears queued follow-ups');
 
   // Queued.
   const q = makeWorkPlane();
@@ -317,9 +325,9 @@ test('a stale card cannot control a newer run', async () => {
   await second;
 });
 
-// --------------------------------------------------------------- follow-ups
+// ----------------------------------------------------------- live insert / steering
 
-test('the append modal queues a follow-up for the same session and drains FIFO', async () => {
+test('the insert modal steers the running turn in the same session (no queue, no second turn)', async () => {
   const { fake, plane, runners, release } = makeWorkPlane();
   await plane.start();
   const task = fake.sendAsUser({ content: 'base task' });
@@ -327,42 +335,38 @@ test('the append modal queues a follow-up for the same session and drains FIFO',
   const runId = runIdFromCard(cardMessage(fake, fake.channelId, 'stop'));
 
   await fake.clickButton(`workctl:append:${runId}`);
-  assert.ok(fake.lastModal, 'append opens a modal');
-  const submit = await fake.submitModal(`workappend:${runId}`, { values: { requirement: '补充 A' } });
-  assert.match(submit.replied.content, /已追加/);
-  assert.deepEqual(runners.get(fake.channelId).sent, ['base task'], 'appending must not start a concurrent Agent');
-  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 1);
+  assert.ok(fake.lastModal, 'insert opens a modal');
+  const submit = await fake.submitModal(`workinsert:${runId}`, { values: { requirement: '追加 A' } });
+  assert.match(submit.replied.content, /已插入当前任务/);
+  assert.deepEqual(runners.get(fake.channelId).sent, ['base task'], 'an insert must not start a concurrent Agent');
+  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 0, 'a live insert must not enter the follow-up queue');
 
-  await fake.submitModal(`workappend:${runId}`, { values: { requirement: '补充 B' } });
-  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 2);
+  // A legacy (pre-rename) modal id is still accepted.
+  await fake.submitModal(`workappend:${runId}`, { values: { requirement: '追加 B' } });
 
-  release(fake.channelId);
-  await waitFor(() => runners.get(fake.channelId).sent.length === 2);
-  release(fake.channelId);
-  await waitFor(() => runners.get(fake.channelId).sent.length === 3);
+  assert.deepEqual(runners.get(fake.channelId).injected, ['追加 A', '追加 B'], 'both demands were steered into the running turn');
   release(fake.channelId);
   await task;
-  await waitFor(() => runners.get(fake.channelId).sent.length === 3);
-
-  assert.deepEqual(runners.get(fake.channelId).sent, ['base task', '补充 A', '补充 B']);
+  await tick(30);
+  assert.deepEqual(runners.get(fake.channelId).sent, ['base task'], 'one turn, one final DONE, no extra Agent turn');
   const sessionId = plane.sessionManager.get(fake.channelId).sessionId;
   assert.equal(sessionId, runners.get(fake.channelId).sessionId, 'follow-ups reuse the same Agent session');
 });
 
-test('normal text in an active Work context queues through the same backend', async () => {
+test('normal text in an active Work context steers the running turn (no queued turn)', async () => {
   const { fake, plane, runners, release } = makeWorkPlane();
   await plane.start();
   const task = fake.sendAsUser({ content: 'base task' });
   await waitFor(() => cardMessage(fake, fake.channelId, 'stop'));
   await fake.sendAsUser({ content: 'do this after' });
-  assert.ok(fake.texts().some((t) => /已追加/.test(t)));
-  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 1);
+  assert.ok(fake.texts().some((t) => /已插入当前任务/.test(t)));
+  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 0, 'a live insert must not be queued');
+  assert.deepEqual(runners.get(fake.channelId).injected, ['do this after']);
   assert.deepEqual(runners.get(fake.channelId).sent, ['base task']);
   release(fake.channelId);
-  await waitFor(() => runners.get(fake.channelId).sent.length === 2);
-  release(fake.channelId);
   await task;
-  assert.deepEqual(runners.get(fake.channelId).sent, ['base task', 'do this after']);
+  await tick(30);
+  assert.deepEqual(runners.get(fake.channelId).sent, ['base task'], 'one turn, one DONE, no extra Agent turn');
 });
 
 test('normal text in the parent Chat stays Chat while a child Work thread is active', async () => {
@@ -382,7 +386,7 @@ test('normal text in the parent Chat stays Chat while a child Work thread is act
   await tick(30);
 });
 
-test('a same-workspace queued channel is not starved by a follow-up loop', async () => {
+test('a same-workspace queued channel is not starved while the active channel steers', async () => {
   const { fake, plane, runners, release } = makeWorkPlane();
   fake.addChannel({ id: 'chan-2' });
   plane.state.patchChannel('chan-2', { mode: 'work', cwd: plane.config.defaultCwd }, plane.config.defaultCwd);
@@ -393,32 +397,43 @@ test('a same-workspace queued channel is not starved by a follow-up loop', async
   const b = fake.sendAsUser({ content: 'task B', channelId: 'chan-2' });
   await waitFor(() => plane.scheduler.stateFor('chan-2').state === 'queued');
 
-  await fake.sendAsUser({ content: 'A follow-up', channelId: fake.channelId });
+  await waitFor(() => runners.get(fake.channelId)?.busy === true);
+  await fake.sendAsUser({ content: 'A insert', channelId: fake.channelId });
+  assert.deepEqual(runners.get(fake.channelId).injected, ['A insert'], 'the demand steers the running turn');
   release(fake.channelId);
   await waitFor(() => plane.scheduler.stateFor('chan-2').state === 'running');
-  assert.deepEqual(runners.get(fake.channelId).sent, ['task A'], 'the follow-up waits for the already-queued channel');
+  assert.deepEqual(runners.get(fake.channelId).sent, ['task A'], 'steering never creates an extra turn');
 
   release('chan-2');
-  await waitFor(() => runners.get(fake.channelId).sent.length === 2);
-  release(fake.channelId);
   await a;
   await b;
-  assert.deepEqual(runners.get(fake.channelId).sent, ['task A', 'A follow-up']);
+  assert.deepEqual(runners.get(fake.channelId).sent, ['task A']);
 });
 
-test('the follow-up queue cap is enforced', async () => {
+test('the follow-up queue cap is enforced for a queued (not yet running) Work run', async () => {
   const { fake, plane, release } = makeWorkPlane({ maxFollowUps: 2 });
+  fake.addChannel({ id: 'chan-2' });
+  plane.state.patchChannel('chan-2', { mode: 'work', cwd: plane.config.defaultCwd }, plane.config.defaultCwd);
   await plane.start();
-  const task = fake.sendAsUser({ content: 'base' });
-  await waitFor(() => cardMessage(fake, fake.channelId, 'stop'));
-  await fake.sendAsUser({ content: 'f1' });
-  await fake.sendAsUser({ content: 'f2' });
-  await fake.sendAsUser({ content: 'f3' });
-  assert.equal(plane.workChains.get(fake.channelId).followUps.length, 2);
+
+  // Channel A holds the workspace lock, so channel B is queued and cannot be
+  // steered yet; its owner messages therefore go to the bounded queue.
+  const a = fake.sendAsUser({ content: 'task A', channelId: fake.channelId });
+  await waitFor(() => plane.scheduler.stateFor(fake.channelId).state === 'running');
+  const b = fake.sendAsUser({ content: 'task B', channelId: 'chan-2' });
+  await waitFor(() => plane.scheduler.stateFor('chan-2').state === 'queued');
+
+  await fake.sendAsUser({ content: 'f1', channelId: 'chan-2' });
+  await fake.sendAsUser({ content: 'f2', channelId: 'chan-2' });
+  await fake.sendAsUser({ content: 'f3', channelId: 'chan-2' });
+  assert.equal(plane.workChains.get('chan-2').followUps.length, 2);
   assert.ok(fake.texts().some((t) => /追加队列已满/.test(t)));
-  await fake.clickButton(cardMessage(fake, fake.channelId, 'stop').buttonIds.find((id) => id.startsWith('workctl:stop:')));
+
   release(fake.channelId);
-  await task;
+  await waitFor(() => plane.scheduler.stateFor('chan-2').state === 'running');
+  release('chan-2');
+  await a;
+  await b;
 });
 
 // ------------------------------------------------ interaction ACK lifecycle
@@ -486,12 +501,12 @@ test('an Agent failure after /work never leaves the slash interaction unresponsi
   assert.ok(fake.messagesIn(threadId).some((m) => /执行失败/.test(m.content)), 'the thread shows the failure card');
 });
 
-test('a follow-up attachment is downloaded exactly once', async () => {
+test('an inserted requirement with an attachment is downloaded exactly once', async () => {
   let downloads = 0;
   const { fake, plane, runners, release } = makeWorkPlane({
     attachmentFetch: async (url) => {
       if (String(url).startsWith('https://cdn.discordapp.com/')) { downloads += 1; return bytesResponse(Buffer.from('file body'), 'text/plain'); }
-      throw new Error(`unexpected fetch ${url}`);
+      throw new Error('unexpected fetch ' + url);
     },
   });
   await plane.start();
@@ -501,12 +516,13 @@ test('a follow-up attachment is downloaded exactly once', async () => {
     content: 'process this',
     attachments: [{ name: 'n.txt', url: 'https://cdn.discordapp.com/attachments/1/2/n.txt', size: 9, contentType: 'text/plain' }],
   });
-  release(fake.channelId);
-  await waitFor(() => runners.get(fake.channelId).sent.length === 2);
+  assert.equal(downloads, 1, 'the attachment is downloaded exactly once, at insert time');
+  const injected = runners.get(fake.channelId).injected;
+  assert.equal(injected.length, 1, 'the requirement was steered into the running turn');
+  assert.match(injected[0], /n\.txt/);
+  assert.match(injected[0], /inbox/);
   release(fake.channelId);
   await task;
-  assert.equal(downloads, 1);
-  assert.match(runners.get(fake.channelId).sent[1], /n\.txt/);
-  assert.match(runners.get(fake.channelId).sent[1], /inbox/);
+  assert.deepEqual(runners.get(fake.channelId).sent, ['base'], 'no extra turn for a live insert');
   await tick(30);
 });

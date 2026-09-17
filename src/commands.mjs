@@ -13,8 +13,19 @@
 const CHAT_INPUT = 1;
 const STRING = 3;
 
+// Real Discord platform maxima (not Jarvis policy): an application-command
+// STRING option caps at 6000 characters, while a modal Text Input caps at 4000.
+// They are deliberately different and must not be advertised as interchangeable.
+export const SLASH_TASK_MAX_LENGTH = 6000;
+export const MODAL_TASK_MAX_LENGTH = 4000;
+
+// P2.2.6 owner update controls. Expressed as a STRING option with `choices`
+// rather than SUB_COMMAND: the UX is equivalent and the handler reads a single
+// value, so there is no second command tree to keep in sync.
+export const UPDATE_ACTIONS = Object.freeze(['status', 'now', 'pause', 'resume']);
+
 export const COMMAND_NAMES = Object.freeze([
-  'panel', 'work', 'model', 'settings', 'permission', 'status', 'stop', 'new', 'compact', 'help',
+  'panel', 'work', 'model', 'settings', 'permission', 'status', 'doctor', 'stop', 'new', 'compact', 'help', 'update',
 ]);
 
 function simple(name, description) {
@@ -30,18 +41,41 @@ export function buildCommandPayloads() {
       description: '新建 Work 任务（留空则打开输入窗口）',
       type: CHAT_INPUT,
       options: [
-        { type: STRING, name: 'task', description: '任务内容（可选）', required: false, max_length: 1500 },
+        { type: STRING, name: 'task', description: '任务内容（可选）', required: false, max_length: SLASH_TASK_MAX_LENGTH },
       ],
     },
     simple('model', '切换 Chat / Work 模型'),
     simple('settings', '打开 Jarvis 设置'),
     simple('permission', '设置权限档位'),
     simple('status', '查看 Jarvis 状态'),
+    simple('doctor', '本地健康诊断（无模型调用）'),
     simple('stop', '停止当前 Work 任务'),
     simple('new', '开始新的 Chat 对话（只清空本频道上下文）'),
     simple('compact', '压缩当前 Chat 上下文'),
     simple('help', '查看使用说明'),
+    {
+      name: 'update',
+      description: 'Jarvis 自动更新控制（查看/立即检查/暂停/恢复）',
+      type: CHAT_INPUT,
+      options: [
+        {
+          type: STRING,
+          name: 'action',
+          description: 'status · now · pause · resume',
+          required: true,
+          choices: UPDATE_ACTIONS.map((value) => ({ name: value, value })),
+        },
+      ],
+    },
   ];
+}
+
+/** The raw REST shape of a command/option, accepting discord.js objects too. */
+function toRaw(value) {
+  if (!value) return null;
+  if (typeof value.toJSON === 'function') { try { return value.toJSON(); } catch { /* fall through */ } }
+  if (value.data && typeof value.data === 'object') return value.data;
+  return value;
 }
 
 function collectionToArray(value) {
@@ -52,28 +86,82 @@ function collectionToArray(value) {
 }
 
 function normalizeOption(option) {
+  const raw = toRaw(option) ?? {};
   const normalized = {
-    type: option?.type,
-    name: option?.name,
-    description: option?.description,
-    required: Boolean(option?.required),
+    type: raw.type,
+    name: raw.name,
+    description: raw.description,
+    required: Boolean(raw.required),
   };
-  if (option?.max_length != null) normalized.max_length = option.max_length;
-  if (Array.isArray(option?.options)) normalized.options = option.options.map(normalizeOption);
+  const maxLength = raw.max_length ?? raw.maxLength;
+  if (maxLength != null) normalized.max_length = maxLength;
+  const choices = raw.choices;
+  if (Array.isArray(choices) && choices.length) {
+    normalized.choices = choices.map((choice) => ({ name: choice?.name, value: choice?.value }));
+  }
+  const children = raw.options;
+  if (Array.isArray(children)) normalized.options = children.map(normalizeOption);
   return normalized;
 }
 
 function normalizeCommand(command) {
+  const raw = toRaw(command) ?? {};
   return {
-    name: command?.name,
-    description: command?.description,
-    options: (command?.options ?? []).map(normalizeOption),
+    name: raw.name,
+    description: raw.description,
+    options: collectionToArray(raw.options).map(normalizeOption),
+  };
+}
+
+/** Find one command by name in a desired or fetched schema. */
+export function findCommandSchema(schema, name) {
+  return collectionToArray(schema).map(toRaw).find((command) => command?.name === name) ?? null;
+}
+
+/**
+ * The `/work task` slash option's real Discord `max_length`, read from a fetched
+ * schema. Returns null when the command/option is absent so a mismatch is
+ * reported rather than silently passing.
+ */
+export function workTaskMaxLength(schema) {
+  const work = findCommandSchema(schema, 'work');
+  const option = (work?.options ?? []).find((item) => item?.name === 'task');
+  return option?.max_length ?? option?.maxLength ?? null;
+}
+
+/**
+ * Compare a fetched Discord schema against the desired one. This is the real
+ * "fetch back and verify" check: success means Discord reports the desired
+ * schema, not that the local constant changed.
+ */
+export function compareCommandSchema(actual, desired = buildCommandPayloads()) {
+  const actualBy = new Map(collectionToArray(actual).map((command) => [toRaw(command)?.name, toRaw(command)]));
+  const mismatches = [];
+  for (const want of desired) {
+    const normalizedWant = normalizeCommand(want);
+    const have = actualBy.get(normalizedWant.name);
+    if (!have) { mismatches.push({ command: normalizedWant.name, field: 'command', expected: 'present', actual: 'missing' }); continue; }
+    const normalizedHave = normalizeCommand(have);
+    if (normalizedHave.description !== normalizedWant.description) {
+      mismatches.push({ command: normalizedWant.name, field: 'description', expected: normalizedWant.description, actual: normalizedHave.description });
+    }
+    if (JSON.stringify(normalizedHave.options) !== JSON.stringify(normalizedWant.options)) {
+      mismatches.push({ command: normalizedWant.name, field: 'options', expected: normalizedWant.options, actual: normalizedHave.options });
+    }
+    actualBy.delete(normalizedWant.name);
+  }
+  for (const stale of actualBy.keys()) mismatches.push({ command: stale, field: 'command', expected: 'absent', actual: 'stale-present' });
+  return {
+    ok: mismatches.length === 0,
+    mismatches,
+    workTaskMaxLength: workTaskMaxLength(actual),
+    checkedAt: new Date().toISOString(),
   };
 }
 
 /** Which desired commands are new/changed, plus any stale commands to remove. */
 export function diffCommands(existing, desired) {
-  const byName = new Map(collectionToArray(existing).map((command) => [command.name, command]));
+  const byName = new Map(collectionToArray(existing).map((command) => [toRaw(command)?.name, command]));
   const changes = [];
   for (const want of desired) {
     const have = byName.get(want.name);
@@ -82,7 +170,7 @@ export function diffCommands(existing, desired) {
     }
     byName.delete(want.name);
   }
-  for (const stale of byName.values()) changes.push({ name: stale.name, delete: true });
+  for (const stale of byName.values()) changes.push({ name: toRaw(stale)?.name, delete: true });
   return changes;
 }
 
@@ -115,4 +203,41 @@ export async function registerApplicationCommands({ client, guildId = null, logg
   return syncApplicationCommands({ application, guildId, logger });
 }
 
-export default { COMMAND_NAMES, buildCommandPayloads, diffCommands, syncApplicationCommands, registerApplicationCommands };
+/**
+ * P2.2.6 K7: fetch the ACTUAL Discord application commands back and compare
+ * them to the desired schema. This is the only acceptable proof that the remote
+ * schema matches the running code (a local constant is not evidence).
+ *
+ * A transient REST failure is reported as out-of-sync, never as a rollback
+ * reason: otherwise-good source must not be discarded because Discord blipped.
+ */
+export async function verifyApplicationCommands({ application, guildId = null, logger = null } = {}) {
+  const desired = buildCommandPayloads();
+  if (!application?.commands?.fetch) {
+    return { ok: false, mismatches: [], workTaskMaxLength: null, checkedAt: new Date().toISOString(), error: 'application commands unavailable' };
+  }
+  let actual = [];
+  try {
+    actual = guildId
+      ? await application.commands.fetch({ guildId })
+      : await application.commands.fetch();
+  } catch (error) {
+    logger?.warn?.(`[commands] fetch-back failed: ${error?.message || error}`);
+    return { ok: false, mismatches: [], workTaskMaxLength: null, checkedAt: new Date().toISOString(), error: `fetch-back failed: ${error?.message || error}` };
+  }
+  const result = compareCommandSchema(actual, desired);
+  result.source = 'discord-fetch-back';
+  return result;
+}
+
+export default {
+  COMMAND_NAMES,
+  UPDATE_ACTIONS,
+  buildCommandPayloads,
+  diffCommands,
+  syncApplicationCommands,
+  registerApplicationCommands,
+  verifyApplicationCommands,
+  compareCommandSchema,
+  workTaskMaxLength,
+};

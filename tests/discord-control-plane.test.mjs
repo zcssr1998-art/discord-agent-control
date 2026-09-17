@@ -132,7 +132,8 @@ test('a task produces one low-noise status message, not a log flood', async () =
   assert.match(status.content, /🧪 测试：通过 12/);
 });
 
-test('a second message while one is running is queued as a follow-up, not run concurrently (P2.1)', async () => {
+test('a second message while one is running is steered into the live turn, not run concurrently', async () => {
+  const injections = [];
   const { fake, plane, runner } = makePlane({
     sendImpl: async () => {
       runner.busy = true;
@@ -140,19 +141,21 @@ test('a second message while one is running is queued as a follow-up, not run co
       return { text: 'slow', sessionId: 'sess-1', durationMs: 60, tools: [], isError: false, costUsd: 0 };
     },
   });
+  runner.injectRequirement = (prompt) => { injections.push(prompt); return { ok: true, delivered: true }; };
   await plane.start();
   const first = fake.sendAsUser({ content: 'task one' });
   await tick(10);
   await fake.sendAsUser({ content: 'task two' });
 
-  // P2.1: an active Work channel queues the follow-up instead of starting a
-  // second concurrent Agent; the follow-up runs after the first turn releases.
-  assert.ok(fake.texts().some((t) => /已追加/.test(t)), 'the second message must be acknowledged as a follow-up');
+  // Live steering: the second message goes into the RUNNING turn (same Agent,
+  // same session). It is no longer queued as a follow-up turn.
+  assert.ok(fake.texts().some((t) => /已插入当前任务/.test(t)), 'the second message must be acknowledged as an insert');
+  assert.deepEqual(injections, ['task two'], 'the requirement is injected into the running turn');
   assert.deepEqual(runner.sent, ['task one'], 'no concurrent Agent turn may start while one is running');
 
   await first;
   await tick(30);
-  assert.deepEqual(runner.sent, ['task one', 'task two'], 'the follow-up drains after the first turn');
+  assert.deepEqual(runner.sent, ['task one'], 'no extra turn is started after a live insert');
 });
 
 test('an approval request appears in the channel and the button really resolves it', async () => {
@@ -284,7 +287,7 @@ test('!reset clears the session and re-arms session approvals', async () => {
   assert.match(last.content, /会话：`新会话`/);
 });
 
-test('permission commands and buttons share one manager, FULL confirms, reset/cwd restore STANDARD', async () => {
+test('permission commands and buttons share one manager, FULL confirms, and reset/cwd keep the explicit tier', async () => {
   const { fake, plane } = makePlane();
   await plane.start();
 
@@ -304,11 +307,12 @@ test('permission commands and buttons share one manager, FULL confirms, reset/cw
   await fake.clickButton('permfull:confirm');
   assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full');
 
+  // A session reset and a workspace change are not permission decisions: the
+  // owner-selected FULL tier must survive both (P2.2.5 K4).
   await fake.sendAsUser({ content: '!reset' });
-  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'standard');
-  plane.permissionManager.confirmFull(fake.channelId);
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full', 'reset must not silently downgrade FULL');
   await fake.sendAsUser({ content: `!cwd ${os.tmpdir()}` });
-  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'standard');
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), 'full', 'a cwd change must not silently downgrade FULL');
 });
 
 test('!cwd rejects bad paths and accepts a real absolute path', async () => {
@@ -342,8 +346,12 @@ test('the owner is told the bridge is online, because Discord does not replay of
   assert.ok(dm, 'a ready DM must be sent to the owner');
   assert.match(dm.content, /Bridge 已就绪/);
   assert.match(dm.content, /后端：WorkBuddy Free DSF/);
-  assert.match(dm.content, /计费线路：WorkBuddy Free/);
+  assert.match(dm.content, /计费：WorkBuddy Free/);
   assert.match(dm.content, /付费回退：已禁用/);
+  // The card must describe the observed runtime, not a hardcoded WorkBuddy default:
+  // in this direct-runner harness there is no registered executor, so it says so.
+  assert.match(dm.content, /执行器：未配置/);
+  assert.doesNotMatch(dm.content, /默认目录/);
   assert.equal(fake.ownerDmCount, 1, 'exactly one ready DM, not a stream of them');
 });
 

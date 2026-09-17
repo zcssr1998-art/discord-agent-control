@@ -38,6 +38,9 @@ export class RunLimits {
   noteSuccess(channelId) {
     const s = this.#state(channelId);
     s.consecutiveFailures = 0;
+    // A successful run ends the recovery episode, so restart pressure from an
+    // earlier crash loop must not accumulate across healthy work.
+    s.restarts = 0;
     s.lastError = null;
   }
 
@@ -52,23 +55,42 @@ export class RunLimits {
     return (this.#state(channelId).restarts += 1);
   }
 
-  /** Refuse to start more work once a channel is clearly stuck. */
-  blocked(channelId) {
+  /**
+   * A new Work starts a fresh recovery episode: historical restart pressure is
+   * cleared so a past crash loop can never require `!reset` before a later valid
+   * task. Failure counts are kept only as a diagnostic for the current episode.
+   */
+  beginWork(channelId) {
+    const s = this.#state(channelId);
+    s.restarts = 0;
+    return s;
+  }
+
+  /**
+   * Diagnostics only, never a lockout. Historical failures/restarts are surfaced
+   * as a warning so the owner can investigate, but a later valid Work is still
+   * accepted without any manual `!reset`.
+   */
+  warning(channelId) {
     const s = this.#state(channelId);
     if (s.consecutiveFailures >= this.maxConsecutiveFailures) {
-      return {
-        blocked: true,
-        reason: `连续失败 ${s.consecutiveFailures} 次（上限 ${this.maxConsecutiveFailures}）。`
-          + `最近错误：${s.lastError}。修复原因后发送 \`!reset\` 清零。`,
-      };
+      return `最近连续失败 ${s.consecutiveFailures} 次（提示阈值 ${this.maxConsecutiveFailures}，不会阻止新任务）。`
+        + `最近错误：${s.lastError}`;
     }
     if (s.restarts >= this.maxProcessRestarts) {
-      return {
-        blocked: true,
-        reason: `Agent 进程已重启 ${s.restarts} 次（上限 ${this.maxProcessRestarts}）。发送 \`!reset\` 清零。`,
-      };
+      return `Agent 进程已重启 ${s.restarts} 次（提示阈值 ${this.maxProcessRestarts}，不会阻止新任务）。`;
     }
-    return { blocked: false, reason: null };
+    return null;
+  }
+
+  /**
+   * Historical counters never permanently poison a channel. Kept for callers
+   * that gate on `blocked`; the answer is always "not blocked" and the reason
+   * field carries the non-blocking warning instead.
+   */
+  blocked(channelId) {
+    const warning = this.warning(channelId);
+    return { blocked: false, warning, reason: warning };
   }
 
   reset(channelId) {

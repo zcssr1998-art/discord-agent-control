@@ -45,6 +45,9 @@ function bootBridge(env) {
       ALLOW_PAID_FALLBACK: 'false',
       // Do not touch the real user-level agent settings from a test.
       DISCORD_AUTO_HOOK: '0',
+      // Isolate the P2.2 single-instance lock: these tests boot the real entry
+      // point while a real Jarvis may legitimately be running on the machine.
+      JARVIS_INSTANCE_LOCK: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dac-startup-lock-')), 'instance.lock'),
       // A metered credential that must never survive into the agent process or
       // appear anywhere in the logs.
       ANTHROPIC_AUTH_TOKEN: 'sk-test-must-be-blocked',

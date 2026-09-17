@@ -53,17 +53,23 @@ export class ApprovalManager {
     if (!this.presenter) return { decision: 'deny', reason: 'approval UI unavailable' };
 
     const id = crypto.randomBytes(9).toString('hex');
+    // APPROVAL_TIMEOUT_MS=0 (default) means no automatic expiry: an unattended
+    // run waits for the owner instead of being auto-denied after a fixed window.
+    // Stop/reset still cancels every pending gate immediately.
+    const bounded = Number.isFinite(this.timeoutMs) && this.timeoutMs > 0;
     return await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        const answer = { decision: 'deny', reason: 'approval timed out' };
-        this.#settle(id, answer, meta);
-        resolve(answer);
-      }, this.timeoutMs);
+      const timer = bounded
+        ? setTimeout(() => {
+          this.pending.delete(id);
+          const answer = { decision: 'deny', reason: 'approval timed out' };
+          this.#settle(id, answer, meta);
+          resolve(answer);
+        }, this.timeoutMs)
+        : null;
 
       this.pending.set(id, { resolve, timer, meta });
       Promise.resolve(this.presenter({ id, ...meta })).catch(() => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         this.pending.delete(id);
         const answer = { decision: 'deny', reason: 'failed to present approval request' };
         this.#settle(id, answer, meta);
@@ -75,7 +81,7 @@ export class ApprovalManager {
   resolve(id, action) {
     const item = this.pending.get(id);
     if (!item) return false;
-    clearTimeout(item.timer);
+    if (item.timer) clearTimeout(item.timer);
     this.pending.delete(id);
 
     let answer;
@@ -97,7 +103,7 @@ export class ApprovalManager {
     let n = 0;
     for (const [id, item] of [...this.pending]) {
       if (sessionId && item.meta.sessionId !== sessionId) continue;
-      clearTimeout(item.timer);
+      if (item.timer) clearTimeout(item.timer);
       this.pending.delete(id);
       const answer = { decision: 'deny', reason };
       this.#settle(id, answer, item.meta);

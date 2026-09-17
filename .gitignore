@@ -7,5 +7,15 @@ data/hook-secret
 data/credentials.json
 data/providers.json
 data/litellm/
+# P2.2A/D runtime artifacts: single-instance lock + SQLite WAL operational store.
+data/jarvis-instance.lock
+# P2.2.1: the persistent supervisor's own pid (crash/orphan detection).
+data/jarvis-supervisor.pid
+data/jarvis.db
+data/jarvis.db-wal
+data/jarvis.db-shm
+# P2.2.6: durable safe-self-update state + local `script` transcript artifact.
+data/update-state.json
+typescript
 logs/
 *.log

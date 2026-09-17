@@ -41,6 +41,22 @@ export class ProviderHealthRegistry {
     return { ...entry };
   }
 
+  /**
+   * Every tracked health entry with the remaining cooldown computed, so
+   * `/status` and `/doctor` can show WHY a route is suppressed and for how much
+   * longer instead of silently hiding it.
+   */
+  list() {
+    const now = this.now();
+    const items = [];
+    for (const [key, entry] of this.items) {
+      const [providerId, modelId] = key.split('::');
+      const remainingMs = entry.cooldownUntil ? Math.max(0, entry.cooldownUntil - now) : 0;
+      items.push({ providerId, modelId, ...entry, remainingMs });
+    }
+    return items.sort((a, b) => b.remainingMs - a.remainingMs);
+  }
+
   canTry(providerId, modelId = '*') {
     const entry = this.items.get(this.key(providerId, modelId));
     return !entry || !entry.cooldownUntil || entry.cooldownUntil <= this.now();

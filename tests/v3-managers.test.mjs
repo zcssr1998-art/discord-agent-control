@@ -168,7 +168,7 @@ test('executor discovery reports installed, missing and adapter-not-ready honest
   assert.equal(normalizeExecutorEvent({ type: 'tool', tool: { name: 'Read', input: {} } }).kind, 'READ');
 });
 
-test('session changes stop the old executor, clear its id and restore STANDARD', async (t) => {
+test('session changes stop the old executor, clear its id and keep the explicit tier', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dac-session-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = new StateStore(path.join(dir, 'state.json'));
@@ -188,10 +188,12 @@ test('session changes stop the old executor, clear its id and restore STANDARD',
   assert.equal(sessions.get('c').providerId, 'custom-1');
   assert.deepEqual(sessions.snapshot('c'), {
     cwd: 'C:\\repo', executorId: 'workbuddy', providerId: 'custom-1', model: null,
-    sessionId: null, executorSessionId: null, permission: 'standard',
+    sessionId: null, executorSessionId: null, permission: 'full',
     mode: 'chat', chatProviderId: 'auto', chatModel: null,
   });
-  assert.equal(permissions.getLevel('c'), 'standard');
+  // P2.2.5 K4: an explicit FULL tier is product configuration, not session
+  // state, so a provider/session change must not silently downgrade it.
+  assert.equal(permissions.getLevel('c'), 'full');
   const running = new SessionManager({ state, permissionManager: permissions, approvalManager: approvals, defaultCwd: 'C:\\repo', isRunning: () => true });
   await assert.rejects(running.change('c', { model: 'x' }, 'model changed'), { code: 'RUNNING' });
 });

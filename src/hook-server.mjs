@@ -65,7 +65,7 @@ export function createHookServer({ config, approvalManager, secret, permissionMa
     const toolInput = event.tool_input || event.toolInput || {};
     const cwd = event.cwd || config.defaultCwd;
     const sessionId = event.session_id || event.sessionId || 'unknown';
-    const classified = permissionManager.classify({ sessionId, toolName, toolInput, cwd });
+    const classified = await permissionManager.classify({ sessionId, toolName, toolInput, cwd });
 
     if (classified.decision === 'allow') {
       json(res, 200, hookBody('allow', classified.reason));

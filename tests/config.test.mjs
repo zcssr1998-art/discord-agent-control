@@ -12,7 +12,9 @@ const KEYS = [
   'CLAUDE_COMMAND', 'DEFAULT_CWD', 'APPROVAL_HOST', 'APPROVAL_PORT', 'APPROVAL_TIMEOUT_MS',
   'AUTO_ALLOW_WORKSPACE_WRITES', 'AUTO_ALLOW_TEST_COMMANDS', 'CLAUDE_PARTIAL_MESSAGES',
   'PROGRESS_THROTTLE_MS', 'LOG_DIR', 'DISCORD_PROXY',
-  'AGENT_BACKEND', 'ALLOW_PAID_FALLBACK', 'TASK_TIMEOUT_MS', 'MAX_CONSECUTIVE_FAILURES', 'MAX_PROCESS_RESTARTS',
+  'AGENT_BACKEND', 'ALLOW_PAID_FALLBACK', 'TASK_TIMEOUT_MS', 'BACKEND_PROBE_TIMEOUT_MS',
+  'MAX_CONSECUTIVE_FAILURES', 'MAX_PROCESS_RESTARTS',
+  'CHAT_TIMEOUT_MS', 'CHAT_MAX_OUTPUT_TOKENS', 'MAX_WORK_FOLLOWUPS',
   'WORKBUDDY_CLI', 'WORKBUDDY_HOME', 'NOTIFY_ON_START',
 ];
 
@@ -45,9 +47,27 @@ test('defaults are safe and documented', () => {
     assert.equal(c.autoAllowTestCommands, true);
     assert.equal(c.agentBackend, 'workbuddy-free-dsf');
     assert.equal(c.allowPaidFallback, false, 'paid fallback must be opt-in, never a default');
-    assert.equal(c.taskTimeoutMs, 900000, 'a task must not be able to run forever');
+    assert.equal(c.taskTimeoutMs, 0, 'no hard Work wall-clock cap by default (0 = unlimited)');
+    assert.equal(c.backendProbeTimeoutMs, 180000, 'the startup preflight stays bounded');
     assert.equal(c.maxConsecutiveFailures, 3);
     assert.equal(c.maxProcessRestarts, 5);
+    assert.equal(c.approvalTimeoutMs, 0, 'no automatic approval denial by default (0 = no expiry)');
+    assert.equal(c.chatTimeoutMs, 120000, 'a slow legitimate Chat response must not be aborted by a 25s cap');
+    assert.equal(c.chatMaxOutputTokens, 8192, 'Anthropic Chat output ceiling is configurable, not hard-coded 4096');
+    assert.equal(c.maxWorkFollowUps, 0, 'follow-ups are unlimited by default (0 = unlimited)');
+  });
+});
+
+test('Chat/approval/follow-up caps accept explicit operator overrides', () => {
+  withEnv({
+    DISCORD_TOKEN: 't', DISCORD_OWNER_ID: '1',
+    CHAT_TIMEOUT_MS: '0', CHAT_MAX_OUTPUT_TOKENS: '4096', MAX_WORK_FOLLOWUPS: '25', APPROVAL_TIMEOUT_MS: '540000',
+  }, () => {
+    const c = loadConfig();
+    assert.equal(c.chatTimeoutMs, 0, '0 means no client-side Chat timeout');
+    assert.equal(c.chatMaxOutputTokens, 4096);
+    assert.equal(c.maxWorkFollowUps, 25);
+    assert.equal(c.approvalTimeoutMs, 540000);
   });
 });
 
@@ -80,6 +100,12 @@ test('CLAUDE_COMMAND=workbuddy fails loudly when the CLI cannot be found', () =>
       assert.match(String(error.message), /could not be found|WORKBUDDY_CLI/);
     }
     assert.ok(threw || true);
+  });
+});
+
+test('an explicit positive TASK_TIMEOUT_MS remains an opt-in operator limit', () => {
+  withEnv({ DISCORD_TOKEN: 't', DISCORD_OWNER_ID: '1', TASK_TIMEOUT_MS: '120000' }, () => {
+    assert.equal(loadConfig().taskTimeoutMs, 120000);
   });
 });
 

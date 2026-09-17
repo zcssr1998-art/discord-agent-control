@@ -294,5 +294,6 @@ test('usage guide is local/static and explains how to create Work', async () => 
   assert.match(text, /新建 Work/);
   assert.match(text, /新对话/);
   assert.equal(calls.chat, 0);
-  assert.match(PANEL_HELP_TEXT, /work <任务>/);
+  assert.match(PANEL_HELP_TEXT, /`work` \+ 任务内容/);
+  assert.doesNotMatch(PANEL_HELP_TEXT, /<(model|provider|任务)[-_]?id?>/i, 'help must not use fake runnable placeholders');
 });

@@ -24,6 +24,10 @@ import { buildSpawnPlan } from '../src/claude-runner.mjs';
 import { ensureHookSecret } from '../src/hook-server.mjs';
 import { resolveRoutingEnv } from '../src/win-env.mjs';
 import { resolveExecutorCommand } from '../src/backend.mjs';
+import { ProviderManager } from '../src/provider-manager.mjs';
+import { CredentialStore } from '../src/credential-store.mjs';
+import { ExecutorManager } from '../src/executor-manager.mjs';
+import { CompatGateway } from '../src/compat-gateway.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // The agent shell reads one of these depending on which CLI is configured:
@@ -82,8 +86,8 @@ function setupRepo() {
  * response and Claude would hang until it was killed. Same trap as
  * `callHookClient` in local-e2e.mjs.
  */
-function runClaude({ cwd, prompt, env }) {
-  const plan = buildSpawnPlan(resolveExecutorCommand(), [
+function runClaude({ cwd, prompt, env, command }) {
+  const plan = buildSpawnPlan(command, [
     '-p', prompt, '--output-format', 'json', '--dangerously-skip-permissions',
   ]);
   return new Promise((resolve) => {
@@ -97,6 +101,68 @@ function runClaude({ cwd, prompt, env }) {
     child.on('error', (e) => { clearTimeout(timer); resolve({ status: -1, out: `${out}\n${e.message}` }); });
     child.on('exit', (code) => { clearTimeout(timer); resolve({ status: code, out }); });
   });
+}
+
+/**
+ * Build the SAME executor environment the bridge uses for Work: real credentials
+ * from data/credentials.json, the real provider, and the local protocol adapter
+ * when the model is served over OpenAI Chat. The process routing env alone can
+ * be stale (the Windows user env key is not necessarily the live credential), and
+ * that would make this hook verification fail for a reason unrelated to the hook.
+ */
+async function buildBridgeRunContext(bridgeEnv) {
+  const credentials = new CredentialStore(path.join(ROOT, 'data', 'credentials.json'));
+  const providers = new ProviderManager({ file: path.join(ROOT, 'data', 'providers.json'), credentialStore: credentials });
+  let workbuddyCommand = 'claude';
+  try { workbuddyCommand = resolveExecutorCommand(); } catch { /* keep claude */ }
+  const executors = new ExecutorManager({ workbuddyCommand, bridgeEnv });
+  await executors.discover();
+
+  let pref = null;
+  try { pref = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'state.json'), 'utf8'))?.preferences?.lastWorkModel ?? null; } catch { /* defaults */ }
+
+  const executorId = [pref?.executorId, 'claude', 'workbuddy']
+    .find((id) => id && executors.get(id)?.available) ?? null;
+  if (!executorId) throw new Error('no executor is installed');
+
+  const credentialed = providers.list().filter((provider) => provider.protocol !== 'workbuddy' && providers.hasCredential(provider));
+  const provider = credentialed.find((item) => item.id === pref?.providerId)
+    ?? credentialed.find((item) => executors.compatible(executorId, item.protocol, null))
+    ?? null;
+  if (!provider) throw new Error('no credentialed provider is available');
+
+  let models = Array.isArray(provider.models) ? provider.models : [];
+  if (!models.length) {
+    try { models = (await providers.listModels(provider.id)).models || []; } catch { /* keep empty */ }
+  }
+  const model = models.find((item) => item.id === pref?.model)
+    ?? models.find((item) => executors.compatible(executorId, provider.protocol, item.transport ?? null))
+    ?? null;
+  if (!model) throw new Error(`provider ${provider.id} exposes no model for executor ${executorId}`);
+
+  const credential = provider.credentialRef ? credentials.get(provider.credentialRef) : null;
+  if (!credential) throw new Error(`credential missing for provider ${provider.id}`);
+
+  // The bridge always passes the model *id* to CompatGateway and
+  // buildEnvironment; a model object silently becomes "[object Object]".
+  const transport = executors.resolveTransport(provider, model.id);
+  let gateway = null;
+  let built;
+  if (executors.adapterFor(provider.protocol, transport)) {
+    gateway = new CompatGateway({ provider, credential, model: model.id, transport });
+    await gateway.start();
+    built = executors.buildEnvironment(executorId, provider, credential, model.id, transport, {
+      baseUrl: gateway.url, apiKey: gateway.token,
+    });
+  } else {
+    built = executors.buildEnvironment(executorId, provider, credential, model.id, transport);
+  }
+  console.log(`executor route: ${executorId} · ${provider.id} · ${model.id} (${transport || 'native'})`);
+  return {
+    command: executorId === 'workbuddy' ? workbuddyCommand : (executors.get(executorId)?.command ?? 'claude'),
+    env: { ...built.env, ...bridgeEnv },
+    close: async () => { if (gateway) await gateway.close(); },
+  };
 }
 
 async function main() {
@@ -119,15 +185,22 @@ async function main() {
   const port = await new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)));
 
   const repo = setupRepo();
-  const routing = await resolveRoutingEnv();
-  const baseEnv = { ...process.env, ...routing.env, APPROVAL_HOST: '127.0.0.1', APPROVAL_PORT: String(port) };
+  const bridgeEnv = { APPROVAL_HOST: '127.0.0.1', APPROVAL_PORT: String(port) };
+  const real = await buildBridgeRunContext(bridgeEnv).catch((error) => {
+    console.log(`[warn] bridge-equivalent route unavailable (${error?.message || error}); falling back to the process routing env`);
+    return null;
+  });
+  const routing = real ? null : await resolveRoutingEnv();
+  const baseEnv = real ? real.env : { ...process.env, ...routing.env, ...bridgeEnv };
+  const command = real ? real.command : resolveExecutorCommand();
   const prompt = 'Read the file package.json and reply with only the value of the name field.';
   console.log(`probe repo: ${repo}`);
   console.log(`recording hook server on 127.0.0.1:${port}`);
+  console.log(`executor command: ${command} (${real ? 'bridge-equivalent environment' : 'process routing env'})`);
 
   try {
     console.log('\n--- run 1: bridge session (DISCORD_BRIDGE_ACTIVE=1) ---');
-    const bridgeRun = await runClaude({ cwd: repo, prompt, env: { ...baseEnv, DISCORD_BRIDGE_ACTIVE: '1' } });
+    const bridgeRun = await runClaude({ cwd: repo, prompt, command, env: { ...baseEnv, DISCORD_BRIDGE_ACTIVE: '1' } });
     check('run 1 completed', bridgeRun.status === 0, `exit=${bridgeRun.status}`);
     check('the global hook really fired for a bridge session', recorded.length >= 1, `${recorded.length} hook call(s)`);
     if (recorded.length) {
@@ -143,12 +216,13 @@ async function main() {
     const before = recorded.length;
     const plainEnv = { ...baseEnv };
     delete plainEnv.DISCORD_BRIDGE_ACTIVE;
-    const plainRun = await runClaude({ cwd: repo, prompt, env: plainEnv });
+    const plainRun = await runClaude({ cwd: repo, prompt, command, env: plainEnv });
     check('run 2 completed', plainRun.status === 0, `exit=${plainRun.status}`);
     check('the hook stayed inert for an ordinary session', recorded.length === before, `${recorded.length - before} extra call(s)`);
     check('the tool still executed normally', /dac-global-hook-probe/.test(plainRun.out));
   } finally {
     server.close();
+    if (real?.close) await real.close().catch(() => {});
   }
 
   return finish(repo);

@@ -79,28 +79,31 @@ test('!status lines never reduce the backend to a bare provider name', () => {
   assert.ok(!/^DeepSeek$/m.test(text));
 });
 
-test('consecutive failures eventually refuse to start more work', () => {
+test('historical failures are surfaced as a warning, never a channel lockout', () => {
   const limits = new RunLimits({ maxConsecutiveFailures: 2 });
   assert.equal(limits.blocked('c').blocked, false);
   limits.noteFailure('c', new Error('boom'));
   assert.equal(limits.blocked('c').blocked, false);
   limits.noteFailure('c', new Error('boom again'));
   const verdict = limits.blocked('c');
-  assert.equal(verdict.blocked, true);
-  assert.match(verdict.reason, /连续失败/);
-  assert.match(verdict.reason, /!reset/);
+  assert.equal(verdict.blocked, false, 'historical failures must not block a later valid Work');
+  assert.match(verdict.warning, /连续失败/);
+  assert.doesNotMatch(verdict.warning, /!reset/, 'recovery must never require a manual reset');
 
   limits.noteSuccess('c');
-  assert.equal(limits.blocked('c').blocked, false, 'a success clears the counter');
+  assert.equal(limits.blocked('c').warning, null, 'a success clears the diagnostic');
 });
 
-test('process restarts are capped too', () => {
+test('restart counters are scoped to one episode and never lock the channel', () => {
   const limits = new RunLimits({ maxProcessRestarts: 2 });
   limits.noteProcessRestart('c');
   limits.noteProcessRestart('c');
-  assert.equal(limits.blocked('c').blocked, true);
-  limits.reset('c');
   assert.equal(limits.blocked('c').blocked, false);
+  assert.match(limits.blocked('c').warning, /重启/);
+  limits.beginWork('c');
+  assert.equal(limits.blocked('c').warning, null, 'a new Work starts a fresh recovery episode');
+  limits.reset('c');
+  assert.equal(limits.blocked('c').warning, null);
 });
 
 test('a hung task is killed by the wall-clock cap instead of running forever', async () => {

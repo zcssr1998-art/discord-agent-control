@@ -71,13 +71,13 @@ export class ExecutorManager {
     this.executors = new Map([
       ['workbuddy', {
         id: 'workbuddy', displayName: 'WorkBuddy', command: workbuddyCommand,
-        capabilities: ['stream-json', 'tools', 'permission-hook', 'sessions', 'model-override'],
+        capabilities: ['stream-json', 'tools', 'permission-hook', 'sessions', 'model-override', 'live-steering'],
         supportedProtocols: [PROTOCOL.WORKBUDDY], supportedTransports: [],
         adapterReady: true, normalizeEvent: normalizeExecutorEvent,
       }],
       ['claude', {
         id: 'claude', displayName: 'Claude Code', command: 'claude',
-        capabilities: ['stream-json', 'tools', 'permission-hook', 'sessions', 'model-override'],
+        capabilities: ['stream-json', 'tools', 'permission-hook', 'sessions', 'model-override', 'live-steering'],
         supportedProtocols: [PROTOCOL.ANTHROPIC],
         // Claude Code speaks the Anthropic Messages wire format. Through OpenCode
         // Go that means the anthropic-messages model families (minimax-*, qwen*).
@@ -155,10 +155,24 @@ export class ExecutorManager {
     return this.list().filter((executor) => this.compatible(executor.id, protocol, transport));
   }
 
-  /** The wire protocol a given Provider/model pair is served over. */
+  /**
+   * Whether an Executor can accept a requirement into an already-running turn
+   * (live steering). Claude-compatible stream-json executors can; anything else
+   * must be reported honestly instead of pretending the insert happened.
+   */
+  supportsLiveSteering(executorId) {
+    const executor = this.get(executorId);
+    return Boolean(executor?.capabilities?.includes('live-steering'));
+  }
+
+  /**
+   * The wire protocol a given Provider/model pair is served over. `model` may be
+   * a model id or a `{ id }` object: accepting only the string form used to turn
+   * an accidental object argument into a silent `unknown` at the call site.
+   */
   resolveTransport(provider, model) {
     if (!provider) return null;
-    if (provider.protocol === PROTOCOL.OPENCODE_GO) return openCodeGoTransport(model);
+    if (provider.protocol === PROTOCOL.OPENCODE_GO) return openCodeGoTransport(model?.id ?? model);
     if (provider.protocol === PROTOCOL.ANTHROPIC) return TRANSPORT.ANTHROPIC_MESSAGES;
     if (provider.protocol === PROTOCOL.OPENAI) return TRANSPORT.OPENAI_CHAT;
     if (provider.protocol === PROTOCOL.WORKBUDDY) return 'workbuddy';

@@ -1,72 +1,75 @@
 # AI handoff
 
-Keep this file short and overwrite/update it at every meaningful handoff. Do not paste old chat transcripts here.
-
 ## Branch
 
-`jarvis-v4-p2-control-context` (PR #4, Draft; do not merge yet).
+`jarvis-v4-p2-2-hardening`
 
-## Active specs
+## Active task
 
-- `docs/JARVIS_V4_P2_TASK.md` — P2 implementation complete; human Discord smoke not closed.
-- `docs/JARVIS_V4_P2_1_NATIVE_COMMANDS_TASK.md` — P2.1 implementation complete; human Discord smoke not closed.
+`docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md` (P2.2.6 is complete; do not start P3)
 
-## Last known good state
+## Current status
 
-P0/P0.5 + P1 are merged on `main`.
+P2.2.6 Runtime Freshness / Safe Self-Update is implemented, tested and verified on the real
+Windows/Discord machine. GitHub HEAD, the Windows live runtime SHA and the Discord registered
+command schema now converge automatically instead of drifting until a manual restart.
 
-P2 + P2.1 on this branch are implemented and machine-verified:
+Key mechanics (see `docs/JARVIS_V4_P2_2_6_SAFE_SELF_UPDATE_TASK.md`):
 
-- `npm test` 244/0 (P2.1 adds `tests/v4-p2-native.test.mjs`, 18 tests incl. the ACK lifecycle)
-- `npm run check` 85/0
-- `npm run smoke:p2` 11/11
-- real LiteLLM Chat context recall PASS
-- real vision PASS
-- real Agent file task from P2 panel-created Work thread PASS
+- `src/updater.mjs` is dependency-free so a candidate can be validated in a throwaway
+  `git worktree` before the live checkout moves (`scripts/p226-update-smoke.mjs` is the gate).
+- Fast-forward only. Dirty/diverged -> `BLOCKED`. Previous known-good SHA recorded; a failing
+  SHA is quarantined until the remote SHA changes. Post-update crash loops are rolled back by
+  `scripts/update-helper.mjs`, invoked by the existing Supervisor.
+- The Bridge exits with code 74 after a verified apply; the Supervisor (Task Scheduler ->
+  Supervisor -> Bridge) relaunches exactly one Bridge from the same checkout.
+- `/update status|now|pause|resume` added; `/status` and `/doctor` show local/remote SHA and the
+  command-schema fetch-back result (including real `/work task max_length`).
 
-Human Discord: `!panel` was confirmed handled locally by the live bridge. Final combined P2/P2.1 owner smoke is not closed.
+## Verified on the real machine
 
-## P2.1 implementation note
+- bootstrap restart loaded the new runtime (`build=jarvis-v4-p2-2-hardening@496de33`);
+- verified remote advances were auto-deployed on the live runtime
+  (`496de33 -> ... -> e1d7a78`), each via exit code 74 + a single-Bridge Supervisor relaunch;
+- `npm run doctor:commands` fetched the real Discord schema back: `/work task max_length == 6000`,
+  schema matches desired (0 mismatch);
+- `logs/bridge.log` shows `[update] enabled source=origin/jarvis-v4-p2-2-hardening` and
+  `check(startup) ... -> UP_TO_DATE`;
+- deterministic gates green: `npm test` 386/0, `check` 121/0, `smoke:p226-update` 49/49,
+  `smoke:p225-limits` 23/23, `smoke:p223-full` 15/15, `smoke:p224-lifecycle` 21/21,
+  `smoke:p2` 11/11, `verify:hook` 9/9.
 
-- `src/commands.mjs`: application-command payloads + idempotent registration (no hard-coded IDs).
-- `src/discord-ui.mjs`: chat-input command handler; `workctl:append|stop:<runId>` card controls; `workappend:<runId>` modal; one shared `#stopChannel` (also clears follow-ups); `#appendFollowUp` + `#drainFollowUps` re-enter `runTask`/`WorkspaceScheduler`; natural text in an active Work context queues the same follow-up.
-- Interaction ACK lifecycle: `#acknowledge` (deferReply/deferUpdate) runs before any slow work; `showModal` cases ACK via the modal before that; `#edit`/`#ephemeral` respect deferred/replied and never double-reply; `#interactionContext` uses the same path. This fixed the real `/work` "该应用程序未响应" smoke failure.
-- `src/progress.mjs`: `TaskProgress.setFollowUps` + `ThrottledEditor` optional components so active cards keep buttons.
-- Behaviour change: the legacy test `a second task is refused while one is running` now asserts P2.1 follow-up queuing (intentional).
-- Registration defaults to global; `DISCORD_COMMANDS_GUILD_ID` optionally enables instant guild-scoped propagation (never hard-coded). `DISCORD_AUTO_REGISTER_COMMANDS=0` disables.
+## Owner acceptance
 
-## Architecture constraints
+COMPLETE on build `e1d7a78`; `PENDING_OWNER` is cleared. Real Discord owner interactions:
+Tiny Chat PASS (~2.1s, no duplicate/no prompt); Work PASS (wrote
+`D:\deepseeek\OWNER_WORK_ACCEPTANCE.txt` == `OWNER_WORK_OK`); owner Stop PASS (pid 52988 tree
+killed, 0 pending approvals, no natural completion); after-Stop residue PASS
+(`STOP_TEST_RESULT.txt` absent); after-Stop recovery PASS (`STOP_RECOVERY_OK`); `!status` PASS.
 
-- reuse existing P2 panel/model/settings/status/help renderers
-- reuse existing New Work path for `/work`
-- one shared stop path for text command, panel, slash command, and progress card
-- no parallel config/state system
-- no mid-process stdin injection
-- no market-data/P3 work in this branch
-- preserve P0/P1/P2 routing, history, attachments, permissions, queue and Work-thread invariants
+## Preserve
 
-## Minimal files first
+- Supervisor/LiteLLM/Task Scheduler recovery and one bridge instance;
+- Chat AUTO/manual selection and model persistence;
+- pagination/ACK/help consistency;
+- FULL persistent owner semantics; unlimited default Work duration;
+- monotonic Work lifecycle, truthful insert accounting, one-shot Stop and stale-control safety;
+- P2.2.5 full result delivery, auto-compact, visible cooldown, non-blocking failure diagnostics;
+- AUTO billing safeguards, manual-pin semantics, secret/credential protection.
 
-- `src/discord-ui.mjs`
-- `src/commands.mjs`
-- `src/progress.mjs`
-- `tests/v4-p2-native.test.mjs`
-- `tests/helpers/fake-discord.mjs`
+## External limitation
 
-## Verification
+WorkBuddy gateway may still return `HTTP 403 request illegal`; documented as external. It must not
+block other providers, updater state or Bridge availability.
 
-```text
-npm test
-npm run check
-npm run smoke:p2
-```
+## Do not do
 
-Human Discord evidence goes into `docs/V4_P2_SMOKE.md` §9.
+- do not execute the deferred release merge in the P2.2.6 Worker (now the active task);
+- do not start P3;
+- do not rerun the long Hunyuan3D reproduction;
+- do not kill an active Work to deploy an update (the updater marks `UPDATE_PENDING` instead);
+- do not add another independent daemon: the existing Supervisor owns lifecycle/restart/rollback.
 
-## Blocker
+## Next
 
-None known. Human P2/P2.1 smoke is the only open item (owner-run).
-
-## Delivery
-
-Update `CURRENT`, this handoff, `docs/tasks/CURRENT.md`, and `docs/V4_P2_SMOKE.md`; commit + push to `jarvis-v4-p2-control-context`. Final worker reply stays short.
+Execute `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`.
