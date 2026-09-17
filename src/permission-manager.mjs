@@ -83,9 +83,19 @@ export class PermissionManager {
   }
 
   /**
-   * Reset every in-memory tier to the canonical default. Used by `初始化设置`
-   * after the persisted state has already been reset; it never fires `onChange`
-   * because the file is authoritative at that point.
+   * Update the canonical default tier used by scopes with no explicit level.
+   * Called after `初始化设置` persists the owner's chosen tier, so a brand-new
+   * channel/thread inherits it immediately (not only after the next restart).
+   * It never touches an explicit per-channel level and never fires `onChange`.
+   */
+  setDefaultLevel(level) {
+    if (Object.values(LEVEL).includes(level)) this.defaultLevel = level;
+  }
+
+  /**
+   * Reset every in-memory tier to the canonical default. Used by
+   * `⚠️ 恢复出厂设置` after the persisted state has already been reset; it never
+   * fires `onChange` because the file is authoritative at that point.
    */
   resetAll(defaultLevel = DEFAULT_LEVEL) {
     this.defaultLevel = defaultLevel ?? DEFAULT_LEVEL;

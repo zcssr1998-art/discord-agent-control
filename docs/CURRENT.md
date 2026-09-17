@@ -6,25 +6,51 @@
 
 ## Current milestone
 
-Persistent owner settings + `初始化设置` (implemented and verified on this branch;
-owner-typed Discord click confirmation is owner-only). Task:
-`docs/tasks/JARVIS_SETTINGS_PERSISTENCE_AND_FACTORY_RESET.md`.
+`初始化设置` semantics fix (implemented and verified deterministically on this
+branch; owner real-Discord acceptance is the only remaining check). Task:
+`docs/tasks/JARVIS_INITIAL_SETUP_OWNER_DEFAULTS_FIX.md`, on top of the live
+Discord ACK repair `docs/tasks/JARVIS_SETTINGS_RESET_LIVE_DISCORD_REPAIR.md`.
 
-- `StateStore.preferences.ownerDefaults` (schema v1) is the single durable owner
-  profile: Work executor/provider/model, Chat pin, permission tier and the saved
-  workspace. `getChannel()` applies it to a scope with no explicit override; the
-  Work model is resolved as a lower-priority candidate so channel > workspace >
-  owner default > built-in still holds.
-- Explicit choices persist it: `rememberWorkModel`, `#switchExecutor`,
-  `#switchProvider`, `#applyChatSelection`, and an owner-facing permission switch
-  (`onChange` meta `explicit`; trusted thread inheritance never overwrites it).
-- `♻️ 初始化设置` in Settings uses `确认初始化`/`取消`; it resets settings only
-  (owner profile, lastWorkModel, workspace, workspace model selections, persisted
-  tiers and per-channel routing overrides) and refuses while Work is active.
-- Verification: `npm test` 397/0, `npm run check` 123/0,
-  `npm run smoke:owner-settings` 8/8 (real state copy, new process per phase, real
-  Agent run); live supervised bridge restart logged
-  `[state] owner defaults: executor=claude provider=opencode-go model=deepseek-v4.1-flash`.
+- `♻️ 初始化设置` (`set:init`) now opens a local, zero-model flow that validates and
+  **saves the effective Chat/Work/permission/workspace configuration as durable
+  owner defaults**, syncs the current scope, and shows the saved summary. It never
+  factory-resets.
+- `⚠️ 恢复出厂设置` (`set:reset` + `!reset-settings`) is now a separate advanced
+  action with confirmation, Work-active refusal and the same data-preservation
+  guarantees.
+- Validation refuses executor/provider/model/Chat-pin combinations that are
+  missing or incompatible: a partial profile is never written.
+- `StateStore.getChannel()` layers owner defaults under explicit channel fields on
+  pre-existing entries; `PermissionManager.setDefaultLevel()` makes a saved tier
+  inherited by new scopes immediately.
+- Preserved live-repair invariants: control commands defer before work, a failed
+  ACK produces an owner-visible recovery message, and `/status` / `/settings` /
+  init never touch Chat/Work/LLM.
+
+### Prior milestone (preserved)
+
+Live-Discord repair of the settings/reset regression found after `cb3ed4d`:
+
+- Root cause: `/status` / `/settings` failed with real Discord `10062 Unknown
+  interaction` (deferred ACK arrived after the 3s window during a REST transport
+  stall; same process logged a 10s ready-DM timeout with `proxy source=none`).
+  The Chat failure was the channel's explicit manual pin `opencode-go/grok-4.6`
+  (valid model, momentarily unreachable), not owner-default inheritance.
+- Fix: failed ACKs emit an owner-visible recovery message; deterministic text
+  aliases (`!settings`, `!reset-settings`, `!init-settings`) never call a model;
+  `#switchExecutor`/`#switchProvider` persist only a validated pair.
+
+### Verification (this branch)
+
+- `npm test` 403/0, `npm run check` 123/0, `npm run smoke:owner-settings` 9/9,
+  `npm run smoke:p222` 25/25, `npm run smoke:p2` 11/11.
+- Real-machine: single supervised bridge; `doctor:discord` login OK,
+  `doctor:commands` 0 mismatch, `verify:opencode-go` 17/17.
+
+The `StateStore.preferences.ownerDefaults` (schema v1) profile remains the single
+durable owner profile (Work executor/provider/model, Chat pin, permission tier,
+workspace). Precedence stays explicit channel field > workspace > owner default >
+product built-in; the Work model is resolved as a lower-priority candidate.
 
 Jarvis V4 P2 is complete and merged to `main`. Release merge / closeout task
 (complete): `docs/JARVIS_V4_P2_RELEASE_MERGE_TASK.md`.
@@ -77,17 +103,17 @@ observation window, so the Task Scheduler restart semantics are verified determi
 
 - Existing chain only: Task Scheduler -> `scripts/start-supervisor.ps1` -> Bridge.
 - One Supervisor + one Bridge; the live checkout is on
-  `jarvis-settings-persistence-reset-task` (verification of this task).
-- The live supervised bridge was restarted (bridge pid 45836) and logged the
-  persisted owner defaults; the updater reports BLOCKED because the live branch is
-  not `AUTO_UPDATE_BRANCH=main` (expected until this branch is merged).
+  `jarvis-settings-persistence-reset-task` (semantics fix committed) with the
+  single supervised Bridge reloaded from it.
+- The updater reports BLOCKED because the live branch is not
+  `AUTO_UPDATE_BRANCH=main` (expected until this branch is merged).
 - Real Discord command fetch-back: `/work task max_length == 6000`, schema matches (0 mismatch).
 
 ## Owner acceptance
 
-COMPLETE — real-Discord acceptance on build `e1d7a78` (Tiny Chat / Work / Stop / after-Stop
-recovery / `!status` all PASS). `main` is a pure merge of that verified content; no
-post-acceptance code change was made.
+PENDING — the 7-step real-Discord acceptance in
+`docs/tasks/JARVIS_INITIAL_SETUP_OWNER_DEFAULTS_FIX.md` has not been run by the
+owner yet. Deterministic + real-machine smokes are green.
 
 ## External limitation
 
@@ -96,7 +122,9 @@ external and does not block other providers, the updater or Bridge availability.
 
 ## Next action
 
-Merge `jarvis-settings-persistence-reset-task` to `main` (not done here), then have
-the owner confirm the Discord-only parts on the live bridge: select a non-default
-setting, restart, reopen `/settings`, press `♻️ 初始化设置` (confirm/cancel), and
-check a brand-new Work thread. Do **not** start P3 yet.
+Owner real-Discord acceptance on the live bridge (7 steps in
+`docs/tasks/JARVIS_INITIAL_SETUP_OWNER_DEFAULTS_FIX.md`): `/settings` opens; `♻️ 初始化设置`
+enters the configure/save flow and must **not** reset to WorkBuddy; save a non-default route;
+`/status` shows it; restart Bridge and re-check; a new Work thread inherits
+route/permission/workspace; `⚠️ 恢复出厂设置` is verified separately. Do **not** merge this
+branch to `main` and do **not** start P3 until that passes.

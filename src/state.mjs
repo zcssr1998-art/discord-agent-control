@@ -81,16 +81,18 @@ export class StateStore {
   }
 
   /**
-   * A channel's effective state. A scope the owner never configured inherits the
-   * persisted owner defaults (so a new Work thread / channel / DM does not fall
-   * back to hard-coded values); an existing channel entry wins because it is an
-   * explicit local override.
+   * A channel's effective state. Owner defaults are the fallback UNDER the
+   * channel's own stored fields, so an existing entry (e.g. one created only by
+   * a Chat selection or a mode switch) still inherits the durable owner Work
+   * route for every field it did not explicitly set. Precedence is therefore
+   * explicit channel field > owner default > product built-in.
    */
   getChannel(channelId, defaultCwd) {
     const base = defaultChannelState(defaultCwd);
+    const layered = this.ownerRoutingOverrides(base);
     const stored = this.data.channels?.[channelId];
-    if (!stored || typeof stored !== 'object') return { ...base, ...this.ownerRoutingOverrides(base) };
-    return { ...base, ...stored };
+    if (!stored || typeof stored !== 'object') return layered;
+    return { ...layered, ...stored };
   }
 
   /**

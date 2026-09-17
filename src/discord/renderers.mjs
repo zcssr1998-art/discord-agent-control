@@ -128,17 +128,31 @@ export function settingsButtons({ workThread = false } = {}) {
   return [
     new ActionRowBuilder().addComponents(...top),
     new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('set:init').setLabel('♻️ 初始化设置').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('set:permission').setLabel('🔐 权限').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('set:reset').setLabel('♻️ 初始化设置').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('set:refresh').setLabel('🔄 刷新').setStyle(ButtonStyle.Primary),
+    ),
+    // Advanced/destructive entry, visually separate from 初始化设置 so the two
+    // actions can never be confused.
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('set:reset').setLabel('⚠️ 恢复出厂设置').setStyle(ButtonStyle.Danger),
     ),
   ];
 }
 
-/** Explicit confirmation for the destructive `初始化设置` reset. */
+/** Buttons for the `♻️ 初始化设置` save-defaults flow (local, no model call). */
+export function initButtons() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('init:save').setLabel('✅ 保存默认配置').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('init:settings').setLabel('⚙️ 修改配置').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('init:back').setLabel('⬅️ 返回').setStyle(ButtonStyle.Secondary),
+  );
+}
+
+/** Explicit confirmation for the destructive `⚠️ 恢复出厂设置` action. */
 export function resetConfirmButtons() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('setreset:confirm').setLabel('确认初始化').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('setreset:confirm').setLabel('确认恢复出厂').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('setreset:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary),
   );
 }

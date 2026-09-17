@@ -41,7 +41,7 @@ import { autostartSummary } from './autostart.mjs';
 import {
   clip, planResultDelivery,
   permissionButtons, permissionMenuButton, fullConfirmationButtons, configButtons,
-  providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, resetConfirmButtons, panelMainRows,
+  providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, resetConfirmButtons, initButtons, panelMainRows,
   panelBackRow, panelHelpRows, panelModelRows, workControlRows, providerModelRows, choiceRows, pagedChoiceRows,
   modelPageButtons, protocolLabel, transportLabel, billingLabel, sanitizeThreadName, workTitle,
   SETTINGS_MODEL_LIMIT, DISCORD_LIMIT,
@@ -912,6 +912,7 @@ export class DiscordControlPlane {
       `Permission: ${PERM_SHORT[this.permissionManager.getLevel(channelId)]}`,
       `State: ${this.#workStateText(channelId)}`,
       '',
+      '♻️ 初始化设置：配置并保存你的默认 Chat / Work / 权限 / 工作目录；以后重启和新线程自动继承。',
       `💾 持久默认（新会话/重启继承）：${this.#ownerDefaultsText()}`,
       ...(this.#isWorkThread(channelId) ? ['', '🛠 这是永久 Work 线程；请到父频道使用 Chat。'] : []),
       '',
@@ -920,67 +921,188 @@ export class DiscordControlPlane {
     return { content: clip(lines.join('\n')), components: settingsButtons({ workThread: this.#isWorkThread(channelId) }) };
   }
 
-  /** One concise line describing the durable owner-default profile. */
-  #ownerDefaultsText() {
-    const owner = this.state?.getOwnerDefaults?.();
+  /** One compact line describing a durable owner-default profile. */
+  #ownerDefaultsSummary(owner) {
     if (!owner) return '未启用';
     const executor = this.executorManager?.get(owner.executorId);
     const provider = this.providerManager?.get(owner.providerId);
     const chat = !owner.chatProviderId || owner.chatProviderId === 'auto'
-      ? 'AUTO'
-      : `${owner.chatProviderId}/${owner.chatModel ?? '—'}`;
+      ? 'Chat AUTO'
+      : `Chat ${owner.chatProviderId}/${owner.chatModel ?? '—'}`;
     return [
       executor?.displayName || owner.executorId || '—',
       provider?.displayName || owner.providerId || '—',
       owner.model || '未选择',
       PERM_SHORT[owner.permission] || owner.permission,
-      `Chat ${chat}`,
+      owner.workspace || '配置默认目录',
+      chat,
     ].join(' · ');
   }
 
-  /** Confirmation copy for `初始化设置`; never includes secret material. */
-  #resetConfirmationText() {
-    return [
+  #ownerDefaultsText() {
+    return this.#ownerDefaultsSummary(this.state?.getOwnerDefaults?.());
+  }
+
+  /**
+   * `♻️ 初始化设置` overview. A local control-plane screen: it only renders the
+   * effective configuration that `init:save` will persist. Changing a value
+   * reuses the normal Settings selectors (never a model call).
+   */
+  #initializationPanel(channelId) {
+    const effective = this.effectiveRuntimeState({ channelId });
+    const session = this.sessionManager.get(channelId);
+    const chatProviderId = session.chatProviderId || 'auto';
+    const chat = chatProviderId === 'auto' ? 'AUTO' : `${chatProviderId}/${session.chatModel ?? '—'}`;
+    const lines = [
       '♻️ **初始化设置**',
       '',
-      '将把用户可配置的设置恢复为产品默认值：',
-      '• Chat 路由 → AUTO',
-      '• Work 执行器 / Provider / 模型 → 默认',
-      '• 权限 → 标准',
-      '• 工作目录 → 配置默认',
+      '把下面这套配置保存为你的默认配置（**不会**清空数据，也**不是**恢复出厂设置）：',
+      '重启 Bridge / Windows、新频道、新 Work 线程、新 Agent session 都会自动继承。',
+      '',
+      `💬 Chat: ${chat}`,
+      `🛠 Executor: ${effective.executor?.displayName || effective.executor?.id || '未选择'}`,
+      `🌐 Provider: ${effective.provider?.displayName || effective.provider?.id || '未选择'}`,
+      `🧠 Model: ${effective.model || '未选择'}`,
+      `🔐 Permission: ${PERM_SHORT[this.permissionManager.getLevel(channelId)]}`,
+      `📁 Workspace: \`${effective.workspace ?? session.cwd}\``,
+      '',
+      '要修改请先点“⚙️ 修改配置”，改好后回来点“✅ 保存默认配置”。',
+    ];
+    return { content: clip(lines.join('\n')), components: [initButtons()] };
+  }
+
+  /** Confirmation copy for the destructive `⚠️ 恢复出厂设置`; no secrets. */
+  #factoryResetConfirmationText() {
+    return [
+      '⚠️ **恢复出厂设置**',
+      '',
+      '高级操作：把用户可配置的路由/权限/工作目录恢复为产品内置默认值（例如 WorkBuddy / WorkBuddy Free）。',
+      '它**不是**“初始化设置”；日常配置请用 `♻️ 初始化设置` 保存为默认。',
       '',
       '**不会**删除：API Key / 凭据、Provider 账号、Discord 配置、聊天与任务历史、运行记录、日志。',
       '',
-      '确认初始化？',
+      '确认恢复出厂设置？',
     ].join('\n');
   }
 
   /**
-   * `初始化设置` core. Refuses cleanly while any Work is active (never kills a
-   * running task), otherwise resets the persisted settings layer and re-seeds the
-   * in-memory managers from the file. It disposes only cached, non-busy runners
-   * so the next Work uses the reset route.
+   * `♻️ 初始化设置` core. Validates the effective route, refuses an
+   * incomplete/incompatible configuration (never writes half a profile), then
+   * persists the whole profile as durable owner defaults and syncs the current
+   * scope so a stale channel override cannot contradict what was saved.
+   */
+  async #initializeOwnerDefaults(channelId) {
+    const activity = this.runtimeActivity();
+    if (!activity.safe) {
+      return {
+        ok: false,
+        message: `⚠️ 初始化设置被拒绝：当前仍有运行中的 Work（${activity.reasons.join('、')}）。\n请等待任务结束或先使用 ⛔ Stop；设置保持不变，任务不会被终止。`,
+      };
+    }
+    const effective = this.effectiveRuntimeState({ channelId });
+    const session = this.sessionManager.get(channelId);
+    const chatProviderId = session.chatProviderId || 'auto';
+    const chatModel = chatProviderId === 'auto' ? null : (session.chatModel || null);
+
+    const problems = [];
+    const executor = effective.executor?.id ? this.executorManager?.get(effective.executor.id) : null;
+    if (!executor) problems.push('Work 执行器未选择');
+    else {
+      if (executor.available === false) problems.push(`执行器 ${executor.displayName || executor.id} 未安装`);
+      if (executor.adapterReady === false) problems.push(`执行器 ${executor.displayName || executor.id} 适配器未就绪`);
+    }
+    const provider = effective.provider?.id ? this.providerManager?.get(effective.provider.id) : null;
+    if (!provider) problems.push('Work Provider 未选择');
+    else {
+      if (!this.providerManager?.hasCredential(provider)) problems.push(`Provider ${provider.displayName || provider.id} 缺少凭据`);
+      const transport = this.executorManager?.resolveTransport(provider, effective.model);
+      if (executor && !this.executorManager?.compatible(executor.id, provider.protocol, transport)) {
+        problems.push(`执行器 ${executor.id} 与 Provider ${provider.id} 协议不兼容`);
+      }
+      if (!effective.model) problems.push('Work 模型未选择');
+      else {
+        const known = Array.isArray(provider.models) && provider.models.length ? provider.models.map((m) => m.id) : null;
+        if (known && !known.includes(effective.model)) problems.push(`模型 ${effective.model} 不属于 Provider ${provider.id}`);
+      }
+    }
+    if (chatProviderId !== 'auto') {
+      const chatProvider = this.providerManager?.get(chatProviderId);
+      if (!chatProvider) problems.push(`Chat Provider ${chatProviderId} 不存在`);
+      else if (!this.providerManager?.hasCredential(chatProvider)) problems.push(`Chat Provider ${chatProviderId} 缺少凭据`);
+      else {
+        const known = Array.isArray(chatProvider.models) && chatProvider.models.length ? chatProvider.models.map((m) => m.id) : null;
+        if (!chatModel) problems.push('Chat 模型未选择');
+        else if (known && !known.includes(chatModel)) problems.push(`Chat 模型 ${chatModel} 不属于 Provider ${chatProviderId}`);
+      }
+    }
+    if (problems.length) {
+      return {
+        ok: false,
+        message: clip([
+          '⚠️ 默认配置未保存，以下项目需要先配置：',
+          ...problems.map((problem) => `• ${problem}`),
+          '',
+          '配置入口：`/settings` 或 `!settings`（本地操作，不经过模型）。',
+        ].join('\n')),
+      };
+    }
+
+    const permission = this.permissionManager.getLevel(channelId);
+    const workspace = effective.workspace ?? session.cwd ?? this.config.defaultCwd;
+    // Sync the current scope first so the UI reflects exactly what was saved.
+    await this.sessionManager.change(channelId, {
+      executorId: executor.id,
+      providerId: provider.id,
+      model: effective.model,
+      chatProviderId,
+      chatModel,
+      cwd: workspace,
+    }, 'initialization');
+    // A confirmed FULL tier is owner configuration; never silently downgrade it.
+    if (permission === LEVEL.FULL) this.permissionManager.confirmFull(channelId);
+    else this.permissionManager.switchLevel(channelId, permission);
+    this.state.setOwnerDefaults({
+      executorId: executor.id,
+      providerId: provider.id,
+      model: effective.model,
+      chatProviderId,
+      chatModel,
+      permission,
+      workspace,
+    });
+    // New scopes inherit the chosen tier immediately, not only after a restart.
+    this.permissionManager.setDefaultLevel(permission);
+    this.chatActual.clear();
+    const owner = this.state.getOwnerDefaults();
+    console.log(`[settings] owner defaults saved pid=${process.pid} executor=${owner.executorId} provider=${owner.providerId} model=${owner.model ?? 'none'} chat=${owner.chatProviderId ?? 'auto'} permission=${owner.permission}`);
+    return { ok: true, owner, message: `✅ 默认配置已保存：${this.#ownerDefaultsSummary(owner)}` };
+  }
+
+  /**
+   * `⚠️ 恢复出厂设置` core. Refuses cleanly while any Work is active (never kills
+   * a running task), otherwise resets the persisted settings layer and re-seeds
+   * the in-memory managers from the file. Separate from `初始化设置`.
    */
   async #factoryReset() {
     const activity = this.runtimeActivity();
     if (!activity.safe) {
       return {
         ok: false,
-        message: `⚠️ 初始化被拒绝：当前仍有运行中的 Work（${activity.reasons.join('、')}）。\n请等待任务结束或先使用 ⛔ Stop；设置保持不变，任务不会被终止。`,
+        message: `⚠️ 恢复出厂设置被拒绝：当前仍有运行中的 Work（${activity.reasons.join('、')}）。\n请等待任务结束或先使用 ⛔ Stop；设置保持不变，任务不会被终止。`,
       };
     }
     for (const [channelId, runner] of [...this.runners]) {
       if (runner?.busy) continue;
-      try { await runner.stop({ reason: 'settings reset' }); } catch { /* best effort */ }
+      try { await runner.stop({ reason: 'factory reset' }); } catch { /* best effort */ }
       this.runners.delete(channelId);
     }
     this.state.resetOwnerSettings();
     this.permissionManager.resetAll(this.state.getOwnerDefaults().permission);
     this.chatActual.clear();
-    console.log(`[settings] initialized to product defaults pid=${process.pid}`);
+    console.log(`[settings] factory reset to product defaults pid=${process.pid}`);
     return {
       ok: true,
-      message: '✅ 已初始化设置：Chat/Work 路由、权限与工作目录已恢复为产品默认值。凭据、历史与任务记录未受影响。',
+      message: '✅ 已恢复出厂设置：Chat/Work 路由、权限与工作目录已恢复为产品默认值。凭据、历史与任务记录未受影响。',
     };
   }
 
@@ -1083,14 +1205,18 @@ export class DiscordControlPlane {
     if (!executor) return '❌ 未知执行器。';
     if (!executor.available) return `❌ ${executor.displayName} · 未安装`;
     if (!executor.adapterReady) return `⚠️ ${executor.displayName} · ADAPTER_NOT_READY`;
-    this.state?.setOwnerDefaults?.({ executorId });
     const state = this.sessionManager.get(channelId);
     const provider = this.providerManager?.get(state.providerId);
     if (!provider || !this.executorManager.compatible(executorId, provider.protocol)) {
+      // Only the current scope changes; the durable owner default is left alone so
+      // a new scope can never inherit an executor/provider pair that fails closed.
       await this.sessionManager.change(channelId, { executorId }, 'executor changed');
       return `⚠️ 已选择执行器：${executor.displayName}，但它不支持当前 Provider。\n请在 \`/model\` → Work 模型 或 \`/settings\` → 提供商 中选择兼容 Provider；配置完成前不会启动任务。`;
     }
     await this.sessionManager.change(channelId, { executorId }, 'executor changed');
+    // Persist the validated pair together, never a lone executor that could be
+    // recombined with an incompatible provider owner default.
+    this.state?.setOwnerDefaults?.({ executorId, providerId: provider.id });
     return `✅ 已切换执行器：${executor.displayName}\n已创建新安全 Session（权限档位保持不变）。`;
   }
 
@@ -1105,7 +1231,8 @@ export class DiscordControlPlane {
       return `❌ 当前执行器不支持此 Provider 协议。${recommendations.length ? `\n可用执行器：${recommendations.join('、')}` : ''}`;
     }
     const model = provider.protocol === PROTOCOL.WORKBUDDY ? provider.models?.[0]?.id || null : null;
-    this.state?.setOwnerDefaults?.({ providerId, ...(model ? { model } : {}) });
+    // Persist the pair that was just validated, so the owner default stays usable.
+    this.state?.setOwnerDefaults?.({ providerId, executorId: state.executorId, ...(model ? { model } : {}) });
     await this.sessionManager.change(channelId, { providerId, model }, 'provider changed');
     if (model) this.sessionManager.rememberWorkModel(channelId, { providerId, executorId: state.executorId, model });
     const hint = provider.protocol === PROTOCOL.OPENCODE_GO
@@ -1245,6 +1372,54 @@ export class DiscordControlPlane {
     }
     if (text === '!settings') {
       await message.reply(this.#settingsPanel(message.channelId));
+      return;
+    }
+    // Deterministic recovery alias for `♻️ 初始化设置`: save the effective
+    // configuration as durable owner defaults. Local only (no Chat/Work/LLM),
+    // and never a factory reset.
+    const initSettingsCommand = text.toLowerCase().match(/^!init-settings(?:\s+(\S+))?$/);
+    if (initSettingsCommand) {
+      const action = (initSettingsCommand[1] ?? '').toLowerCase();
+      if (!action) {
+        const panel = this.#initializationPanel(message.channelId);
+        await message.reply(clip([panel.content, '', '保存：`!init-settings save`'].join('\n')));
+        return;
+      }
+      if (action === 'save') {
+        const result = await this.#initializeOwnerDefaults(message.channelId);
+        await message.reply(clip(result.ok
+          ? `${result.message}\n\n${this.#settingsPanel(message.channelId).content}`
+          : result.message));
+        return;
+      }
+      await message.reply('用法：`!init-settings` 查看将保存的默认配置；`!init-settings save` 保存。');
+      return;
+    }
+    // Deterministic alias for the destructive `⚠️ 恢复出厂设置` (separate action).
+    const resetSettingsCommand = text.toLowerCase().match(/^!reset-settings(?:\s+(\S+))?$/);
+    if (resetSettingsCommand) {
+      const action = (resetSettingsCommand[1] ?? '').toLowerCase();
+      if (!action) {
+        await message.reply(clip([
+          this.#factoryResetConfirmationText(),
+          '',
+          '确认执行：`!reset-settings confirm`',
+          '取消：`!reset-settings cancel`',
+        ].join('\n')));
+        return;
+      }
+      if (action === 'cancel') {
+        await message.reply('已取消恢复出厂设置，设置未改变。');
+        return;
+      }
+      if (action === 'confirm') {
+        const result = await this.#factoryReset();
+        await message.reply(clip(result.ok
+          ? `${result.message}\n\n${this.#settingsPanel(message.channelId).content}`
+          : result.message));
+        return;
+      }
+      await message.reply('用法：`!reset-settings` 查看确认；`!reset-settings confirm` 执行；`!reset-settings cancel` 取消。');
       return;
     }
     if (text === '!panel' || text === '/panel') {
@@ -1939,7 +2114,7 @@ export class DiscordControlPlane {
    * interaction type, command/customId, and latency so a live /work failure is
    * diagnosable instead of appearing as a silent Discord timeout.
    */
-  #abortAfterFailedAck(label, ack, stage) {
+  #abortAfterFailedAck(label, ack, stage, interaction = null) {
     const reason = ack?.reason ?? {};
     console.error(
       `[interaction] ${label} ABORTED after failed ACK at ${stage}: type=${reason.type ?? 'unknown'}`
@@ -1947,7 +2122,38 @@ export class DiscordControlPlane {
       + ` method=${ack?.method ?? '-'} error=${redact(reason.message || 'unknown')}`,
     );
     console.error(`[interaction] ${label} no Work thread, no filesystem write, no Agent start performed.`);
+    // Discord will otherwise show an unexplained "该应用程序未响应". The interaction
+    // token is already dead, so the only owner-visible channel left is a normal
+    // message (channel or DM). Best effort; a transport outage may fail here too.
+    if (interaction) this.#notifyInteractionFailure(interaction, label, ack).catch(() => {});
     return false;
+  }
+
+  /**
+   * Tell the owner why a control command did nothing, and how to recover without
+   * relying on a working interaction (or an LLM). Never throws.
+   */
+  async #notifyInteractionFailure(interaction, label, ack) {
+    const reason = ack?.reason ?? {};
+    const code = reason.code ?? reason.type ?? 'unknown';
+    const text = clip([
+      `⚠️ 控制命令 ${label} 未能在 Discord 时限内确认（${code}），**未执行任何操作**。`,
+      '',
+      '可重新打开该命令，或改用文本命令（不经过模型、不需要交互确认）：',
+      '• `!settings` — 打开设置',
+      '• `!reset-settings` — 初始化设置（再发送 `!reset-settings confirm` 确认）',
+      '• `!status` — 状态',
+    ].join('\n'));
+    const channel = interaction?.channel
+      ?? (interaction?.channelId && this.client?.channels?.fetch
+        ? await this.client.channels.fetch(interaction.channelId).catch(() => null)
+        : null);
+    if (channel && typeof channel.send === 'function') {
+      await channel.send(text).catch(() => {});
+      return;
+    }
+    const owner = await this.client?.users?.fetch?.(this.config.ownerId).catch(() => null);
+    await owner?.send?.(text).catch(() => {});
   }
 
   /** Send/update an interaction result regardless of deferred/replied state. */
@@ -3432,13 +3638,13 @@ export class DiscordControlPlane {
       const task = typeof interaction.options?.getString === 'function' ? interaction.options.getString('task') : null;
       if (!task || !String(task).trim()) {
         const modalAck = await this.#showModalAck(interaction, this.#newWorkModal(), { label, receivedAt });
-        if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (new Work)');
+        if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (new Work)', interaction);
         return;
       }
     }
     if (isButton && prefix === 'panel' && id === 'newwork') {
       const modalAck = await this.#showModalAck(interaction, this.#newWorkModal(), { label, receivedAt });
-      if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (panel new Work)');
+      if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (panel new Work)', interaction);
       return;
     }
     if (isButton && prefix === 'workctl' && id === 'append') {
@@ -3449,7 +3655,7 @@ export class DiscordControlPlane {
         return;
       }
       const modalAck = await this.#showModalAck(interaction, this.#appendModal(action), { label, receivedAt });
-      if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (append follow-up)');
+      if (!modalAck.ok) this.#abortAfterFailedAck(label, modalAck, 'showModal (append follow-up)', interaction);
       return;
     }
 
@@ -3458,7 +3664,7 @@ export class DiscordControlPlane {
     // no thread, no Agent, no filesystem side effect.
     const ack = await this.#acknowledge(interaction, { label, receivedAt });
     if (!ack.ok) {
-      this.#abortAfterFailedAck(label, ack, 'defer');
+      this.#abortAfterFailedAck(label, ack, 'defer', interaction);
       return;
     }
     if (isCommand) { await this.#handleApplicationCommand(interaction); return; }
@@ -3590,19 +3796,38 @@ export class DiscordControlPlane {
         await this.#edit(interaction, this.#settingsModelMenu(channelId));
         return;
       }
+      if (id === 'init') {
+        await this.#edit(interaction, this.#initializationPanel(channelId));
+        return;
+      }
       if (id === 'reset') {
-        // Destructive: show an explicit confirmation instead of resetting on one
-        // accidental click.
-        await this.#edit(interaction, { content: clip(this.#resetConfirmationText()), components: [resetConfirmButtons()] });
+        // Destructive advanced action, separate from `♻️ 初始化设置`: show an
+        // explicit confirmation instead of resetting on one accidental click.
+        await this.#edit(interaction, { content: clip(this.#factoryResetConfirmationText()), components: [resetConfirmButtons()] });
         return;
       }
       // refresh / back / unknown
       await this.#edit(interaction, this.#settingsPanel(channelId));
       return;
     }
+    if (prefix === 'init') {
+      if (id === 'save') {
+        const result = await this.#initializeOwnerDefaults(channelId);
+        await this.#edit(interaction, result.ok
+          ? {
+            content: clip(`${result.message}\n\n${this.#settingsPanel(channelId).content}`),
+            components: settingsButtons({ workThread: this.#isWorkThread(channelId) }),
+          }
+          : { content: clip(result.message), components: [initButtons()] });
+        return;
+      }
+      // settings / back / unknown
+      await this.#edit(interaction, this.#settingsPanel(channelId));
+      return;
+    }
     if (prefix === 'setreset') {
       if (id === 'cancel') {
-        await this.#edit(interaction, { content: '已取消初始化，设置未改变。', components: [settingsBackRow()] });
+        await this.#edit(interaction, { content: '已取消恢复出厂设置，设置未改变。', components: [settingsBackRow()] });
         return;
       }
       if (id === 'confirm') {

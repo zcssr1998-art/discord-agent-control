@@ -204,8 +204,8 @@ if (phase) {
     process.exit(ok ? 0 : 1);
   }
 
-  // --- reset-refused: active Work must block initialization -------------------
-  if (phase === 'reset-refused') {
+  // --- init-refused: active Work blocks both 初始化设置 and 恢复出厂设置 --------
+  if (phase === 'init-refused') {
     const channelId = 'owner-settings-channel';
     const { fake, plane, gate } = await makePlane({ channelId, hold: true });
     await plane.start();
@@ -214,21 +214,28 @@ if (phase) {
     const task = fake.sendAsUser({ content: 'work long safe task', channelId });
     await new Promise((r) => setTimeout(r, 100));
     const running = plane.scheduler.stateFor(channelId).state === 'running';
+
+    await fake.sendAsUser({ content: '!settings', channelId });
+    await fake.clickButton('set:init');
+    await fake.clickButton('init:save');
+    const initRefused = fake.texts().some((text) => /初始化设置被拒绝/.test(text));
+
     await fake.sendAsUser({ content: '!settings', channelId });
     await fake.clickButton('set:reset');
     await fake.clickButton('setreset:confirm');
-    const refused = fake.texts().some((text) => /初始化被拒绝/.test(text));
+    const resetRefused = fake.texts().some((text) => /恢复出厂设置被拒绝/.test(text));
+
     const after = state.getOwnerDefaults();
     const stillRunning = plane.scheduler.stateFor(channelId).state === 'running';
 
-    out({ phase, running, refused, preserved: after.providerId === before.providerId && after.permission === before.permission, stillRunning });
+    out({ phase, running, initRefused, resetRefused, preserved: after.providerId === before.providerId && after.permission === before.permission, stillRunning });
     gate.resolve();
     await task;
-    process.exit(running && refused && stillRunning && after.providerId === before.providerId ? 0 : 1);
+    process.exit(running && initRefused && resetRefused && stillRunning && after.providerId === before.providerId ? 0 : 1);
   }
 
-  // --- reset: confirmation, cancel, then durable canonical defaults -----------
-  if (phase === 'reset') {
+  // --- factory-reset: separate advanced action, cancel then confirm ------------
+  if (phase === 'factory-reset') {
     const channelId = 'owner-settings-channel';
     const { fake, plane } = await makePlane({ channelId, threadCapable: true });
     await plane.start();
@@ -240,7 +247,7 @@ if (phase) {
 
     await fake.sendAsUser({ content: '!settings', channelId });
     await fake.clickButton('set:reset');
-    const confirmShown = fake.messages.at(-1).content.includes('确认初始化');
+    const confirmShown = fake.messages.at(-1).content.includes('确认恢复出厂');
     const untouchedAfterPrompt = state.getOwnerDefaults().providerId === 'opencode-go';
     await fake.clickButton('setreset:cancel');
     const untouchedAfterCancel = state.getOwnerDefaults().providerId === 'opencode-go';
@@ -257,16 +264,51 @@ if (phase) {
     process.exit(confirmShown && untouchedAfterPrompt && untouchedAfterCancel && canonical ? 0 : 1);
   }
 
-  // --- reset-restart: the reset state persists and new scopes inherit it ------
-  if (phase === 'reset-restart') {
-    const freshChannel = 'post-reset-scope';
+  // --- init-save: 初始化设置 persists the effective config (never a reset) -----
+  if (phase === 'init-save') {
+    const channelId = 'owner-settings-channel';
+    const { fake, plane } = await makePlane({ channelId, threadCapable: true });
+    await plane.start();
+    await fake.sendAsUser({ content: '!executor claude', channelId });
+    await fake.sendAsUser({ content: '!provider opencode-go', channelId });
+    await fake.sendAsUser({ content: '!model ' + MODEL, channelId });
+    await fake.sendAsUser({ content: '!chatmodel opencode-go ' + CHAT_MODEL, channelId });
+    await fake.sendAsUser({ content: '!perm full', channelId });
+    await fake.clickButton('permfull:confirm');
+
+    // Drop the profile the explicit commands wrote: the initialization action
+    // itself must write it, and must not factory-reset the scope.
+    delete state.data.preferences.ownerDefaults;
+    state.save();
+
+    await fake.sendAsUser({ content: '!settings', channelId });
+    await fake.clickButton('set:init');
+    const openedFlow = /初始化设置/.test(fake.messages.at(-1).content);
+    const scopeAfterOpen = plane.sessionManager.get(channelId);
+    const notResetByOpen = scopeAfterOpen.executorId === 'claude' && scopeAfterOpen.providerId === 'opencode-go';
+    await fake.clickButton('init:save');
+
+    const owner = state.getOwnerDefaults();
+    const scope = plane.sessionManager.get(channelId);
+    const saved = owner.executorId === 'claude' && owner.providerId === 'opencode-go' && owner.model === MODEL
+      && owner.chatProviderId === 'opencode-go' && owner.chatModel === CHAT_MODEL && owner.permission === LEVEL.FULL;
+    const synced = scope.executorId === 'claude' && scope.providerId === 'opencode-go' && scope.model === MODEL
+      && scope.chatProviderId === 'opencode-go' && scope.chatModel === CHAT_MODEL;
+
+    out({ phase, openedFlow, notResetByOpen, saved, synced, owner, scope });
+    process.exit(openedFlow && notResetByOpen && saved && synced ? 0 : 1);
+  }
+
+  // --- init-restart: the saved config survives a restart and is inherited -----
+  if (phase === 'init-restart') {
+    const freshChannel = 'post-init-scope';
     const { fake, plane } = await makePlane({ channelId: freshChannel, threadCapable: true });
     await plane.start();
     const owner = state.getOwnerDefaults();
     const fresh = plane.effectiveRuntimeState({ channelId: freshChannel });
     const freshPermission = plane.permissionManager.getLevel(freshChannel);
 
-    const parentId = 'post-reset-parent';
+    const parentId = 'post-init-parent';
     fake.addChannel({ id: parentId, threadCapable: true });
     state.patchChannel(parentId, { mode: 'chat', cwd: workspace }, workspace);
     await fake.sendAsUser({ content: 'work inspect', channelId: parentId, guildId: 'guild-2' });
@@ -274,12 +316,12 @@ if (phase) {
     const threadState = thread ? state.getChannel(thread.id, workspace) : null;
     const threadPermission = thread ? plane.permissionManager.getLevel(thread.id) : null;
 
-    out({ phase, owner, fresh: { executor: fresh.executor?.id, provider: fresh.provider?.id, model: fresh.model, permission: freshPermission }, thread: threadState && { executor: threadState.executorId, provider: threadState.providerId, permission: threadPermission } });
-    const ok = owner.providerId === 'workbuddy-free' && owner.permission === LEVEL.STANDARD
-      && fresh.executor?.id === 'workbuddy' && fresh.provider?.id === 'workbuddy-free' && fresh.model === null
-      && freshPermission === LEVEL.STANDARD
-      && threadState?.executorId === 'workbuddy' && threadState?.providerId === 'workbuddy-free'
-      && threadPermission === LEVEL.STANDARD;
+    out({ phase, owner, fresh: { executor: fresh.executor?.id, provider: fresh.provider?.id, model: fresh.model, permission: freshPermission }, thread: threadState && { executor: threadState.executorId, provider: threadState.providerId, model: threadState.model, permission: threadPermission } });
+    const ok = owner.providerId === 'opencode-go' && owner.model === MODEL && owner.permission === LEVEL.FULL
+      && fresh.executor?.id === 'claude' && fresh.provider?.id === 'opencode-go' && fresh.model === MODEL
+      && freshPermission === LEVEL.FULL
+      && threadState?.executorId === 'claude' && threadState?.providerId === 'opencode-go'
+      && threadState?.model === MODEL && threadPermission === LEVEL.FULL;
     process.exit(ok ? 0 : 1);
   }
 
@@ -330,25 +372,32 @@ console.log(`[smoke] state=${stateFile} (copy of the real state file)`);
   check('B/C new process: fresh scope + new Work thread + real Agent run use the owner defaults',
     res.status === 0, json ? JSON.stringify(json) : (res.stderr || '').trim().split('\n').at(-1));
 }
-// F. reset is refused while a Work task is active; the task is not killed.
+// F. initialization and factory reset are refused while a Work task is active.
 {
-  const res = runPhase('reset-refused');
+  const res = runPhase('init-refused');
   const json = lastJson(res.stdout);
-  check('F active Work: initialization refused, task alive, settings unchanged',
+  check('F active Work: 初始化设置 + 恢复出厂设置 refused, task alive, settings unchanged',
     res.status === 0, json ? JSON.stringify(json) : (res.stderr || '').trim().split('\n').at(-1));
 }
-// D/E. confirmation gate, cancel, confirm, data preservation.
+// D. the separate factory reset: confirmation gate, cancel, confirm.
 {
-  const res = runPhase('reset');
+  const res = runPhase('factory-reset');
   const json = lastJson(res.stdout);
-  check('D 初始化设置: confirmation required, cancel is a no-op, confirm restores product defaults',
+  check('D ⚠️ 恢复出厂设置: confirmation required, cancel is a no-op, confirm restores product defaults',
     res.status === 0, json ? JSON.stringify({ confirmShown: json.confirmShown, owner: json.owner }) : (res.stderr || '').trim().split('\n').at(-1));
 }
-// D. the reset state persists across another restart and new scopes inherit it.
+// A/B. 初始化设置 persists the effective config and syncs the current scope.
 {
-  const res = runPhase('reset-restart');
+  const res = runPhase('init-save');
   const json = lastJson(res.stdout);
-  check('D reset persists across restart and new Work thread inherits the reset defaults',
+  check('A/B ♻️ 初始化设置: saves durable owner defaults and syncs the current scope (no reset)',
+    res.status === 0, json ? JSON.stringify({ saved: json.saved, synced: json.synced, owner: json.owner }) : (res.stderr || '').trim().split('\n').at(-1));
+}
+// C. the saved config persists across a restart and new scopes/threads inherit it.
+{
+  const res = runPhase('init-restart');
+  const json = lastJson(res.stdout);
+  check('C initialization persists across restart and new Work thread inherits route/permission',
     res.status === 0, json ? JSON.stringify(json.fresh) : (res.stderr || '').trim().split('\n').at(-1));
 }
 // E. data preservation: sandbox credentials/providers/history byte-identical.

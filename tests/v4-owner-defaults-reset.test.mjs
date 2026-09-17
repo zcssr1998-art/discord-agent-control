@@ -42,8 +42,11 @@ function tmpDir(t) {
  * permission tier persists per channel and, when the owner chose it explicitly,
  * as the durable owner default.
  */
-function makePlane(stateFile, cwd, { hold = false, threadCapable = false, ownerDefaults = null } = {}) {
-  const fake = new FakeDiscord({ threadCapable });
+function makePlane(stateFile, cwd, {
+  hold = false, threadCapable = false, ownerDefaults = null, chatRuntime = null,
+  ackFailure = null, compatible = () => true,
+} = {}) {
+  const fake = new FakeDiscord({ threadCapable, ackFailure });
   const state = new StateStore(stateFile);
   if (ownerDefaults) state.setOwnerDefaults(ownerDefaults);
   const launched = [];
@@ -76,7 +79,7 @@ function makePlane(stateFile, cwd, { hold = false, threadCapable = false, ownerD
     executorManager: {
       list: () => EXECUTORS,
       get: (id) => EXECUTORS.find((item) => item.id === id) || null,
-      compatible: () => true,
+      compatible,
       compatibleExecutors: () => EXECUTORS,
       resolveTransport: () => 'openai-chat',
       adapterLabel: () => null,
@@ -96,7 +99,7 @@ function makePlane(stateFile, cwd, { hold = false, threadCapable = false, ownerD
       },
     },
     modelManager: { list: async () => ({ models: PROVIDERS[0].models }), select: async () => {} },
-    chatRuntime: { send: async () => ({ text: 'x' }), health: { list: () => [], reset: () => {} } },
+    chatRuntime: chatRuntime ?? { send: async () => ({ text: 'x' }), health: { list: () => [], reset: () => {} } },
     logger: new RunLogger(path.join(path.dirname(stateFile), 'logs')),
     backendState: { backend: { label: 'OpenCode Go', model: MODEL }, allowPaidFallback: false },
     client: fake.client,
@@ -263,22 +266,27 @@ test('factory reset restores canonical settings and preserves user data', (t) =>
   assert.equal(fs.readFileSync(dbFile, 'utf8'), 'sqlite-bytes');
 });
 
-test('the reset button requires confirmation; cancel changes nothing', async (t) => {
+test('恢复出厂设置 requires confirmation; cancel changes nothing, confirm restores product built-ins', async (t) => {
   const dir = tmpDir(t);
   const ws = path.join(dir, 'ws');
   fs.mkdirSync(ws, { recursive: true });
   const stateFile = path.join(dir, 'state.json');
   const { fake, plane, state } = makePlane(stateFile, ws, {
-    ownerDefaults: { executorId: 'claude', providerId: 'opencode-go', model: MODEL, permission: LEVEL.FULL },
+    ownerDefaults: {
+      executorId: 'claude', providerId: 'opencode-go', model: MODEL,
+      chatProviderId: 'opencode-go', chatModel: OTHER, permission: LEVEL.FULL,
+    },
   });
   await plane.start();
 
   await fake.sendAsUser({ content: '!settings' });
-  assert.ok(fake.messages.at(-1).buttonIds.includes('set:reset'), 'the Settings screen exposes 初始化设置');
+  const buttons = fake.messages.at(-1).buttonIds;
+  assert.ok(buttons.includes('set:init'), 'the Settings screen exposes 初始化设置');
+  assert.ok(buttons.includes('set:reset'), '恢复出厂设置 is a separate advanced button');
 
   await fake.clickButton('set:reset');
-  assert.match(fake.messages.at(-1).content, /初始化设置/);
-  assert.match(fake.messages.at(-1).content, /确认初始化/);
+  assert.match(fake.messages.at(-1).content, /恢复出厂设置/);
+  assert.match(fake.messages.at(-1).content, /确认恢复出厂/);
   // Showing the confirmation must not mutate anything.
   assert.equal(state.getOwnerDefaults().providerId, 'opencode-go');
   assert.equal(state.getOwnerDefaults().permission, LEVEL.FULL);
@@ -287,7 +295,7 @@ test('the reset button requires confirmation; cancel changes nothing', async (t)
   assert.equal(state.getOwnerDefaults().providerId, 'opencode-go', 'cancel leaves settings unchanged');
   assert.equal(state.getOwnerDefaults().permission, LEVEL.FULL);
 
-  // A second visit plus explicit confirmation performs the reset.
+  // A second visit plus explicit confirmation performs the factory reset.
   await fake.sendAsUser({ content: '!settings' });
   await fake.clickButton('set:reset');
   await fake.clickButton('setreset:confirm');
@@ -295,6 +303,7 @@ test('the reset button requires confirmation; cancel changes nothing', async (t)
   assert.equal(owner.providerId, 'workbuddy-free');
   assert.equal(owner.executorId, 'workbuddy');
   assert.equal(owner.model, null);
+  assert.equal(owner.chatProviderId, 'auto');
   assert.equal(owner.permission, LEVEL.STANDARD);
   assert.equal(plane.permissionManager.getLevel(fake.channelId), LEVEL.STANDARD);
   assert.equal(plane.sessionManager.get(fake.channelId).providerId, 'workbuddy-free');
@@ -305,7 +314,94 @@ test('the reset button requires confirmation; cancel changes nothing', async (t)
   assert.equal(reloaded.permission, LEVEL.STANDARD);
 });
 
-test('initialization is refused while a Work task is active and never kills it', async (t) => {
+test('♻️ 初始化设置 saves the effective Chat/Work/permission/workspace as owner defaults (never a reset)', async (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const { fake, plane, state } = makePlane(stateFile, ws, { threadCapable: true });
+  await plane.start();
+
+  // Configure a non-product-default route in this scope.
+  await fake.sendAsUser({ content: '!executor claude' });
+  await fake.sendAsUser({ content: '!provider opencode-go' });
+  await fake.sendAsUser({ content: '!model ' + MODEL });
+  await fake.sendAsUser({ content: '!chatmodel opencode-go ' + OTHER });
+  await fake.sendAsUser({ content: '!perm relaxed' });
+
+  // Prove the initialization action itself writes the profile: drop the durable
+  // profile the explicit commands already wrote, keeping only the scope overrides.
+  delete state.data.preferences.ownerDefaults;
+  state.save();
+  assert.equal(state.getOwnerDefaults().providerId, 'workbuddy-free', 'precondition: no durable owner profile');
+
+  await fake.sendAsUser({ content: '!settings' });
+  await fake.clickButton('set:init');
+  assert.match(fake.messages.at(-1).content, /初始化设置/);
+  assert.match(fake.messages.at(-1).content, /不是.*恢复出厂设置/);
+  assert.equal(state.getOwnerDefaults().providerId, 'workbuddy-free', 'opening 初始化设置 must not reset');
+  await fake.clickButton('init:save');
+
+  const owner = state.getOwnerDefaults();
+  assert.equal(owner.executorId, 'claude');
+  assert.equal(owner.providerId, 'opencode-go');
+  assert.equal(owner.model, MODEL);
+  assert.equal(owner.chatProviderId, 'opencode-go');
+  assert.equal(owner.chatModel, OTHER);
+  assert.equal(owner.permission, LEVEL.RELAXED);
+  assert.equal(owner.workspace, ws);
+
+  // The current scope is synced to exactly what was saved (no stale override).
+  const scope = plane.sessionManager.get(fake.channelId);
+  assert.equal(scope.executorId, 'claude');
+  assert.equal(scope.providerId, 'opencode-go');
+  assert.equal(scope.model, MODEL);
+  assert.equal(scope.chatModel, OTHER);
+  assert.equal(plane.permissionManager.getLevel(fake.channelId), LEVEL.RELAXED);
+
+  // Durable and inheritable by a brand-new process.
+  const reloaded = new StateStore(stateFile).getOwnerDefaults();
+  assert.equal(reloaded.providerId, 'opencode-go');
+  assert.equal(reloaded.model, MODEL);
+  assert.equal(reloaded.permission, LEVEL.RELAXED);
+
+  // A new Work thread created after the save inherits the saved route.
+  fake.addChannel({ id: 'parent-init', threadCapable: true });
+  state.patchChannel('parent-init', { mode: 'chat', cwd: ws }, ws);
+  await fake.sendAsUser({ content: 'work inherited safe task', channelId: 'parent-init', guildId: 'guild-init' });
+  const thread = fake.threadFor('parent-init');
+  assert.ok(thread, 'a Work thread must be created');
+  const threadState = state.getChannel(thread.id, ws);
+  assert.equal(threadState.executorId, 'claude');
+  assert.equal(threadState.providerId, 'opencode-go');
+  assert.equal(threadState.model, MODEL);
+  assert.equal(plane.permissionManager.getLevel(thread.id), LEVEL.RELAXED);
+});
+
+test('初始化设置 refuses an incomplete/incompatible route instead of writing half a profile', async (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const { fake, plane, state } = makePlane(stateFile, ws, {
+    compatible: (executorId, protocol) => !(executorId === 'workbuddy' && protocol === 'opencode-go'),
+  });
+  await plane.start();
+  // Incompatible scope: workbuddy executor + opencode-go provider, no model.
+  state.patchChannel(fake.channelId, { executorId: 'workbuddy', providerId: 'opencode-go', model: null }, ws);
+
+  await fake.sendAsUser({ content: '!settings' });
+  await fake.clickButton('set:init');
+  await fake.clickButton('init:save');
+
+  assert.match(fake.messages.at(-1).content, /默认配置未保存/);
+  const owner = state.getOwnerDefaults();
+  assert.equal(owner.providerId, 'workbuddy-free', 'no partial profile is written');
+  assert.equal(owner.executorId, 'workbuddy');
+  assert.equal(owner.model, null);
+});
+
+test('初始化设置 and 恢复出厂设置 are refused while a Work task is active and never kill it', async (t) => {
   const dir = tmpDir(t);
   const ws = path.join(dir, 'ws');
   fs.mkdirSync(ws, { recursive: true });
@@ -321,10 +417,15 @@ test('initialization is refused while a Work task is active and never kills it',
   assert.equal(plane.scheduler.stateFor(fake.channelId).state, 'running');
 
   await fake.sendAsUser({ content: '!settings' });
+  await fake.clickButton('set:init');
+  await fake.clickButton('init:save');
+  assert.ok(fake.texts().some((text) => /初始化设置被拒绝/.test(text)), 'the init save must be refused cleanly');
+
+  await fake.sendAsUser({ content: '!settings' });
   await fake.clickButton('set:reset');
   await fake.clickButton('setreset:confirm');
+  assert.ok(fake.texts().some((text) => /恢复出厂设置被拒绝/.test(text)), 'the factory reset must be refused cleanly');
 
-  assert.ok(fake.texts().some((text) => /初始化被拒绝/.test(text)), 'the reset must be refused cleanly');
   assert.equal(state.getOwnerDefaults().providerId, 'opencode-go', 'settings remain unchanged');
   assert.equal(state.getOwnerDefaults().permission, LEVEL.FULL);
   assert.equal(plane.scheduler.stateFor(fake.channelId).state, 'running', 'the running task is not killed');
@@ -377,4 +478,127 @@ test('a reloaded bridge uses the persisted owner defaults for a new scope', asyn
   assert.equal(effective.executor?.id, 'claude');
   assert.equal(effective.provider?.id, 'opencode-go');
   assert.equal(effective.model, MODEL);
+});
+
+test('control commands and reset never call Chat when the pinned Chat provider is unreachable', async (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const chatCalls = [];
+  const unreachable = {
+    send: async (payload) => {
+      chatCalls.push(payload);
+      throw Object.assign(new Error('chat provider unreachable'), { code: 'UNREACHABLE' });
+    },
+    health: { list: () => [], reset: () => {} },
+  };
+  const { fake, plane, state } = makePlane(stateFile, ws, {
+    chatRuntime: unreachable,
+    ownerDefaults: {
+      executorId: 'claude', providerId: 'opencode-go', model: MODEL,
+      chatProviderId: 'opencode-go', chatModel: OTHER,
+    },
+  });
+  await plane.start();
+  // The scope itself carries the same manual Chat pin.
+  plane.sessionManager.setChatSelection(fake.channelId, { providerId: 'opencode-go', model: OTHER });
+
+  // Native control commands (the exact live failure) must work without a model.
+  const status = await fake.command('status');
+  assert.ok(status.interaction.deferred || status.replied, '/status must ACK and reply');
+  const settings = await fake.command('settings');
+  assert.ok(settings.interaction.deferred || settings.replied, '/settings must ACK and reply');
+  assert.ok(fake.texts().some((text) => /Jarvis Settings/.test(text)), '/settings opens even with an unhealthy Chat pin');
+
+  // The deterministic initialization flow is local and still succeeds.
+  await fake.sendAsUser({ content: '!init-settings' });
+  assert.match(fake.messages.at(-1).content, /初始化设置/);
+  await fake.sendAsUser({ content: '!init-settings save' });
+  assert.equal(state.getOwnerDefaults().providerId, 'opencode-go', 'the init save persisted the Work route');
+
+  // The factory reset is a separate action and is local too.
+  await fake.sendAsUser({ content: '!settings' });
+  await fake.clickButton('set:reset');
+  await fake.clickButton('setreset:confirm');
+
+  assert.deepEqual(chatCalls, [], 'no control-plane action may invoke the Chat runtime');
+  const owner = state.getOwnerDefaults();
+  assert.equal(owner.providerId, 'workbuddy-free');
+  assert.equal(owner.chatProviderId, 'auto');
+  assert.equal(owner.chatModel, null);
+  assert.equal(state.getChannel(fake.channelId, ws).chatProviderId, 'auto', 'the manual Chat pin is cleared');
+  assert.equal(state.getChannel(fake.channelId, ws).chatModel, null);
+});
+
+test('a failed control-interaction ACK produces an owner-visible recovery message, not a silent timeout', async (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const { fake, plane } = makePlane(stateFile, ws, { ackFailure: { method: 'deferReply' } });
+  await plane.start();
+
+  const result = await fake.command('status');
+  assert.equal(result.deferred, false, 'the rejected defer must not be reported as acknowledged');
+  await tick(30);
+
+  const notice = fake.texts().find((text) => /未能在 Discord 时限内确认/.test(text));
+  assert.ok(notice, 'the owner must see why the command did nothing');
+  assert.match(notice, /!reset-settings/, 'the notice must name the deterministic recovery alias');
+});
+
+test('!reset-settings is a deterministic local alias with explicit confirmation', async (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const chatCalls = [];
+  const { fake, plane, state } = makePlane(stateFile, ws, {
+    chatRuntime: {
+      send: async (payload) => { chatCalls.push(payload); throw new Error('unreachable'); },
+      health: { list: () => [], reset: () => {} },
+    },
+    ownerDefaults: {
+      executorId: 'claude', providerId: 'opencode-go', model: MODEL,
+      chatProviderId: 'opencode-go', chatModel: 'grok-4.6', permission: LEVEL.FULL,
+    },
+  });
+  await plane.start();
+
+  await fake.sendAsUser({ content: '!reset-settings' });
+  assert.match(fake.messages.at(-1).content, /恢复出厂设置/);
+  assert.equal(state.getOwnerDefaults().providerId, 'opencode-go', 'showing confirmation changes nothing');
+
+  await fake.sendAsUser({ content: '!reset-settings cancel' });
+  assert.equal(state.getOwnerDefaults().providerId, 'opencode-go', 'cancel changes nothing');
+
+  await fake.sendAsUser({ content: '!reset-settings confirm' });
+  assert.equal(state.getOwnerDefaults().providerId, 'workbuddy-free');
+  assert.equal(state.getOwnerDefaults().chatProviderId, 'auto');
+  assert.equal(state.getOwnerDefaults().permission, LEVEL.STANDARD);
+  assert.deepEqual(chatCalls, [], 'the alias never calls the model');
+
+  const reloaded = new StateStore(stateFile).getOwnerDefaults();
+  assert.equal(reloaded.providerId, 'workbuddy-free', 'the reset is durable');
+});
+
+test('an incompatible executor switch never becomes the durable owner default', async (t) => {
+  const dir = tmpDir(t);
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws, { recursive: true });
+  const stateFile = path.join(dir, 'state.json');
+  const { fake, plane, state } = makePlane(stateFile, ws, {
+    compatible: (executorId, protocol) => !(executorId === 'workbuddy' && protocol === 'opencode-go'),
+    ownerDefaults: { executorId: 'claude', providerId: 'opencode-go', model: MODEL },
+  });
+  await plane.start();
+
+  await fake.sendAsUser({ content: '!executor workbuddy' });
+  assert.match(fake.messages.at(-1).content, /不支持当前 Provider/);
+  assert.equal(state.getOwnerDefaults().executorId, 'claude', 'the invalid pair must not be persisted');
+  assert.equal(state.getOwnerDefaults().providerId, 'opencode-go');
+  const fresh = state.getChannel('never-configured', ws);
+  assert.equal(fresh.executorId, 'claude');
+  assert.equal(fresh.providerId, 'opencode-go');
 });
