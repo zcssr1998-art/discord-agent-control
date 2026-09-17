@@ -132,7 +132,7 @@ test('a task produces one low-noise status message, not a log flood', async () =
   assert.match(status.content, /🧪 测试：通过 12/);
 });
 
-test('a second task is refused while one is running', async () => {
+test('a second message while one is running is queued as a follow-up, not run concurrently (P2.1)', async () => {
   const { fake, plane, runner } = makePlane({
     sendImpl: async () => {
       runner.busy = true;
@@ -144,9 +144,15 @@ test('a second task is refused while one is running', async () => {
   const first = fake.sendAsUser({ content: 'task one' });
   await tick(10);
   await fake.sendAsUser({ content: 'task two' });
-  await first;
 
-  assert.ok(fake.texts().some((t) => /已有任务正在运行/.test(t)), 'the second task must be refused');
+  // P2.1: an active Work channel queues the follow-up instead of starting a
+  // second concurrent Agent; the follow-up runs after the first turn releases.
+  assert.ok(fake.texts().some((t) => /已追加/.test(t)), 'the second message must be acknowledged as a follow-up');
+  assert.deepEqual(runner.sent, ['task one'], 'no concurrent Agent turn may start while one is running');
+
+  await first;
+  await tick(30);
+  assert.deepEqual(runner.sent, ['task one', 'task two'], 'the follow-up drains after the first turn');
 });
 
 test('an approval request appears in the channel and the button really resolves it', async () => {

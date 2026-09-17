@@ -23,9 +23,11 @@ import { ProviderManager } from './provider-manager.mjs';
 import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
 import { ChatRuntime } from './chat-runtime.mjs';
+import { ChatHistoryStore } from './chat-history.mjs';
 import { ProviderHealthRegistry } from './provider-health.mjs';
 import { WorkspaceScheduler } from './workspace-scheduler.mjs';
 import { loadLiteLLMConfig, checkLiteLLMHealth, readOpenCodeGoKey } from './litellm.mjs';
+import { cleanupInbox } from './attachments.mjs';
 import { redactSecrets } from './secrets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -198,13 +200,40 @@ async function main() {
   // CredentialStore as the Agent path so there is a single provider database and
   // a single secret store. It never starts an Agent, a workspace scan or a hook.
   const chatHealth = new ProviderHealthRegistry();
+  // Vision route for AUTO image turns: an explicit env pin wins, otherwise a
+  // LiteLLM `vision` alias is used when the gateway exposes one.
+  let visionRoute = null;
+  if (config.chatVisionProviderId) {
+    visionRoute = { providerId: config.chatVisionProviderId, model: config.chatVisionModel || null };
+  } else {
+    const litellmProfile = providers.get('litellm');
+    if (litellmProfile?.models?.some((model) => model.id === 'vision')) {
+      visionRoute = { providerId: 'litellm', model: 'vision' };
+    } else {
+      // No explicit pin and no LiteLLM vision alias: use a credentialed
+      // provider's cached vision model if one is already known. This is a
+      // detection, not a hardcoded model id.
+      const provider = providers.list().find((profile) => profile.protocol !== 'workbuddy'
+        && providers.hasCredential(profile)
+        && profile.models?.some((model) => /vision/i.test(model.id)));
+      if (provider) visionRoute = { providerId: provider.id, model: provider.models.find((model) => /vision/i.test(model.id)).id };
+    }
+  }
   const chatRuntime = new ChatRuntime({
     providerManager: providers,
     credentialStore: credentials,
     health: chatHealth,
     timeoutMs: config.chatTimeoutMs,
     allowMeteredFallback: config.allowMeteredChatFallback,
+    visionRoute,
   });
+  if (visionRoute) console.log(`[chat] vision route provider=${visionRoute.providerId} model=${visionRoute.model || 'auto'}`);
+
+  // Bounded, channel-scoped Chat history plus a git-ignored attachment inbox.
+  const chatHistory = new ChatHistoryStore({ file: path.join(root, 'data', 'chat-history.json') });
+  const attachmentInbox = path.join(root, 'data', 'inbox');
+  const reaped = cleanupInbox(attachmentInbox, { ttlMs: 48 * 60 * 60 * 1000 });
+  if (reaped.length) console.log(`[attachments] cleaned ${reaped.length} expired inbox file(s)`);
 
   // Preflight: prove the free backend answers before accepting any work.
   console.log(`[backend] probing executor "${config.claudeCommand}" ...`);
@@ -274,8 +303,10 @@ async function main() {
     modelManager: models,
     executorManager: executors,
     chatRuntime,
+    chatHistory,
     gatewayHealth,
     workspaceScheduler,
+    attachmentInbox,
     extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });

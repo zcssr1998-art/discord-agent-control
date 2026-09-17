@@ -56,6 +56,48 @@ function textFromResponses(data) {
   return parts.join('').trim();
 }
 
+/**
+ * Message content is transport-neutral in Jarvis:
+ *   - a plain string, or
+ *   - an array of `{ type: 'text', text }` / `{ type: 'image', mediaType, data }`.
+ * Each transport maps that to its own multimodal shape. This keeps Chat history,
+ * OpenAI Chat Completions, OpenAI Responses, Anthropic Messages and LiteLLM on
+ * one representation instead of branching at every call site.
+ */
+export function hasImageContent(messages) {
+  return (messages ?? []).some((message) => Array.isArray(message?.content)
+    && message.content.some((part) => part?.type === 'image'));
+}
+
+function toOpenAIContent(content) {
+  if (typeof content === 'string') return content;
+  return (content ?? []).map((part) => (part?.type === 'image'
+    ? { type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } }
+    : { type: 'text', text: String(part?.text ?? '') }));
+}
+
+function toResponsesContent(content) {
+  if (typeof content === 'string') return content;
+  return (content ?? []).map((part) => (part?.type === 'image'
+    ? { type: 'input_image', image_url: `data:${part.mediaType};base64,${part.data}` }
+    : { type: 'input_text', text: String(part?.text ?? '') }));
+}
+
+function toAnthropicContent(content) {
+  if (typeof content === 'string') return content;
+  return (content ?? []).map((part) => (part?.type === 'image'
+    ? { type: 'image', source: { type: 'base64', media_type: part.mediaType, data: part.data } }
+    : { type: 'text', text: String(part?.text ?? '') }));
+}
+
+function hasContent(messages) {
+  if (!messages.length) return false;
+  return messages.some((message) => {
+    if (typeof message.content === 'string') return message.content.trim().length > 0;
+    return Array.isArray(message.content) && message.content.length > 0;
+  });
+}
+
 function httpError(response, data) {
   const status = Number(response?.status || 0);
   const code = status === 401 || status === 403 ? 'INVALID_CREDENTIAL'
@@ -110,6 +152,7 @@ export class ChatRuntime {
     timeoutMs = 25000,
     preferredModelPatterns = DEFAULT_MODEL_PATTERNS,
     allowMeteredFallback = false,
+    visionRoute = null,
   }) {
     this.providers = providerManager;
     this.credentials = credentialStore;
@@ -118,13 +161,16 @@ export class ChatRuntime {
     this.timeoutMs = timeoutMs;
     this.preferredModelPatterns = [...preferredModelPatterns];
     this.allowMeteredFallback = allowMeteredFallback;
+    // A configured image-capable route (e.g. a LiteLLM `vision` alias). AUTO
+    // image turns must never be sent to a known text-only alias blindly.
+    this.visionRoute = visionRoute;
   }
 
-  async candidates({ providerId = 'auto', model = null } = {}) {
-    return (await this.#resolveCandidates({ providerId, model })).candidates;
+  async candidates({ providerId = 'auto', model = null, image = false } = {}) {
+    return (await this.#resolveCandidates({ providerId, model, image })).candidates;
   }
 
-  async #resolveCandidates({ providerId = 'auto', model = null }) {
+  async #resolveCandidates({ providerId = 'auto', model = null, image = false }) {
     const profiles = providerId && providerId !== 'auto'
       ? [this.providers.get(providerId)].filter(Boolean)
       : this.providers.list()
@@ -159,20 +205,38 @@ export class ChatRuntime {
         else skipped.push({ providerId: profile.id, model: item.id, reason: 'cooldown', rank: modelOnlyRank(profile, item, this.preferredModelPatterns) });
       }
     }
+
+    // An image turn must not be sent to a text-only AUTO candidate. When a
+    // vision route is configured, AUTO narrows to it; otherwise AUTO refuses
+    // rather than silently dropping the image.
+    if (image && providerId === 'auto') {
+      const route = this.visionRoute;
+      const vision = route
+        ? output.filter((candidate) => candidate.profile.id === route.providerId
+          && (!route.model || candidate.model.id === route.model))
+        : [];
+      if (!vision.length) {
+        throw Object.assign(new Error('no image-capable chat route is configured'), { code: 'NO_VISION_ROUTE' });
+      }
+      return { candidates: vision, skipped };
+    }
+
     return { candidates: output, skipped };
   }
 
-  async send({ prompt, providerId = 'auto', model = null, system = null } = {}) {
-    const text = String(prompt ?? '').trim();
-    if (!text) throw Object.assign(new Error('chat prompt is empty'), { code: 'EMPTY_PROMPT' });
-    const { candidates, skipped } = await this.#resolveCandidates({ providerId, model });
+  async send({ prompt = null, messages = null, providerId = 'auto', model = null, system = null } = {}) {
+    const history = Array.isArray(messages) && messages.length
+      ? messages
+      : (String(prompt ?? '').trim() ? [{ role: 'user', content: String(prompt).trim() }] : []);
+    if (!hasContent(history)) throw Object.assign(new Error('chat prompt is empty'), { code: 'EMPTY_PROMPT' });
+    const { candidates, skipped } = await this.#resolveCandidates({ providerId, model, image: hasImageContent(history) });
     if (!candidates.length) throw Object.assign(new Error('no healthy chat provider/model is available'), { code: 'NO_CHAT_PROVIDER' });
 
     const attempts = [];
     for (const candidate of candidates) {
       const startedAt = Date.now();
       try {
-        const result = await this.#request({ ...candidate, prompt: text, system });
+        const result = await this.#request({ ...candidate, messages: history, system });
         this.health.noteSuccess(candidate.profile.id, candidate.model.id);
         // A reply is a fallback when a failed attempt happened in this turn OR
         // when a more-preferred route was skipped (unreachable gateway or its
@@ -205,7 +269,7 @@ export class ChatRuntime {
     throw Object.assign(new Error('all chat providers failed'), { code: 'ALL_CHAT_PROVIDERS_FAILED', attempts });
   }
 
-  async #request({ profile, model, prompt, system }) {
+  async #request({ profile, model, messages, system }) {
     const secret = profile.credentialRef ? this.credentials.get(profile.credentialRef) : null;
     if (!secret) throw Object.assign(new Error('credential missing'), { code: 'INVALID_CREDENTIAL' });
 
@@ -235,14 +299,20 @@ export class ChatRuntime {
         model: model.id,
         messages: [
           ...(system ? [{ role: 'system', content: String(system) }] : []),
-          { role: 'user', content: prompt },
+          ...messages.map((message) => ({ role: message.role, content: toOpenAIContent(message.content) })),
         ],
         stream: false,
       };
       parse = textFromOpenAIChat;
     } else if (transport === TRANSPORT.OPENAI_RESPONSES) {
       url = endpoint(profile.baseUrl, '/v1/responses');
-      body = { model: model.id, input: system ? `${system}\n\n${prompt}` : prompt };
+      body = {
+        model: model.id,
+        input: [
+          ...(system ? [{ role: 'system', content: String(system) }] : []),
+          ...messages.map((message) => ({ role: message.role, content: toResponsesContent(message.content) })),
+        ],
+      };
       parse = textFromResponses;
     } else {
       url = endpoint(profile.baseUrl, '/v1/messages');
@@ -250,7 +320,7 @@ export class ChatRuntime {
         model: model.id,
         max_tokens: 4096,
         ...(system ? { system: String(system) } : {}),
-        messages: [{ role: 'user', content: prompt }],
+        messages: messages.map((message) => ({ role: message.role, content: toAnthropicContent(message.content) })),
       };
       parse = textFromAnthropic;
     }

@@ -11,6 +11,7 @@
     "smoke:local": "node scripts/local-e2e.mjs",
     "smoke:discord": "node scripts/discord-e2e.mjs",
     "smoke:p1": "node scripts/p1-e2e.mjs",
+    "smoke:p2": "node scripts/p2-e2e.mjs",
     "verify:hook": "node scripts/verify-global-hook.mjs",
     "doctor:discord": "node scripts/discord-doctor.mjs",
     "verify:workbuddy": "node scripts/verify-workbuddy.mjs",
