@@ -9,6 +9,7 @@ import { StateStore } from '../src/state.mjs';
 import { ApprovalManager } from '../src/approval-manager.mjs';
 import { PermissionManager } from '../src/permission-manager.mjs';
 import { buildCommandPayloads } from '../src/commands.mjs';
+import { FakeDiscord } from './helpers/fake-discord.mjs';
 
 function makePlane(application) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-p226-schema-'));
@@ -95,3 +96,37 @@ test('runtimeActivity reports busy reasons and safe idle', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('/update, /status and /doctor render live updater state without a model call', async () => {
+  const fake = new FakeDiscord();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-p226-ui-'));
+  const updater = {
+    statusSnapshot: () => ({
+      status: 'UP_TO_DATE', remote: 'origin', branch: 'main', relation: 'up_to_date',
+      localSha: 'a'.repeat(40), remoteSha: 'a'.repeat(40), paused: false,
+    }),
+    describe: () => 'Status: UP_TO_DATE\nSource: origin/main',
+    pause: () => {}, resume: async () => ({}), refresh: async () => ({}), logger: { warn: () => {} },
+  };
+  const plane = new DiscordControlPlane({
+    config: { ownerId: fake.ownerId, discordToken: 'fake', defaultCwd: dir, claudeCommand: 'claude', notifyOnStart: false, autoRegisterCommands: false, maxWorkFollowUps: 0 },
+    state: new StateStore(path.join(dir, 'state.json')),
+    approvalManager: new ApprovalManager({ timeoutMs: 0 }),
+    permissionManager: new PermissionManager(),
+    client: fake.client,
+    updater,
+    autoLogin: false,
+  });
+  try {
+    await plane.start();
+    const update = await fake.command('update', { options: { action: 'status' } });
+    assert.match(update.interaction.replied.content, /UP_TO_DATE/);
+    const status = await fake.command('status');
+    assert.match(status.interaction.replied.content, /Update: UP_TO_DATE/);
+    const doctor = await fake.command('doctor');
+    assert.match(doctor.interaction.replied.content, /Update: UP_TO_DATE/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
