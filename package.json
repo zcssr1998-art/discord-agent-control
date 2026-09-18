@@ -30,7 +30,12 @@
     "doctor:discord": "node scripts/discord-doctor.mjs",
     "verify:workbuddy": "node scripts/verify-workbuddy.mjs",
     "verify:opencode-go": "node scripts/opencode-go-e2e.mjs",
-    "verify:claude-opencode-chat": "node scripts/claude-opencode-chat-e2e.mjs"
+    "verify:claude-opencode-chat": "node scripts/claude-opencode-chat-e2e.mjs",
+    "openclaw:install": "powershell -ExecutionPolicy Bypass -File scripts/install-openclaw-native.ps1",
+    "openclaw:verify": "powershell -ExecutionPolicy Bypass -File scripts/verify-openclaw-native.ps1",
+    "openclaw:onboard": "powershell -ExecutionPolicy Bypass -File scripts/onboard-openclaw-native.ps1",
+    "openclaw:status": "openclaw gateway status --json",
+    "openclaw:dashboard": "openclaw dashboard"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
