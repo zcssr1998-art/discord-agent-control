@@ -1,6 +1,6 @@
 # Active task
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md`
+`docs/tasks/JARVIS_V4_P3_2_WORK_MODEL_LIBRARY_REGRESSION.md`
 
 ## Branch
 
@@ -8,8 +8,23 @@
 
 ## Status
 
-P3.0, P3.1 and P3 AI TechLead Shadow Mode are implemented and committed.
-**Awaiting owner acceptance — real Discord Work turn pending.**
+P3.2 Work model library regression hotfix implemented and committed: the Work
+model screen now discovers a runnable `executor + provider + model + transport`
+route instead of filtering providers by the previously selected executor.
+`npm test` 440/0, `npm run check` 141/0, `smoke:p2` 11/11, `smoke:p222` 25/25,
+`smoke:p3-techlead` 12/12. **Real Discord owner smoke pending.**
+
+P3 TechLead Shadow Mode remains implemented and committed (below) and is still
+awaiting owner acceptance on a real Discord Work turn.
+
+## P3.2 (implemented)
+
+`#workProviderList` uses `#providerRunnable` (any ready compatible executor).
+`#workRouteFor` / `#selectWorkRoute` persist executor + provider + model
+atomically: current executor is retained when compatible, otherwise the first
+ready compatible executor is chosen with a truthful confirmation, and models
+with no runnable executor are disabled. Covered by
+`tests/v4-p32-work-model-library.test.mjs`.
 
 ## P3 TechLead (implemented)
 

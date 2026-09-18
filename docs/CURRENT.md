@@ -6,7 +6,22 @@
 
 ## Current milestone
 
-Jarvis V4 P3 — **P3.0, P3.1 and P3 AI TechLead Shadow Mode implemented; awaiting owner acceptance**.
+Jarvis V4 P3 — **P3.0, P3.1, P3 AI TechLead Shadow Mode and P3.2 Work model
+library hotfix implemented; real Discord owner smoke pending**.
+
+### P3.2 — Work model library regression (done, pending real smoke)
+
+- `#workProviderList` no longer filters providers by the previously selected
+  executor: `#providerRunnable` asks whether any ready executor can run the
+  provider, so OpenCode Go is reachable from `workbuddy / workbuddy-free / null`.
+- `#workRouteFor` / `#selectWorkRoute` resolve and persist
+  `executor + provider + model + transport` atomically: keep the current
+  executor when compatible, otherwise pick the first ready compatible executor
+  with a truthful confirmation, and disable models that have no runnable
+  executor. `compatible()` is not weakened.
+- Verified: `npm test` 440/0; `npm run check` 141/0; `smoke:p2` 11/11;
+  `smoke:p222` 25/25; `smoke:p3-techlead` 12/12 (+ live `grok-4.6` reviewer).
+  Owner real Discord smoke: PENDING.
 
 ### P3.1 — Native Chat web search (done)
 

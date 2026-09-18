@@ -6,8 +6,26 @@
 
 ## Active task
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (P3.0 + P3.1 + P3 TechLead
-implemented and committed; **awaiting owner acceptance on real Discord**).
+`docs/tasks/JARVIS_V4_P3_2_WORK_MODEL_LIBRARY_REGRESSION.md` (P3.2 Work model
+library hotfix implemented and committed; **real Discord owner smoke pending**).
+
+## P3.2 outcome (done)
+
+- The Work model screen is a model-selection surface again: providers are shown
+  when *any* ready compatible executor can run them, not only the previously
+  selected executor, so OpenCode Go is reachable from
+  `workbuddy / workbuddy-free / null`.
+- Selecting a model resolves `executor + provider + model + transport`
+  atomically via `#workRouteFor` / `#selectWorkRoute`: current executor retained
+  when compatible, otherwise the first ready compatible executor is chosen with
+  a truthful `✅ Work 已切换：…` confirmation; no-runnable-executor models are
+  disabled and never persisted into broken state. `compatible()` is unchanged.
+- Tests: `tests/v4-p32-work-model-library.test.mjs` (8/8). Gates: `npm test`
+  440/0; `npm run check` 141/0; `smoke:p2` 11/11; `smoke:p222` 25/25;
+  `smoke:p3-techlead` 12/12 + live `grok-4.6` reviewer PASS.
+
+P3 TechLead Shadow Mode remains implemented and committed (below) and is still
+awaiting owner acceptance on a real Discord Work turn.
 
 ## P3 TechLead outcome (done)
 
