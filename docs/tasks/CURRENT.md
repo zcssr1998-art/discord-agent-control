@@ -1,18 +1,20 @@
 # Active task
 
-`docs/tasks/HUNYUAN3D_LOCAL_REPAIR_AND_SMOKE.md` — repair the existing local Hunyuan3D 2.1 installation under `D:\Hunyuan3d`, fill only the real dependency/runtime gaps, then prove the WebUI and a minimal real generation path work on the Windows machine.
+`docs/tasks/OPENCLAW_NATIVE_BOOTSTRAP.md` — install and verify the pinned native upstream
+OpenClaw release on the real Windows Jarvis machine, side-by-side with the preserved self-built
+Jarvis.
 
-## Known starting point
+## Current scope
 
-- target app tree: `D:\Hunyuan3d\repo21`
-- existing venv: `D:\Hunyuan3d\venv`
-- current observed launch blocker: `ModuleNotFoundError: No module named 'gradio'`
-- preserve existing model caches, local compatibility patches, and the working Torch/CUDA stack unless evidence proves they are the blocker
+Installation only. Do not onboard, migrate Discord, configure model providers, import memory, or
+add Jarvis-specific OpenClaw customizations.
 
-## Required closeout
+## Preserved baseline
 
-Do not report PASS from code inspection or package installation alone. The task requires a real WebUI startup, local reachability, one minimal real shape-generation smoke, explicit texture-path status, and a tested one-click launcher at `D:\Hunyuan3d\start_hunyuan3d_2_1.bat`.
+The self-built Jarvis before OpenClaw integration is frozen on
+`archive/self-built-jarvis-pre-openclaw-20260918`.
 
 ## Previous task
 
-`docs/tasks/CHAT_TIMEOUT_UNLIMITED_FIX.md` — implemented and verified before this task became active.
+`docs/tasks/HUNYUAN3D_LOCAL_REPAIR_AND_SMOKE.md` was the previous pointer. Do not resume it as
+part of this OpenClaw task.
