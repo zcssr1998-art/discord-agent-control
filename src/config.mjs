@@ -113,6 +113,23 @@ export function loadConfig() {
     // Optional explicit model for the OpenCode native web-search provider.
     webSearchModel: process.env.WEB_SEARCH_MODEL || null,
 
+    // --- AI TechLead Shadow Mode (P3) ------------------------------------
+    // Advisory sidecar for Work: deterministic monitoring first, reviewer model
+    // only on meaningful incidents. Missing/invalid config must not break Work.
+    techLeadEnabled: bool('TECHLEAD_ENABLED', true),
+    techLeadMode: (process.env.TECHLEAD_MODE || 'shadow').trim().toLowerCase(),
+    // Logical reviewer selection. Defaults to the OpenCode Go model library so
+    // no assumed remote model id is hardcoded; an explicit provider pin is only
+    // used when the owner configures it.
+    techLeadProvider: process.env.TECHLEAD_PROVIDER || null,
+    techLeadModel: process.env.TECHLEAD_MODEL || 'grok-4.6',
+    // Hard cap of reviewer calls per Work (startup + incidents).
+    techLeadMaxWakes: int('TECHLEAD_MAX_WAKES', 6),
+    // Conservative dedupe cooldown: do not re-bill the same unresolved incident.
+    techLeadCooldownMs: int('TECHLEAD_COOLDOWN_MS', 5 * 60 * 1000),
+    techLeadPacketMaxChars: int('TECHLEAD_PACKET_MAX_CHARS', 6000),
+    techLeadStagnationRepeats: int('TECHLEAD_STAGNATION_REPEATS', 3),
+
     // --- native Discord application commands (P2.1) -----------------------
     // Register the /-commands idempotently at startup (best effort).
     autoRegisterCommands: bool('DISCORD_AUTO_REGISTER_COMMANDS', true),

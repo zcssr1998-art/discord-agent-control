@@ -24,6 +24,8 @@ import { ModelManager } from './model-manager.mjs';
 import { ExecutorManager } from './executor-manager.mjs';
 import { ChatRuntime } from './chat-runtime.mjs';
 import { buildWebSearchService } from './web-search/web-search-service.mjs';
+import { TechLeadController } from './techlead/techlead-controller.mjs';
+import { TechLeadReviewer } from './techlead/techlead-reviewer.mjs';
 import { ChatHistoryStore } from './chat-history.mjs';
 import { ProviderHealthRegistry } from './provider-health.mjs';
 import { WorkspaceScheduler } from './workspace-scheduler.mjs';
@@ -332,6 +334,36 @@ async function main() {
     console.log('[chat-search] disabled by configuration');
   }
 
+  // P3 AI TechLead (Shadow Mode). Advisory sidecar for Work: deterministic
+  // monitoring first and a bounded reviewer call only for meaningful incidents.
+  // It reuses the existing ChatRuntime/provider/credential infrastructure. If
+  // the route is unavailable it degrades and Work proceeds normally.
+  const techLeadReviewer = new TechLeadReviewer({
+    chatRuntime,
+    providerManager: providers,
+    providerId: config.techLeadProvider,
+    model: config.techLeadModel,
+    enabled: config.techLeadEnabled && config.techLeadMode !== 'off',
+    maxPacketChars: config.techLeadPacketMaxChars,
+  });
+  const techLead = new TechLeadController({
+    enabled: config.techLeadEnabled,
+    mode: config.techLeadMode,
+    reviewer: techLeadReviewer,
+    store: {
+      load: () => state.getTechLeadState(),
+      save: (value) => state.setTechLeadState(value),
+    },
+    policy: {
+      maxWakes: config.techLeadMaxWakes,
+      cooldownMs: config.techLeadCooldownMs,
+      packetMaxChars: config.techLeadPacketMaxChars,
+      stagnationRepeats: config.techLeadStagnationRepeats,
+    },
+    logger: console,
+  });
+  console.log(`[techlead] enabled=${techLead.enabled} mode=${techLead.mode} reviewer=${techLeadReviewer.status}${techLeadReviewer.route ? ` provider=${techLeadReviewer.route.providerId} model=${techLeadReviewer.route.model} billing=${techLeadReviewer.route.billingType}` : ` reason=${techLeadReviewer.reason}`} maxWakes=${config.techLeadMaxWakes} cooldownMs=${config.techLeadCooldownMs}`);
+
   // Bounded, channel-scoped Chat history plus a git-ignored attachment inbox.
   const chatHistory = new ChatHistoryStore({ file: path.join(root, 'data', 'chat-history.json') });
   const attachmentInbox = path.join(root, 'data', 'inbox');
@@ -446,6 +478,7 @@ async function main() {
     runtimeIdentity: { guard, build: buildIdentity, describe: describeBuild(buildIdentity) },
     durableStore,
     updater,
+    techLead,
     extraEnv: { ...childEnv, DISCORD_BRIDGE_SECRET: secret },
     envUnset,
   });

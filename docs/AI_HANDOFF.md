@@ -6,8 +6,28 @@
 
 ## Active task
 
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (P3.0 + P3.1 complete and
-committed; **awaiting owner acceptance of P3.1 — do not start TechLead**).
+`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (P3.0 + P3.1 + P3 TechLead
+implemented and committed; **awaiting owner acceptance on real Discord**).
+
+## P3 TechLead outcome (done)
+
+- `src/techlead/`: normalized `work-event`, compact `work-contract`,
+  `progress-fingerprint`, `incident-detector` (STAGNATION / PLAN_THRASH /
+  SCOPE_DRIFT / RISKY_NEXT_ACTION / REPEATED_TEST_FAILURE /
+  COMPLETION_REVIEW_NEEDED), `incident-deduper`, bounded sanitized
+  `incident-packet`, `techlead-reviewer`, `techlead-controller`.
+- Event-driven zero-token standby; one startup review per Work; reviewer only on
+  a meaningful incident; dedupe + cooldown + hard wake budget (default 6).
+- Reviewer route resolved via discovery; live smoke used OpenCode Go `grok-4.6`
+  (Responses transport, SUBSCRIPTION). Missing route -> `DEGRADED`, Work
+  proceeds; no silent METERED fallback.
+- SHADOW: advisory-only. No insert/pause/stop/tool/file side effect; state
+  persisted in `data/state.json` (`preferences.techLead`).
+- Config: `TECHLEAD_*`. Status/doctor surface; one concise advisory per material
+  incident.
+- Verified: `npm test` 432/0; `npm run check` 140/0; `npm run smoke:p3-techlead`
+  12/12 deterministic + live reviewer PASS; `smoke:p2` 11/11; `smoke:p222`
+  25/25; `smoke:p224-lifecycle` 21/21. Owner Discord turn: PENDING.
 
 ## P3.1 outcome (done)
 

@@ -47,7 +47,7 @@ import {
   providerResultButtons, protocolButtons, settingsButtons, settingsBackRow, panelMainRows,
   panelBackRow, panelHelpRows, panelModelRows, workControlRows, providerModelRows, choiceRows, pagedChoiceRows,
   modelPageButtons, protocolLabel, transportLabel, billingLabel, sanitizeThreadName, workTitle,
-  SETTINGS_MODEL_LIMIT, DISCORD_LIMIT,
+  SETTINGS_MODEL_LIMIT, MODEL_PAGE_SIZE, DISCORD_LIMIT,
 } from './discord/renderers.mjs';
 
 /**
@@ -186,6 +186,7 @@ export class DiscordControlPlane {
     runtimeIdentity = null,
     durableStore = null,
     updater = null,
+    techLead = null,
     attachmentFetch = fetch,
     extraEnv = {},
     envUnset = [],
@@ -237,6 +238,12 @@ export class DiscordControlPlane {
     // P2.2.6 safe self-update. All updater access is read-only from the UI; the
     // updater itself owns the checkout/Supervisor restart lifecycle.
     this.updater = updater;
+    // P3 AI TechLead (Shadow). Advisory only: it observes Work signals and may
+    // suggest, but it can never insert/pause/stop or execute tools.
+    this.techLead = techLead;
+    if (this.techLead?.setAdvisoryHandler) {
+      this.techLead.setAdvisoryHandler((advisory) => this.#onTechLeadAdvisory(advisory));
+    }
     this.commandSchema = null;
     // Where downloaded Discord attachments land. Null disables attachments so a
     // bare test harness cannot accidentally write to the real data directory.
@@ -748,6 +755,7 @@ export class DiscordControlPlane {
     if (event.type === 'init') this.#noteBackend(channelId, event);
 
     const task = this.tasks.get(channelId);
+    this.#observeTechLead(channelId, event, task?.runId ?? null);
     if (!task) return;
     // Once a run is terminal its card must never be flipped back to RUNNING by a
     // late event from the dying process (terminal is monotonic).
@@ -782,6 +790,72 @@ export class DiscordControlPlane {
     console.log(`[backend] observed=${observed.label} model=${observed.model ?? 'unknown'} apiKeySource=${observed.apiKeySource ?? 'none'} -> ${verdict.ok ? 'OK' : 'REJECTED'}`);
     if (!verdict.ok) console.error(`[backend] ${verdict.reason}`);
     return verdict;
+  }
+
+  // ---- P3 AI TechLead (Shadow) -------------------------------------------
+  // The controller owns all TechLead logic; the control plane only feeds it
+  // Work lifecycle signals and renders its compact status. It is optional and
+  // fully fail-open: a missing/erroring TechLead never blocks Work.
+
+  /** Start observing one Work. At most one startup review; never blocks Work. */
+  #beginTechLead({ channelId, runId = null, prompt = '' }) {
+    if (!this.techLead?.enabled) return;
+    const chState = this.sessionManager.get(channelId);
+    const executor = this.executorManager?.get?.(chState.executorId) ?? null;
+    Promise.resolve()
+      .then(() => this.techLead.beginWork({ channelId, runId, prompt, executor }))
+      .catch((error) => console.warn(`[techlead] beginWork failed: ${redact(error?.message || error)}`));
+  }
+
+  /** Feed one runner event to TechLead without ever affecting Worker semantics. */
+  #observeTechLead(channelId, event, runId) {
+    if (!this.techLead?.enabled) return;
+    const proposedNextAction = event?.type === 'text' ? event.text : null;
+    Promise.resolve()
+      .then(() => this.techLead.observe({ event, channelId, runId, proposedNextAction }))
+      .catch((error) => console.warn(`[techlead] observe failed: ${redact(error?.message || error)}`));
+  }
+
+  /** Feed the terminal Work lifecycle signal, then settle TechLead for the Work. */
+  #endTechLead(channelId, runId, progressState) {
+    if (!this.techLead?.enabled) return;
+    const type = progressState === STATE.CANCELLED ? 'WORK_STOPPED'
+      : (progressState === STATE.DONE ? 'WORK_COMPLETED' : 'WORK_FAILED');
+    Promise.resolve()
+      .then(() => this.techLead.observe({ event: { type }, channelId, runId }))
+      .catch((error) => console.warn(`[techlead] endWork failed: ${redact(error?.message || error)}`));
+  }
+
+  /**
+   * One concise Shadow advisory. It updates/uses the Work context and never
+   * calls insert/pause/stop: TechLead output is advisory only in P3.
+   */
+  async #onTechLeadAdvisory(advisory) {
+    const text = [
+      `🛡️ TechLead Shadow: ${advisory.action}`,
+      advisory.reason ? `Reason: ${advisory.reason}` : null,
+      advisory.instruction ? `Suggested instruction: ${advisory.instruction}` : null,
+    ].filter(Boolean).join('\n');
+    try {
+      const chain = advisory.channelId ? this.workChains.get(advisory.channelId) : null;
+      let channel = chain?.channel ?? null;
+      if (!channel && advisory.channelId && this.client?.channels?.fetch) {
+        channel = await this.client.channels.fetch(advisory.channelId).catch(() => null);
+      }
+      if (channel?.send) {
+        await channel.send({ content: clip(text, 1200) });
+        console.log(`[techlead] advisory channel=${advisory.channelId} action=${advisory.action} incident=${advisory.incidentClass ?? '-'} automated=false`);
+        return;
+      }
+      console.warn(`[techlead] no channel to deliver the advisory (channel=${advisory.channelId ?? 'unknown'})`);
+    } catch (error) {
+      console.warn(`[techlead] advisory delivery failed: ${redact(error?.message || error)}`);
+    }
+  }
+
+  #techLeadStatusLine() {
+    try { return this.techLead?.statusText?.() ?? null; }
+    catch { return null; }
   }
 
   #statusLine(channelId, gateway = null) {
@@ -840,6 +914,8 @@ export class DiscordControlPlane {
     if (updateLine) lines.push(updateLine);
     const deliveryLine = this.#deliveryText();
     if (deliveryLine) lines.push(deliveryLine);
+    const techLeadLine = this.#techLeadStatusLine();
+    if (techLeadLine) lines.push(techLeadLine);
     return lines.length ? `${text}\n\n${lines.join('\n')}` : text;
   }
 
@@ -892,6 +968,13 @@ export class DiscordControlPlane {
       const providers = search.providers.map((provider) => `${provider.id}(${provider.billingType})`).join(', ') || '(none)';
       const cooling = search.cooldowns.length ? ` · cooldown=${search.cooldowns.map((item) => item.providerId).join(',')}` : '';
       lines.push(`🔎 Web search: mode=${this.webSearchMode} · ${providers}${cooling}`);
+    }
+
+    if (this.techLead?.statusSnapshot) {
+      const tl = this.techLead.statusSnapshot();
+      const metrics = tl.metrics ?? {};
+      lines.push(`🧭 TechLead: mode=${tl.mode} state=${tl.state} events=${tl.eventVisibility} provider=${tl.provider ?? '-'} model=${tl.model ?? '-'} wakes=${metrics.wake_budget_used ?? 0}/${tl.maxWakes} suppressed=${metrics.duplicate_incidents_suppressed ?? 0} calls=${(metrics.startup_review_calls ?? 0) + (metrics.incident_review_calls ?? 0)}`);
+      if (tl.lastAdvisory) lines.push(`   last advisory: ${tl.lastAdvisory.action} (${tl.lastAdvisory.incidentClass ?? 'startup'})`);
     }
 
     const executors = (this.executorManager?.list() ?? []);
@@ -2232,12 +2315,101 @@ export class DiscordControlPlane {
     return { content: header, components: [...paged.rows, panelBackRow()] };
   }
 
+  /**
+   * Whether ANY ready executor can run this provider. Deliberately not "the
+   * currently selected executor": the Work model screen must not become a dead
+   * end because of the executor that happened to be selected before the menu
+   * opened. `transport = null` asks the weakest question ("can any ready
+   * executor run any model of this provider?"); per-model compatibility is
+   * decided when a specific model is shown or selected.
+   */
+  #providerRunnable(provider, executorId) {
+    if (!this.executorManager) return true;
+    if (typeof this.executorManager.compatibleExecutors === 'function') {
+      const executors = this.executorManager.compatibleExecutors(provider.protocol, null) ?? [];
+      if (executors.length) return true;
+    }
+    return Boolean(executorId && this.executorManager.compatible(executorId, provider.protocol, null));
+  }
+
   #workProviderList(channelId) {
     const selection = this.sessionManager.get(channelId);
     return (this.providerManager?.list() ?? [])
       .filter((provider) => this.providerManager.hasCredential(provider))
-      .filter((provider) => !this.executorManager || this.executorManager.compatible(selection.executorId, provider.protocol, null))
+      .filter((provider) => this.#providerRunnable(provider, selection.executorId))
       .map((provider) => ({ id: provider.id, label: provider.displayName }));
+  }
+
+  /**
+   * Which ready executor can actually run this provider/model. Prefers the
+   * current executor when compatible; otherwise returns the first compatible
+   * ready executor in the ExecutorManager's deterministic list order, so the UI
+   * can switch executor + provider + model as one valid tuple instead of
+   * persisting an impossible combination. `compatible()` is never weakened.
+   */
+  #workRouteFor(provider, modelId, currentExecutorId = null) {
+    if (!provider) return { ok: false, transport: null, executor: null, reason: 'unknown-provider' };
+    if (!this.executorManager) {
+      return { ok: true, transport: null, executor: currentExecutorId ?? null, executorChanged: false, executorName: null };
+    }
+    const transport = provider.protocol === PROTOCOL.WORKBUDDY
+      ? null
+      : this.executorManager.resolveTransport(provider, modelId);
+    if (currentExecutorId && this.executorManager.compatible(currentExecutorId, provider.protocol, transport)) {
+      const current = this.executorManager.get(currentExecutorId);
+      return { ok: true, transport, executor: currentExecutorId, executorChanged: false, executorName: current?.displayName ?? currentExecutorId };
+    }
+    const candidates = (this.executorManager.compatibleExecutors?.(provider.protocol, transport) ?? [])
+      .filter((executor) => executor.available !== false && executor.adapterReady !== false);
+    if (candidates.length) {
+      const picked = candidates[0];
+      return {
+        ok: true,
+        transport,
+        executor: picked.id,
+        executorChanged: picked.id !== currentExecutorId,
+        executorName: picked.displayName ?? picked.id,
+      };
+    }
+    return { ok: false, transport, executor: null, executorChanged: false, reason: 'no-runnable-executor' };
+  }
+
+  /**
+   * Atomic Work route selection. Persists executor + provider + model together
+   * (or fails without persisting anything) so an intermediate impossible
+   * combination is never written. Reuses model validation, SessionManager
+   * lifecycle and ExecutorManager compatibility; no second config store.
+   */
+  async #selectWorkRoute(channelId, providerId, modelId = null) {
+    if (this.#busy(channelId)) return '⚠️ 当前任务正在执行。请等待任务完成或使用 `!stop`。';
+    const provider = this.providerManager?.get(providerId);
+    if (!provider) return '❌ 未知 Provider。';
+    if (!this.providerManager.hasCredential(provider)) return `❌ ${provider.displayName} 缺少 credential。`;
+    if (modelId) {
+      try { await this.modelManager.select(providerId, modelId); }
+      catch (error) { return providerErrorMessage(error); }
+    }
+    const selection = this.sessionManager.get(channelId);
+    const route = this.#workRouteFor(provider, modelId, selection.executorId);
+    if (!route.ok) {
+      const transport = route.transport ? `（${transportLabel(route.transport)}）` : '';
+      return `❌ 无法切换：${provider.displayName}${modelId ? ` / ${modelId}` : ''}${transport} 当前没有可运行的执行器。\n请在 \`/settings\` → 🛠️ 执行器 中安装/启用兼容执行器后重试。`;
+    }
+    const patch = { providerId, model: modelId };
+    if (route.executor) patch.executorId = route.executor;
+    await this.sessionManager.change(channelId, patch, 'work route changed');
+    if (modelId) {
+      this.sessionManager.rememberWorkModel(channelId, { providerId, executorId: route.executor, model: modelId });
+    }
+    const adapter = provider.protocol === PROTOCOL.OPENCODE_GO
+      ? this.executorManager?.adapterLabel(provider.protocol, route.transport)
+      : null;
+    return [
+      `✅ Work 已切换：${route.executorName || route.executor} · ${provider.displayName}${modelId ? ` · ${modelId}` : ''}`,
+      adapter ? `兼容层：${adapter}` : null,
+      route.executorChanged ? '（原执行器不兼容，已自动选择可运行的执行器）' : null,
+      '已创建新安全 Session（权限档位保持不变）。',
+    ].filter(Boolean).join('\n');
   }
 
   #workModelMenu(channelId, page = 1) {
@@ -2247,13 +2419,13 @@ export class DiscordControlPlane {
     const paged = pagedChoiceRows('panelworkp', providers, { current: selection.providerId, page });
     if (!providers.length) {
       return {
-        content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n⚠️ 暂无可用的兼容 Provider。请先在 \`/model\` → Work 或 \`/settings\` 中检查执行器与 Provider。`,
+        content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n⚠️ 暂无可用的兼容 Provider。请先在 \`/settings\` → 🛠️ 执行器 中确认已安装执行器，再检查 Provider 凭据。`,
         components: [panelBackRow()],
       };
     }
     const browse = paged.pages > 1 ? `\nProvider 列表第 ${paged.page}/${paged.pages} 页。` : '';
     return {
-      content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n选择 Provider：${browse}`,
+      content: `🛠 **Work 模型**\n当前：${executor?.displayName || selection.executorId} · ${selection.providerId} · ${selection.model || '未选择'}\n选择 Provider（选模型时会自动匹配可运行的执行器）：${browse}`,
       components: [...paged.rows, panelBackRow()],
     };
   }
@@ -2261,27 +2433,52 @@ export class DiscordControlPlane {
   async #workProviderModels(channelId, providerId, page = 1) {
     const provider = this.providerManager?.get(providerId);
     if (!provider) return { content: '❌ 未知 Provider。', components: [panelBackRow()] };
-    const selection = this.sessionManager.get(channelId);
-    if (this.executorManager && !this.executorManager.compatible(selection.executorId, provider.protocol, null)) {
-      const recommendations = this.executorManager.compatibleExecutors?.(provider.protocol)?.map((item) => item.displayName) ?? [];
-      return {
-        content: `❌ 当前执行器不支持此 Provider 协议。${recommendations.length ? `\n兼容执行器：${recommendations.join('、')}（可在 \`/settings\` → \`🛠️ 执行器\` 切换）` : ''}`,
-        components: [panelBackRow()],
-      };
+    if (!this.providerManager.hasCredential(provider)) {
+      return { content: `❌ ${provider.displayName} 缺少 credential。`, components: [panelBackRow()] };
     }
     let models = [];
-    try { models = (await this.modelManager.list(providerId)).models; }
-    catch (error) { return { content: `${providerErrorMessage(error)}\n可先用 \`!models\` 重试。`, components: [panelBackRow()] }; }
+    let stale = false;
+    try {
+      const result = await this.modelManager.list(providerId);
+      models = result.models ?? [];
+      stale = Boolean(result.stale);
+    } catch (error) {
+      models = provider.models ?? [];
+      if (!models.length) {
+        return { content: `${providerErrorMessage(error)}\n可先用 \`!models\` 重试。`, components: [panelBackRow()] };
+      }
+      stale = true;
+    }
     if (!models.length) {
       return { content: `⚠️ 未能自动获取 ${provider.displayName} 的模型列表。\n可先用 \`!models\` 重试，再用本菜单选择。`, components: [panelBackRow()] };
     }
-    const paged = providerModelRows('panelworkm', providerId, models.map((model) => ({ id: model.id, label: model.id })), {
-      current: selection.providerId === providerId ? selection.model : null,
-      page,
+    const selection = this.sessionManager.get(channelId);
+    const decorated = models.map((model) => {
+      const transport = model.transport || this.executorManager?.resolveTransport(provider, model.id) || null;
+      const route = this.#workRouteFor(provider, model.id, selection.executorId);
+      const marks = [];
+      if (provider.protocol === PROTOCOL.OPENCODE_GO) marks.push(`🔌 ${transportLabel(transport)}`);
+      if (route.ok) {
+        const adapter = this.executorManager?.adapterLabel(provider.protocol, route.transport);
+        marks.push(`✅ ${route.executorName}${adapter ? `（${adapter}）` : ''}`);
+      } else {
+        marks.push('❌ 无可用执行器');
+      }
+      return { model, marks, selectable: route.ok };
     });
-    const header = `🛠 ${provider.displayName} 模型（选择后会创建新安全 Session）`
-      + (paged.pages > 1 ? `\n第 ${paged.page}/${paged.pages} 页` : '');
-    return { content: header, components: [...paged.rows, panelBackRow()] };
+    const paged = providerModelRows('panelworkm', providerId,
+      decorated.map((entry) => ({ id: entry.model.id, label: entry.model.id, disabled: !entry.selectable })),
+      { current: selection.providerId === providerId ? selection.model : null, page });
+    const lines = [
+      `🛠 ${provider.displayName} 模型（选择后自动确定可运行执行器并创建新安全 Session）`,
+      stale ? '⚠️ 模型列表可能不是最新' : '',
+      paged.pages > 1 ? `第 ${paged.page}/${paged.pages} 页` : '',
+      '',
+      ...decorated.map((entry) => `${entry.model.id === selection.model ? '✅' : '•'} \`${entry.model.id}\`${entry.marks.length ? `\n  ${entry.marks.join(' · ')}` : ''}`),
+      '',
+      '选择模型会同时确定：执行器 + Provider + 模型；无可用执行器的模型不可选。',
+    ].filter(Boolean);
+    return { content: clip(lines.join('\n')), components: [...paged.rows, panelBackRow()] };
   }
 
   /**
@@ -3174,6 +3371,9 @@ export class DiscordControlPlane {
       onStart: async ({ key }) => {
         console.log(`[queue] start channel=${channelId} workspace=${key}`);
         run.state = 'running';
+        // P3 TechLead: observe this Work from its actual start (after the lock),
+        // fire-and-forget so a reviewer failure can never delay the Worker.
+        this.#beginTechLead({ channelId, runId: run?.id ?? null, prompt: taskPrompt });
         const chain = this.workChains.get(channelId);
         if (chain) {
           chain.queuedNotice = null;
@@ -3295,6 +3495,8 @@ export class DiscordControlPlane {
             tests: progress.tests ?? null,
           });
         } catch { /* audit-only, never breaks the run */ }
+        // P3 TechLead: terminal lifecycle signal (advisory-only; never stops Work).
+        this.#endTechLead(channelId, run?.id ?? null, run?.terminal ?? progress.state);
       },
     };
     this.tasks.set(channelId, task);
@@ -3593,9 +3795,20 @@ export class DiscordControlPlane {
     }
     if (prefix === 'panelworkp') {
       const providerId = parts.slice(1).join(':');
-      const switched = await this.#switchProvider(channelId, providerId);
-      const models = await this.#workProviderModels(channelId, providerId);
-      await this.#edit(interaction, { ...models, content: clip(`${switched}\n\n${models.content}`) });
+      const provider = this.providerManager?.get(providerId);
+      if (!provider) {
+        await this.#edit(interaction, { content: '❌ 未知 Provider。', components: [panelBackRow()] });
+        return;
+      }
+      // WorkBuddy has an implicit built-in model, so choosing the provider is
+      // already a complete route. Every other provider requires a model choice,
+      // and the executor is decided atomically when that model is chosen.
+      if (provider.protocol === PROTOCOL.WORKBUDDY) {
+        const result = await this.#selectWorkRoute(channelId, providerId, provider.models?.[0]?.id ?? null);
+        await this.#edit(interaction, { content: clip(result), components: [panelBackRow()] });
+        return;
+      }
+      await this.#edit(interaction, await this.#workProviderModels(channelId, providerId, 1));
       return;
     }
     if (prefix === 'panelworkmnav') {
@@ -3605,12 +3818,7 @@ export class DiscordControlPlane {
     if (prefix === 'panelworkm') {
       const providerId = parts[1];
       const modelId = parts.slice(2).join(':');
-      const state = this.sessionManager.get(channelId);
-      if (state.providerId !== providerId) {
-        await this.#edit(interaction, { content: '❌ Provider 已变化，请重新选择。', components: [panelBackRow()] });
-        return;
-      }
-      const result = await this.#selectModel(channelId, modelId);
+      const result = await this.#selectWorkRoute(channelId, providerId, modelId);
       await this.#edit(interaction, { content: clip(result), components: [panelBackRow()] });
       return;
     }

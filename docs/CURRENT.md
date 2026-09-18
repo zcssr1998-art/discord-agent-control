@@ -6,8 +6,7 @@
 
 ## Current milestone
 
-Jarvis V4 P3 — **P3.0 and P3.1 implemented; awaiting owner acceptance for P3.1**.
-Do not start TechLead yet.
+Jarvis V4 P3 — **P3.0, P3.1 and P3 AI TechLead Shadow Mode implemented; awaiting owner acceptance**.
 
 ### P3.1 — Native Chat web search (done)
 
@@ -33,8 +32,36 @@ Do not start TechLead yet.
   (`result_deliveries`) separates Worker execution from Discord delivery.
 - Audit: `docs/P3_0_TIMEOUT_AUDIT.md` (remaining arbitrary total limits: 0).
 
-Active doc: `docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md` (complete) →
-`docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (queued).
+Active doc: `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (implemented — advisory
+Shadow Mode).
+
+### P3 — AI TechLead Shadow Mode (DONE — awaiting owner acceptance)
+
+- `src/techlead/`: `work-event.mjs`, `work-contract.mjs`,
+  `progress-fingerprint.mjs`, `incident-detector.mjs`, `incident-deduper.mjs`,
+  `incident-packet.mjs`, `techlead-reviewer.mjs`, `techlead-controller.mjs`.
+- Event-driven, zero-token standby (no timers/polling); deterministic checks
+  first; the reviewer model wakes only for a meaningful incident.
+- At most one startup review per Work; incidents STAGNATION / PLAN_THRASH /
+  SCOPE_DRIFT / RISKY_NEXT_ACTION / REPEATED_TEST_FAILURE /
+  COMPLETION_REVIEW_NEEDED; signature dedupe + cooldown; hard wake budget
+  (default 6); bounded sanitized packet; strict response parser.
+- Reviewer route resolved through discovery; real smoke used **OpenCode Go
+  `grok-4.6`** (Responses transport, SUBSCRIPTION) and reported
+  `SUGGEST_INJECT` in ~29s. No silent METERED/unknown fallback; missing route ->
+  `DEGRADED` and Work proceeds.
+- **Shadow safety:** TechLead never inserts/pauses/stops/executes tools; all
+  actions are advisory-only. State persisted in `data/state.json`
+  (`preferences.techLead`) for dedupe/budget/advisory/capability across restart.
+- Status/doctor surface: `TechLead: SHADOW / Grok 4.6 / SLEEPING`; one concise
+  advisory on a material incident.
+- Config: `TECHLEAD_ENABLED`, `TECHLEAD_MODE`, `TECHLEAD_PROVIDER`,
+  `TECHLEAD_MODEL`, `TECHLEAD_MAX_WAKES`, `TECHLEAD_COOLDOWN_MS`,
+  `TECHLEAD_PACKET_MAX_CHARS`, `TECHLEAD_STAGNATION_REPEATS`.
+- Verified: `npm test` 432/0; `npm run check` 140/0; `npm run smoke:p3-techlead`
+  12/12 deterministic + live reviewer PASS (`opencode-go`/`grok-4.6`);
+  `smoke:p2` 11/11; `smoke:p222` 25/25; `smoke:p224-lifecycle` 21/21. Owner
+  Discord turn: PENDING.
 
 ## Baseline to preserve
 
@@ -91,12 +118,17 @@ Verification: `npm test` 411/0; `npm run check` 130/0; `smoke:p31-search` 7/7
 (real OpenCode Go `web_search` + real model answer + real sources); `smoke:p222`
 25/25; `smoke:p2` 11/11. Owner Discord turn: PENDING.
 
-### P3 — AI TechLead Shadow Mode (NOT STARTED)
+### P3 — AI TechLead Shadow Mode (DONE — awaiting owner acceptance)
 
 - event-driven, near-zero-token standby;
 - deterministic monitoring first;
 - Grok 4.6 reviewer on meaningful incidents only;
 - advisory Shadow Mode before any automatic intervention.
+
+Verification: `npm test` 432/0; `npm run check` 140/0; `smoke:p3-techlead`
+12/12 deterministic + live `opencode-go`/`grok-4.6` reviewer PASS;
+`smoke:p2` 11/11; `smoke:p222` 25/25; `smoke:p224-lifecycle` 21/21. Real Discord
+owner Work turn: PENDING.
 
 ## Live runtime
 
@@ -106,6 +138,8 @@ Supervisor + single Bridge).
 
 ## Next action
 
-Owner acceptance of P3.1 on real Discord (ask a current-info question, verify
-live sources and the `Web` footer, verify no Agent starts). Do not start P3
-TechLead until the owner accepts P3.1.
+Owner acceptance of P3.1 (real Discord Chat search) and of P3 TechLead on a real
+Discord Work turn: confirm the startup review attribution to `opencode-go` /
+`grok-4.6` (`TechLead: SHADOW / Grok 4.6 / SLEEPING`), trigger a safe synthetic
+stagnation event, confirm one advisory and duplicate suppression, confirm the
+Worker is untouched. Do not enable automatic intervention in P3.

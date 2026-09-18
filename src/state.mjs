@@ -158,6 +158,31 @@ export class StateStore {
     return true;
   }
 
+  // ---- AI TechLead (P3) -----------------------------------------------------
+  // Minimal persisted state so a bridge restart does not reset incident dedupe
+  // and immediately re-bill the same unresolved incident. JSON state is
+  // sufficient; no new database is created for this feature.
+
+  /** The persisted TechLead state, or null. */
+  getTechLeadState() {
+    return this.data.preferences?.techLead ?? null;
+  }
+
+  /** Persist the compact TechLead state (dedupe/wake/advisory/capability). */
+  setTechLeadState(value) {
+    this.data.preferences = this.data.preferences ?? {};
+    this.data.preferences.techLead = value ?? null;
+    this.save();
+    return this.data.preferences.techLead;
+  }
+
+  clearTechLeadState() {
+    if (!this.data.preferences?.techLead) return false;
+    delete this.data.preferences.techLead;
+    this.save();
+    return true;
+  }
+
   /**
    * One-time upgrade for existing state files: derive workspace + last-known
    * selections from channels that already carry a model, so a bridge that had a

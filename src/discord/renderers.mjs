@@ -230,7 +230,8 @@ export function providerModelRows(prefix, providerId, items, { current = null, p
       ...slice.slice(i, i + 5).map((item) => new ButtonBuilder()
         .setCustomId(`${prefix}:${providerId}:${item.id}`)
         .setLabel(item.id === current ? `✓ ${item.label}`.slice(0, 80) : String(item.label).slice(0, 80))
-        .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)),
+        .setStyle(item.id === current ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        .setDisabled(Boolean(item.disabled))),
     ));
   }
   if (pages > 1) {

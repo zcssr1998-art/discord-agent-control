@@ -8,20 +8,22 @@
 
 ## Status
 
-P3.1 (`docs/tasks/JARVIS_V4_P3_1_CHAT_WEB_SEARCH.md`) is implemented and
-committed; P3.0 is also complete. **Awaiting owner acceptance — do not start
-TechLead implementation.**
+P3.0, P3.1 and P3 AI TechLead Shadow Mode are implemented and committed.
+**Awaiting owner acceptance — real Discord Work turn pending.**
 
-Recorded backend: OpenCode Go native `web_search` (Responses transport, model
-`grok-4.6`), billing class **SUBSCRIPTION** (no extra search key, no coding
-Agent). Tavily is an optional METERED adapter used only when
-`ALLOW_METERED_WEB_SEARCH=true` or explicitly pinned.
+## P3 TechLead (implemented)
+
+`src/techlead/` advisory Shadow Mode: deterministic incident detection first,
+one startup review per Work, dedupe/cooldown, hard wake budget, bounded
+sanitized packets, strict response parser, reviewer via OpenCode Go
+`grok-4.6` when discovered. Shadow safety: no automated insert/pause/stop/tool
+side effect. State persisted in `data/state.json` (`preferences.techLead`).
 
 ## After owner acceptance
 
-Continue `docs/tasks/JARVIS_V4_P3_AI_TECHLEAD_SHADOW.md` (advisory Shadow Mode:
-zero-token standby, deterministic incident detection first, Grok 4.6 only on
-meaningful incidents).
+If Shadow false-positive/false-negative behavior is acceptable, a separate
+future task may enable bounded `INJECT` / `PAUSE_REPLAN` only; keep destructive
+stop/abort under deterministic safety/OWNER approval.
 
 ## Do not
 
