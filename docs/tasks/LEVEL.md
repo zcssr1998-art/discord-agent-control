@@ -1,373 +1,378 @@
-# LEVEL — Discord-first capability upgrade
+# LEVEL — CORE-first Discord capability upgrade
 
-## Objective
+## Goal
 
-Upgrade the existing Jarvis/OpenClaw stack with the **non-financial** reusable capabilities selected by the owner, using the minimum necessary changes and mature upstream components.
+Upgrade Jarvis/OpenClaw so capabilities can keep growing **without making ordinary Discord use slower or fatter**, then install and real-smoke the selected non-financial capabilities.
 
-The finished product must be usable from the existing **Discord Jarvis**. Installing packages or proving that a WebUI opens is not acceptance.
+This is one delivery with two gated phases:
 
-This task explicitly excludes all finance/market/Longbridge work. Finance is being handled separately.
+1. **CORE** — use OpenClaw's existing tool/skill policy, deferred discovery and direct command dispatch instead of building another registry/router.
+2. **LEVEL** — install/integrate the selected reusable capabilities on top of that foundation.
 
-## Product contract
+Finance/Longbridge/market/news-engine work stays out of this task and remains a separate `money` task.
 
-The owner-facing surface is Discord.
+## Non-negotiable product contract
 
-For every capability added in this task:
+- Discord remains the owner-facing control surface.
+- Do not create a second Discord bot/control plane.
+- Do not require a WebUI for normal use; admin UIs are diagnostics only.
+- Preserve the existing Jarvis mode/session/permission/stop/cancel/task-card behavior.
+- Preserve the existing approval flow. New tools must never bypass it.
+- Prefer official OpenClaw mechanisms and mature upstream integrations over custom wrappers.
+- Do not build a custom capability registry, custom universal router, or duplicate accounting/memory/security subsystem unless the existing stack demonstrably cannot satisfy the acceptance criteria.
+- Never commit or echo secrets.
 
-- it must be invokable from the existing Jarvis Discord entrypoint;
-- useful output must return to Discord as text/card/table/file/image as appropriate;
-- normal use must **not** require the owner to open a separate WebUI;
-- backend/admin UIs are allowed only for maintenance/debugging;
-- it must survive a normal Jarvis/OpenClaw process restart;
-- it must be enabled/configured after installation, not merely present on disk;
-- it must not create a second competing Discord bot or duplicate control plane.
+## Read first
 
-Prefer official OpenClaw plugin/Skill/MCP integration mechanisms and mature upstream projects over custom wrappers.
+Follow:
 
-## Required capability set
+- `AGENTS.md`
+- central `GLOBAL_AI_RULES.md`
+- `docs/CURRENT.md`
+- `docs/AI_HANDOFF.md`
+- `docs/tasks/CURRENT.md`
 
-### 1. Web search — Tavily
+Before changing anything, inspect the real Windows/OpenClaw installation, enabled Skills/plugins/MCP/tools, current config, process chain and relevant local changes. Reuse what already works.
 
-Add Tavily as a general web-search capability for Jarvis.
+Current OpenClaw references to verify against the installed version before implementation:
 
-Requirements:
+- https://docs.openclaw.ai/tools/tool-search
+- https://docs.openclaw.ai/gateway/config-tools/tool-policy
+- https://docs.openclaw.ai/tools/skills-config
+- https://docs.openclaw.ai/tools/slash-commands
+- https://docs.openclaw.ai/tools/code-mode/configuration
 
-- use the current official/mature OpenClaw/MCP/SDK route that best fits the installed stack;
-- natural-language Jarvis requests must be able to invoke it;
-- search results and citations/sources return to Discord;
-- do not require the owner to open Tavily's dashboard for normal use.
+Do not blindly copy config from documentation if the installed version differs.
 
-### 2. Web extraction / crawl — Firecrawl
+---
 
-Add Firecrawl for full-page extraction, site crawl and structured content retrieval.
+# Phase A — CORE: scalable capability routing
 
-Requirements:
+## A1. Do not add another registry/router
 
-- integrate through the least-complex supported OpenClaw/MCP/plugin route;
-- Jarvis must be able to use it after search or directly from a supplied URL;
-- extracted/structured result must return to Discord;
-- reuse Tavily for discovery and Firecrawl for retrieval where that is the simpler route rather than duplicating search logic.
+Use OpenClaw's effective tool catalog/policy as the source of truth.
 
-### 3. Browser automation — Browser Use
+Required direction:
 
-Add a mature browser-control capability using Browser Use or the currently recommended compatible upstream equivalent if the installed OpenClaw version has a better official route.
+- OpenClaw tool catalog/policy remains authoritative for OpenClaw tools, plugin tools, MCP and client tools.
+- Jarvis may keep only the minimum deterministic routing/context needed by its Discord UX and existing mode contract.
+- No parallel `CapabilityRegistry` that mirrors OpenClaw metadata.
+- No per-turn scan of every installed Skill/MCP schema.
+- No extra LLM call merely to classify every normal message.
 
-Requirements:
+If the current implementation already has overlapping routing logic, simplify only where necessary; do not rewrite stable paths.
 
-- a Discord task can launch browser work;
-- browser work must report meaningful progress/status through the existing task UI;
-- screenshots/files/final result must come back to Discord when relevant;
-- existing Jarvis stop/cancel and approval controls must still work;
-- do not make a browser WebUI the primary interface.
+## A2. Deferred tool exposure / Tool Search
 
-### 4. App integration bus — Composio
+Evaluate the installed OpenClaw version and active models/providers, then enable the **smallest compatible deferred-tool mechanism**.
 
-Add Composio as the general external-app/tool integration layer where it reduces one-off connector code.
+Preferred order:
 
-Requirements:
+1. OpenClaw Tool Search when compatible with the real runtime/model path.
+2. Structured/directory Tool Search mode when the code bridge is unreliable for a model.
+3. Existing normal tool exposure only for a small bounded hot set when deferred discovery is not compatible.
 
-- integrate the supported OpenClaw/MCP/SDK path;
-- expose available connected actions to Jarvis without hard-coding a new custom adapter for every service;
-- do not create or commit credentials;
-- use existing authorized connections if present;
-- smoke with a harmless read-only action from one already-authorized service if available;
-- if no authorized external account exists, complete installation/routing and report the missing authorization as the only external blocker rather than fabricating a PASS.
+Rules:
 
-### 5. Observability — Langfuse + OpenTelemetry
+- unrelated full tool schemas must not all be injected into normal runs;
+- policy filtering happens before discovery;
+- search/describe/call remains inside the existing permission boundary;
+- do not create a second search index if OpenClaw's catalog already works;
+- keep OpenClaw's catalog/snapshot caching behavior intact;
+- Tool Search queries generated internally must be compatible with OpenClaw's search behavior.
 
-Add observability for real Jarvis/agent/tool runs.
+Because OpenClaw Tool Search is version/model sensitive, **real compatibility smoke decides**, not architectural preference.
 
-Requirements:
+## A3. Tool profiles / scoped visibility
 
-- capture at least model/provider, latency, token usage when available, tool calls, task/run identity and error status;
-- prefer the OpenClaw-supported OpenTelemetry path and Langfuse as the trace/analysis backend if compatible;
-- keep traces/logs out of normal Discord chatter;
-- expose a concise Discord-facing status/usage command or existing status surface so the owner can see that telemetry is working without opening the dashboard;
-- never log secrets, API keys, auth headers, cookies or raw credential payloads.
+Use existing OpenClaw `tools.profile`, allow/deny groups and agent Skill allowlists where they materially reduce irrelevant capability exposure.
 
-A separate Langfuse UI may exist for deep diagnostics, but it is **not** the primary owner workflow.
+Do not treat visibility as authorization. Existing Jarvis approval/security policy remains authoritative.
 
-### 6. Token/cost monitoring — DeepClaw / Tokenomics class
+Use Discord channel/context as a cheap hint only when the current architecture can express it cleanly. Do **not** build a new channel-routing subsystem just for this task.
 
-Add a real token/usage accounting capability.
+Examples of desired scoping:
 
-First inspect the current Jarvis/OpenClaw implementation because the project already has some provider/model/billing information. Do not build a second unrelated accounting system if an existing one can be extended.
+- development context: GitHub/files/shell/test/web-related capabilities;
+- browser/research context: search/extraction/browser capabilities;
+- finance remains excluded from this task.
 
-Evaluate the mature compatible options previously identified (DeepClaw, Tokenomics, or the current best-maintained equivalent). Choose the smallest robust solution.
+## A4. Skill prompt hygiene
 
-Required Discord behavior:
+For every installed Skill:
 
-- an owner command such as `!usage`, `/usage`, or an existing equivalent shows current/recent usage;
-- show at minimum model/provider, input/output/total tokens when the provider reports them;
-- show cost only when a reliable pricing source/rate is available; do not invent cost;
-- distinguish unavailable provider metrics from zero usage;
-- usage data must reflect a real Discord-triggered run.
+- keep descriptions short and specific;
+- use OpenClaw gating/allowlists so unavailable or irrelevant Skills do not load;
+- use `disable-model-invocation: true` for owner-invoked/diagnostic Skills that do not need autonomous model selection;
+- avoid stuffing large static instructions into every normal prompt;
+- preserve Skill snapshot/cache behavior rather than rebuilding Skill state each turn.
 
-If two candidate tools substantially overlap, install **one** good implementation rather than two competing ledgers.
+## A5. Deterministic direct commands
 
-### 7. Security / tool-call guard
+For commands that map deterministically to one tool/action, prefer OpenClaw native Skill/slash-command dispatch and `command-dispatch: tool` where supported.
 
-The repository already has a working approval/policy system. Preserve it.
+Examples: status/usage/capability diagnostics and other unambiguous management actions.
 
-Evaluate the OpenClaw security/permission plugins previously identified (Agent Permissions, Security Guard, ClawGuard or current maintained equivalents) and add only the layer that gives real additive protection without replacing the proven Discord approval flow.
+Acceptance requirement:
 
-Requirements:
+- a deterministic direct command must not need an LLM round trip merely to choose its tool;
+- authorization/confirmation checks still apply.
 
-- existing `Allow once / Allow session / Deny` Discord flow remains authoritative for risky actions;
-- new security layer may add prompt-injection/tool-call/risk checks, but must not silently auto-approve an action that current Jarvis would gate;
-- unknown/new MCP tools fail closed or go through the existing approval policy;
-- no duplicate approval UIs;
-- prove one harmless auto-allowed action and one deliberately risky/denied test path.
+Natural-language requests may continue through the model when interpretation is actually needed.
 
-If the candidate security plugins duplicate the existing policy with no additional value, integrate only the additive guard capability and document why the redundant plugin was not stacked.
+## A6. Code Mode: conditional only
 
-### 8. Long-term memory — Mem0
+Do **not** globally force Code Mode.
 
-Add Mem0 as a long-term memory provider only if it can be integrated cleanly behind the current Jarvis/OpenClaw memory/context model.
+OpenClaw Tool Search and Code Mode are mutually exclusive for a run. Use Code Mode only when the installed OpenClaw/model metadata recommends it or real smoke proves it is the better compatible path.
 
-Requirements:
+Preferred policy:
 
-- do not delete or bypass existing session/context memory;
-- avoid maintaining two independent user-memory truths;
-- use Mem0 for durable cross-session recall where appropriate;
-- memory must be accessible through normal Discord conversation;
-- add a clear way to inspect/disable the integration for debugging;
-- never store secrets or credential material.
+- `tools.codeMode: "auto"` only if supported and verified;
+- never force it across DSF/GLM/Luna/other providers without per-route evidence;
+- a model that fails the Code Mode smoke must fall back cleanly without disabling the capability set.
+
+## A7. Fast-path invariants
+
+CORE must not make trivial use slower by adding planning/model hops.
+
+The following must remain true:
+
+- ordinary Chat does not start Work/Agent unless the existing product contract explicitly says it should;
+- explicit local/native commands stay local/direct when possible;
+- no Qwen/planner/secondary model call solely to classify every trivial message;
+- simple messages do not trigger tool discovery when no tool is needed;
+- Stop/Insert/approval controls remain responsive while tools run.
+
+## A8. CORE acceptance
+
+Before Phase B, prove on the real runtime:
+
+1. **Plain Chat smoke** — several trivial messages complete with no unnecessary planner/secondary-router/tool-search call.
+2. **Direct-command smoke** — one deterministic slash/Skill command dispatches without a model-selection round trip.
+3. **Deferred-tool smoke** — one request that needs a tool discovers/loads the relevant capability without exposing unrelated full schemas.
+4. **Permission smoke** — one harmless tool path and one safe synthetic risky path prove existing approvals cannot be bypassed.
+5. **Restart smoke** — configuration survives the normal Jarvis/OpenClaw restart path.
+6. Record compact before/after evidence for routing overhead/tool exposure using available logs/metrics. Do not invent latency numbers if the runtime cannot measure them reliably.
+
+Do not start mass capability installation until CORE is green, except for a minimal capability needed to prove the mechanism.
+
+Create a coherent CORE commit/checkpoint before continuing.
+
+---
+
+# Phase B — LEVEL: selected non-financial capabilities
+
+Install/integrate only after Phase A passes. Reuse already-installed working components where present.
+
+## B1. Web search — Tavily
+
+- Mature official/MCP/plugin/SDK route that best fits installed OpenClaw.
+- Natural-language Discord request can use it.
+- Results + usable sources return to Discord.
+- No dashboard required for normal use.
+
+## B2. Extraction/crawl — Firecrawl
+
+- Use the least-complex supported integration.
+- Direct URL extraction and post-search retrieval both work.
+- Prefer Tavily for discovery + Firecrawl for extraction rather than duplicate search logic where appropriate.
+- Structured result returns to Discord.
+
+## B3. Browser automation
+
+Use Browser Use or the current better-supported compatible upstream equivalent.
+
+- Discord can launch browser work.
+- Existing task card/progress surface shows meaningful state.
+- Screenshots/files/final result return to Discord when relevant.
+- Existing stop/cancel/approval path remains functional.
+- No browser WebUI as the primary owner workflow.
+
+## B4. External-app integration — Composio
+
+- Prefer supported OpenClaw/MCP/SDK integration.
+- Do not write a one-off adapter per service when Composio already solves it.
+- Use existing authorized connections if available.
+- Real smoke with a harmless read-only action.
+- If authorization is absent, finish safe wiring and mark only that smoke externally blocked.
+
+## B5. Observability — OpenTelemetry + Langfuse where compatible
+
+Capture at least:
+
+- run/task identity;
+- provider/model;
+- latency;
+- tool calls;
+- token usage when reported;
+- errors/status.
+
+Keep traces out of normal Discord chatter. Provide a concise Discord-facing status path proving telemetry is alive. Never log keys/tokens/auth headers/cookies.
+
+## B6. Token/usage accounting
+
+First inspect existing Jarvis provider/billing/usage code. Extend it if possible.
+
+Evaluate DeepClaw/Tokenomics/current maintained equivalent only if it adds value without creating a second ledger.
+
+Discord status/command must show when available:
+
+- provider/model;
+- input/output/total tokens;
+- reliable cost only when a trustworthy rate exists;
+- unavailable metrics as unavailable, never as zero.
+
+A real Discord-triggered run must appear in the usage data.
+
+## B7. Additive security guard
+
+Preserve current Jarvis approval system.
+
+Evaluate Agent Permissions/Security Guard/ClawGuard/current maintained equivalent and add only genuine extra protection, such as prompt-injection/tool-call risk checks.
+
+Required:
+
+- `Allow once / Allow session / Deny` remains authoritative;
+- unknown/new MCP tools fail closed or enter existing approval;
+- no duplicate approval UI;
+- one harmless allowed smoke;
+- one safe synthetic risky/denied-or-approval-required smoke.
+
+## B8. Durable memory — Mem0 only if it fits cleanly
+
+Do not replace or create a conflicting source of truth for existing session/context memory.
+
+If integrated:
+
+- durable cross-session recall works from Discord;
+- clear debug/disable path exists;
+- secrets are excluded.
 
 Real smoke:
 
-1. from Discord, ask Jarvis to remember a harmless unique test fact;
-2. end/reset the normal chat session in a way that removes short-term context but not durable memory;
-3. ask for the fact again;
-4. verify the value was actually retrieved from durable memory rather than retained chat context.
+1. remember a harmless unique fact;
+2. reset/end short-term session context;
+3. ask for it again;
+4. prove durable memory, not retained chat context, supplied it.
 
-## Installation strategy
+If clean integration would create two competing memory truths, do not force Mem0; document the conflict and use the existing durable-memory mechanism if it already satisfies the product goal.
 
-Before installing anything:
+---
 
-1. pull the latest repository state and inspect `git status` / relevant diff;
-2. read project `AGENTS.md` if present and the central `GLOBAL_AI_RULES.md`;
-3. inspect the current local OpenClaw/Jarvis installation and enabled plugins/Skills/MCP servers;
-4. check whether each requested capability already exists or is partially implemented;
-5. check current official docs/upstream repositories for compatibility with the installed OpenClaw version;
-6. reuse existing working integrations instead of reinstalling or replacing them.
+# Capability status surface
 
-Do not blindly install every package name from an old recommendation. If an upstream component has been renamed/deprecated/replaced, use the current official or clearly maintained equivalent while preserving the capability contract above.
+Extend one existing Discord status/control surface rather than adding many commands.
 
-## Secrets / credentials
+It should report, without secrets:
 
-Never commit or echo:
+- Tool Search/deferred discovery mode;
+- effective tool profile / relevant capability scope;
+- Tavily;
+- Firecrawl;
+- browser automation;
+- Composio;
+- telemetry;
+- token accounting;
+- security guard;
+- durable memory;
 
-- API keys;
-- tokens;
-- OAuth secrets;
-- cookies;
-- passwords;
-- signing material.
+using states such as `enabled`, `disabled`, `blocked: authorization`, `incompatible`.
 
-Use the project's existing secret/env/credential storage mechanism.
+---
 
-If Tavily, Firecrawl, Composio, Langfuse or another service requires credentials that are not already available:
+# Real acceptance
 
-- finish all code/plugin wiring that can be completed safely;
-- do not invent a credential;
-- do not paste a secret into Git;
-- report the exact missing authorization/credential as a blocker for that one real smoke.
+Package installation, config files and mocked tests are not enough.
 
-Prefer local/self-hosted/open-source operation when it is mature and materially reduces external credentials **without** adding large maintenance burden.
+After implementation:
 
-## Discord integration requirements
+1. restart through the normal Jarvis/OpenClaw supervisor path;
+2. confirm Jarvis returns online;
+3. run the relevant existing deterministic tests/checks;
+4. run a real Discord smoke for every available capability;
+5. run at least one post-restart capability invocation;
+6. verify no unrelated capability bulk-loads into trivial Chat;
+7. verify no new integration bypasses approval/stop/cancel;
+8. verify no secrets entered Git/logs/status output.
 
-Do not scatter these into separate bots or unrelated command systems.
-
-Use the existing Jarvis task/card/progress/approval UI.
-
-At minimum provide or extend one capability/status surface, e.g. `!tools` / `!capabilities` / existing control panel, that can show:
-
-- Tavily: enabled/disabled/blocked;
-- Firecrawl: enabled/disabled/blocked;
-- Browser automation: enabled/disabled/blocked;
-- Composio: enabled/disabled/authorization-needed;
-- OpenTelemetry/Langfuse: enabled/disabled;
-- token accounting: enabled/disabled;
-- security guard: enabled/disabled;
-- Mem0: enabled/disabled.
-
-Do not expose secret values in this status.
-
-Natural-language tool routing is preferred for actual use. Commands are primarily for status/diagnostics, not a requirement that the owner memorize a new command for every tool.
-
-## Real acceptance smoke
-
-Package install, unit tests and mocked Discord tests are necessary but not sufficient.
-
-After implementation, restart the real Jarvis/OpenClaw runtime and execute a minimal real Discord smoke for each enabled capability.
-
-### Search smoke
-
-From Discord, request current public information that requires web search.
-
-PASS evidence:
-
-- Tavily/tool invocation occurred;
-- answer returned to Discord with usable source information.
-
-### Firecrawl smoke
-
-From Discord, give a public webpage and request structured extraction/summary.
-
-PASS evidence:
-
-- the page was actually fetched/extracted through the configured capability;
-- result returned to Discord.
-
-### Browser smoke
-
-From Discord, ask Jarvis to open a harmless public page and extract one visible fact or create a screenshot.
-
-PASS evidence:
-
-- real browser session ran;
-- progress/result visible through Discord;
-- screenshot/result returned;
-- stop/cancel path remains functional.
-
-### Composio smoke
-
-Use one existing authorized read-only integration if present.
-
-PASS evidence:
-
-- real external tool call ran from a Discord-triggered request;
-- read-only result returned to Discord.
-
-If no external account is authorized, mark only this smoke blocked on authorization.
-
-### Observability smoke
-
-Use one of the real Discord tool runs above.
-
-PASS evidence:
-
-- a trace/span exists for that run;
-- provider/model/tool/latency/error state are recorded;
-- token fields are recorded when supplied by provider;
-- Discord status can confirm observability is active.
-
-### Token smoke
-
-Run one short Discord model/tool task.
-
-PASS evidence:
-
-- usage command/status reflects that run;
-- token numbers come from real runtime/provider instrumentation, not estimates unless explicitly labeled estimate.
-
-### Security smoke
-
-Perform:
-
-- one harmless action expected to auto-allow;
-- one safe synthetic action classified as risky/denied/approval-required.
-
-PASS evidence:
-
-- current Discord approval behavior is preserved;
-- new tool/MCP routes cannot bypass policy.
-
-Do **not** perform a destructive real action merely to test denial.
-
-### Memory smoke
-
-Use the cross-session unique-fact test defined above.
-
-PASS evidence:
-
-- durable recall succeeds after short-term session reset;
-- evidence indicates Mem0/durable memory supplied the recall.
-
-## Regression verification
-
-Run the smallest deterministic suite that covers the changed areas first.
-
-Because this touches shared Jarvis/OpenClaw routing, permissions and runtime configuration, final verification must also include the repository's current core gates that are still applicable, such as:
+Minimum repository gates:
 
 ```powershell
 npm test
 npm run check
 ```
 
-Also run the project's current Discord/runtime smoke that covers the actual modified path. Prefer existing scripts over inventing a parallel test harness.
+Also use the current real Discord/runtime smoke covering modified paths. Reuse existing scripts; do not create a parallel test framework without need.
 
-If command names have changed in the latest repo, use the current equivalents.
+## Per-capability real smoke
 
-Do not dump successful full logs into the model context; preserve concise evidence and failing excerpts only.
+- **Tavily:** current public-info search returns sources to Discord.
+- **Firecrawl:** supplied public URL is really extracted and returned.
+- **Browser:** harmless public page is opened and a visible fact or screenshot is returned.
+- **Composio:** one existing-authorized read-only action, or explicit external-auth blocker.
+- **Telemetry:** a real Discord run produces a trace/span with expected metadata.
+- **Usage:** the same real run appears with provider/model/token data where supplied.
+- **Security:** harmless + synthetic risky paths behave correctly.
+- **Memory:** cross-session unique-fact recall succeeds if durable-memory integration is enabled.
 
-## Restart / enablement requirement
+---
 
-Before PASS:
+# Performance / scaling acceptance
 
-1. all selected integrations are configured as enabled where credentials/authorization permit;
-2. restart the real Jarvis/OpenClaw process using the project's normal supervisor/start path;
-3. verify Jarvis returns online;
-4. verify the capability/status surface still reports integrations correctly;
-5. perform at least one post-restart real Discord invocation.
+With all available LEVEL capabilities enabled:
 
-Do not require a full Windows reboot unless the existing project acceptance process specifically needs one.
+- trivial Chat adds **zero extra routing-model calls**;
+- deterministic direct commands add **zero tool-selection model calls**;
+- no full-schema dump of every installed capability into ordinary runs;
+- a tool-using request resolves a small relevant set through the chosen OpenClaw discovery mechanism;
+- unrelated installed capabilities do not change ordinary Chat behavior;
+- no second catalog/index/registry is maintained by Jarvis;
+- no repeated full Skill/MCP discovery is performed every turn when OpenClaw can reuse its catalog/snapshots.
 
-## Scope limits
+Measure what the runtime can measure reliably. Do not fabricate absolute millisecond targets; compare before/after and report real observed overhead.
+
+---
+
+# Scope limits
 
 Do not:
 
-- add Longbridge, market feeds, stock analysis, financial news engines or finance channels;
-- modify the separate `money` work;
-- replace the working Jarvis Discord UI with an OpenClaw WebUI;
-- introduce a second Discord bot;
-- build custom substitutes for mature working upstream integrations without evidence;
-- duplicate existing approval/memory/token subsystems when extension is sufficient;
-- change model-selection/workflow-classification behavior unless required to route these tools;
+- add finance/Longbridge/market/news-engine capabilities;
+- implement the separate `money` task;
+- replace Discord with OpenClaw WebUI;
+- add a second bot;
+- rewrite stable Jarvis runtime/mode/session/permission UI;
+- force Code Mode across all models;
+- create a custom capability registry that duplicates OpenClaw;
+- stack duplicate memory/security/token systems;
 - perform unrelated refactors;
-- destroy current local OpenClaw/Jarvis state to obtain a clean install;
-- commit secrets.
+- destroy local state to get a clean install;
+- commit credentials.
 
-## Acceptance criteria
+# Stop condition
 
-PASS only when:
+Stop when CORE + all locally achievable LEVEL acceptance gates pass, or when remaining failures are genuinely external authorization/service blockers and all safe local work is complete.
 
-- [ ] latest local/repo state was inspected before changes;
-- [ ] finance-related integrations were not added;
-- [ ] Tavily capability is installed/wired/enabled and real Discord smoke passes;
-- [ ] Firecrawl capability is installed/wired/enabled and real Discord smoke passes;
-- [ ] browser automation is installed/wired/enabled and real Discord smoke passes;
-- [ ] Composio is installed/wired/enabled; a real read-only smoke passes if an authorized connection exists;
-- [ ] OpenTelemetry/Langfuse observability is active on a real Discord-triggered run;
-- [ ] token/usage accounting reflects a real run and is queryable from Discord;
-- [ ] additive security guard is active without breaking/bypassing existing approvals;
-- [ ] Mem0 durable-memory smoke passes across a short-term session reset;
-- [ ] user-facing normal operation stays inside Discord;
-- [ ] no integration requires a WebUI for normal daily use;
-- [ ] integrations remain enabled after a normal Jarvis/OpenClaw process restart;
-- [ ] core deterministic tests/checks are green;
-- [ ] no secrets were committed or printed;
-- [ ] no unrelated subsystem was rewritten.
+Do not continue plugin hunting or broad cleanup after acceptance.
 
-If a required external credential/authorization is genuinely absent, do not falsely report full PASS. Return the single blocked integration(s) clearly, while still completing and verifying every capability that can be finished without that missing external authorization.
+# Delivery / commits
 
-## Stop condition
+Prefer two coherent checkpoints:
 
-Stop when the acceptance gates above pass or when the remaining blocker is genuinely external (missing credential/account authorization/service outage) and all safe local work is complete.
+1. `CORE: scalable capability discovery/routing`
+2. `LEVEL: non-financial capability integrations`
 
-Do not continue broad cleanup, refactoring or plugin hunting after acceptance.
+Do not split further unless required for safe recovery.
 
-## Final report
-
-Keep the execution history in the repository/logs. Return only:
+# Final report
 
 ```text
 PASS | FAIL
-commit: <sha or none>
-tests: <compact deterministic + real Discord smoke summary>
-enabled: <comma-separated capabilities>
-blocked: none | <only externally blocked capability/reason>
+commit: <sha(s) or none>
+tests: <compact deterministic + real Discord smoke result>
+core: <tool-search/profile/direct-dispatch/code-mode policy actually active>
+enabled: <capabilities>
+blocked: none | <external blockers only>
 blocker: none | <one key blocker>
 ```
