@@ -33,16 +33,20 @@ import { InstanceGuard } from './instance-guard.mjs';
 import { resolveBuildIdentity, describeBuild } from './build-identity.mjs';
 import { DurableStore } from './durable-store.mjs';
 import { Updater, RESTART_EXIT_CODE, shortSha as shortUpdateSha } from './updater.mjs';
+import { resolveDataDir } from './paths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 async function main() {
   const buildIdentity = resolveBuildIdentity(root);
+  const dataDir = resolveDataDir(root);
   // The lock lives under git-ignored runtime data. A test/harness may isolate it
-  // with JARVIS_INSTANCE_LOCK so the real entry point can be exercised without
-  // fighting a real running bridge.
-  const lockFile = process.env.JARVIS_INSTANCE_LOCK ? path.resolve(process.env.JARVIS_INSTANCE_LOCK) : null;
+  // with JARVIS_INSTANCE_LOCK (or JARVIS_DATA_DIR) so the real entry point can
+  // be exercised without fighting a real running bridge.
+  const lockFile = process.env.JARVIS_INSTANCE_LOCK
+    ? path.resolve(process.env.JARVIS_INSTANCE_LOCK)
+    : (process.env.JARVIS_DATA_DIR ? path.join(dataDir, 'jarvis-instance.lock') : null);
   const guard = new InstanceGuard({ root, build: buildIdentity, lockFile });
   const lockResult = guard.acquire();
   if (!lockResult.ok) {
@@ -65,7 +69,7 @@ async function main() {
   config.defaultWorkspace = config.defaultWorkspace || config.repoRoot;
   console.log(`[workspace] default=${config.defaultWorkspace} (repoRoot=${config.repoRoot})`);
 
-  const stateFile = path.join(root, 'data', 'state.json');
+  const stateFile = path.join(dataDir, 'state.json');
   const state = new StateStore(stateFile);
   // Log the effective per-channel routing on startup so the live bridge state is
   // verifiable from logs instead of assumed from the file on disk.
@@ -75,7 +79,7 @@ async function main() {
     const channel = state.getChannel(channelId, config.defaultCwd);
     console.log(`[state] channel=${channelId} mode=${channel.mode} executor=${channel.executorId} provider=${channel.providerId} model=${channel.model ?? 'none'} cwd=${channel.cwd}${channel.workThread ? ` workThread=parent:${channel.parentChannelId}` : ''}`);
   }
-  const credentials = new CredentialStore(path.join(root, 'data', 'credentials.json'));
+  const credentials = new CredentialStore(path.join(dataDir, 'credentials.json'));
 
   // P2.2 model persistence: the restored model selection is logged so a
   // post-restart run is verifiable from the bridge log instead of assumed.
@@ -86,14 +90,14 @@ async function main() {
   }
 
   // ---- P2.2D durable operational store (SQLite WAL) -------------------------
-  const durableStore = new DurableStore({ file: path.join(root, 'data', 'jarvis.db') });
+  const durableStore = new DurableStore({ file: path.join(dataDir, 'jarvis.db') });
   try {
     durableStore.open();
   } catch (error) {
     console.warn(`[store] durable store unavailable (${redactSecrets(error?.message || error)}); run history this session is memory-only`);
   }
   const providers = new ProviderManager({
-    file: path.join(root, 'data', 'providers.json'),
+    file: path.join(dataDir, 'providers.json'),
     credentialStore: credentials,
   });
   const approvals = new ApprovalManager({ timeoutMs: config.approvalTimeoutMs });
@@ -124,10 +128,11 @@ async function main() {
   // The Discord control plane and the agent task live in the same process.
   // A fatal error in the agent must not leave orphan processes behind, and the
   // control plane must not pretend it is healthy after an uncaught exception.
-  // Strategy: log → notify owner → reap children → close Discord/hook → exit.
-  // A supervisor script (scripts/start-supervisor.ps1) watches the exit code
-  // and restarts the bridge after a short backoff, so the control plane comes
-  // back online automatically.
+  // Strategy: log → notify owner → reap children → close Discord/hook → EXIT.
+  // Exiting is what lets the supervisor (scripts/start-supervisor.ps1) restart
+  // the bridge after a short backoff. Staying alive with a destroyed Discord
+  // client would look UP to the supervisor while serving nothing, so the exit
+  // is forced even if teardown hangs.
   let discord = null;
   let hookServer = null;
   let updater = null;
@@ -136,6 +141,12 @@ async function main() {
   const fatalShutdown = async (label, error) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Force the exit even if async teardown hangs (e.g. a wedged runner).
+    const forceExit = setTimeout(() => {
+      try { guard.release(); } catch { /* best effort */ }
+      process.exit(1);
+    }, 8000);
+    try { forceExit.unref?.(); } catch { /* ignore */ }
     const detail = redactSecrets(error?.stack || String(error?.message || error));
     console.error(`[${label}] ${detail}`);
 
@@ -161,11 +172,13 @@ async function main() {
     try { await discord?.client?.destroy?.(); } catch { /* best effort */ }
     const pids = killAllChildrenSync();
     if (pids.length) console.error(`[bridge] reaped ${pids.length} orphan child tree(s): ${pids.join(', ')}`);
-    process.exitCode = 1;
+    try { guard.release(); } catch { /* best effort: stale-lock reclaim covers the rest */ }
+    clearTimeout(forceExit);
+    process.exit(1);
   };
 
-  process.on('uncaughtException', (error) => { fatalShutdown('uncaughtException', error); });
-  process.on('unhandledRejection', (reason) => { fatalShutdown('unhandledRejection', reason); });
+  process.on('uncaughtException', (error) => { fatalShutdown('uncaughtException', error).catch(() => process.exit(1)); });
+  process.on('unhandledRejection', (reason) => { fatalShutdown('unhandledRejection', reason).catch(() => process.exit(1)); });
 
   // A verified self-update must NOT become two bridges: the live bridge exits
   // with a dedicated code and the existing Supervisor relaunches it from the
@@ -321,8 +334,8 @@ async function main() {
   if (visionRoute) console.log(`[chat] vision route provider=${visionRoute.providerId} model=${visionRoute.model || 'auto'}`);
 
   // Bounded, channel-scoped Chat history plus a git-ignored attachment inbox.
-  const chatHistory = new ChatHistoryStore({ file: path.join(root, 'data', 'chat-history.json') });
-  const attachmentInbox = path.join(root, 'data', 'inbox');
+  const chatHistory = new ChatHistoryStore({ file: path.join(dataDir, 'chat-history.json') });
+  const attachmentInbox = path.join(dataDir, 'inbox');
   const reaped = cleanupInbox(attachmentInbox, { ttlMs: 48 * 60 * 60 * 1000 });
   if (reaped.length) console.log(`[attachments] cleaned ${reaped.length} expired inbox file(s)`);
 
@@ -393,7 +406,7 @@ async function main() {
     remote: config.autoUpdateRemote,
     branch: config.autoUpdateBranch,
     intervalMs: config.autoUpdateIntervalMs,
-    stateFile: path.join(root, 'data', 'update-state.json'),
+    stateFile: path.join(dataDir, 'update-state.json'),
     // The SHA this process actually loaded decides freshness, not the checkout.
     runningSha: buildIdentity.commit,
     safeToRestart: async () => (discord ? discord.runtimeActivity() : { safe: false, reasons: ['bridge starting'] }),

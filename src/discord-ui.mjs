@@ -22,7 +22,10 @@ import { ClaudeRunner } from './claude-runner.mjs';
 import { ThrottledEditor, STATE } from './progress.mjs';
 import { EventPresenter } from './event-presenter.mjs';
 import { describeRouting } from './win-env.mjs';
-import { discordRestAgent } from './discord-proxy.mjs';
+import {
+  activeProxyUrl, clearDiscordProxy, discordRestAgent, isProxyActive, proxyFallbackInfo,
+} from './discord-proxy.mjs';
+import { isNetworkError } from './discord-errors.mjs';
 import { classifyBackend, billingRoute, assertBackendAllowed } from './backend.mjs';
 import { withTimeout } from './limits.mjs';
 import { PermissionManager, LEVEL } from './permission-manager.mjs';
@@ -233,6 +236,17 @@ export class DiscordControlPlane {
     this.extraEnv = extraEnv;
     this.envUnset = envUnset;
     this.autoLogin = autoLogin;
+    // P0 uptime: Gateway connection lifecycle (model-free diagnostics for
+    // /status and /doctor). discord.js auto-reconnects; these counters only
+    // observe so health output tells the truth after a network/proxy outage.
+    this.discordConnection = {
+      lastReadyAt: null,
+      lastDisconnectAt: null,
+      disconnectCount: 0,
+      reconnectCount: 0,
+      resumeCount: 0,
+      lastError: null,
+    };
     this.runners = new Map();
     this.tasks = new Map();
     this.channelBySession = new Map();
@@ -275,12 +289,106 @@ export class DiscordControlPlane {
     });
   }
 
+  /**
+   * P0 uptime: observe the Gateway lifecycle without interfering with
+   * discord.js auto-reconnect. A stale proxy that dies mid-run would otherwise
+   * keep every reconnect dialling a dead port; on a network-caused disconnect
+   * the dead proxy is cleared so the next attempt goes direct.
+   */
+  #observeGatewayLifecycle() {
+    const conn = this.discordConnection;
+    const noteError = (label, error) => {
+      conn.lastError = `${label}: ${redact(error?.message || error)}`.slice(0, 220);
+    };
+    const fallbackIfStaleProxy = (label, error) => {
+      const message = String(error?.message || error || '');
+      if (isProxyActive() && isNetworkError(message)) {
+        const previous = clearDiscordProxy(`${label}: ${message.slice(0, 120)}`);
+        console.warn(`[discord] ${label}; stale proxy ${previous} cleared, reconnecting direct`);
+      }
+    };
+    // 'clientReady' fires after every (re)login, including resumes.
+    // ('ready' is deprecated in discord.js v14.27+ and warns on use.)
+    const onReady = () => {
+      conn.lastReadyAt = new Date().toISOString();
+      console.log('[discord] gateway ready');
+    };
+    this.client.on('clientReady', onReady);
+    this.client.on('shardDisconnect', (event, shardId) => {
+      conn.disconnectCount += 1;
+      conn.lastDisconnectAt = new Date().toISOString();
+      console.warn(`[discord] shard ${shardId} disconnected (code=${event?.code ?? '?'})`);
+      fallbackIfStaleProxy('gateway disconnect', event?.reason || event);
+    });
+    this.client.on('shardReconnecting', (shardId) => {
+      conn.reconnectCount += 1;
+      console.warn(`[discord] shard ${shardId} reconnecting (attempt ${conn.reconnectCount})`);
+    });
+    this.client.on('shardResume', (shardId) => {
+      conn.resumeCount += 1;
+      conn.lastReadyAt = new Date().toISOString();
+      console.log(`[discord] shard ${shardId} resumed session`);
+    });
+    this.client.on('shardError', (error, shardId) => {
+      noteError(`shard ${shardId} error`, error);
+      console.warn(`[discord] shard ${shardId} error: ${redact(error?.message || error)}`);
+      fallbackIfStaleProxy('gateway error', error);
+    });
+    this.client.on('invalidated', () => {
+      noteError('session invalidated', 'session invalidated; discord.js will re-identify');
+      console.warn('[discord] session invalidated; waiting for re-identify');
+    });
+    this.client.on('error', (error) => {
+      noteError('client error', error);
+      console.warn(`[discord] client error: ${redact(error?.message || error)}`);
+    });
+  }
+
+  /**
+   * P0 uptime: login with a single stale-proxy direct fallback. A bad token
+   * must fail fast (no retry); only a network failure while a proxy is active
+   * is retried once direct. Returns after a successful login.
+   */
+  async #loginWithProxyFallback() {
+    try {
+      await this.client.login(this.config.discordToken);
+      return;
+    } catch (error) {
+      const message = String(error?.message || error || '');
+      if (isProxyActive() && isNetworkError(message)) {
+        const previous = clearDiscordProxy(`login failure: ${message.slice(0, 120)}`);
+        console.warn(`[proxy] login via ${previous} failed (${message.slice(0, 120)}); retrying direct once`);
+        await this.client.login(this.config.discordToken);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /** Compact Gateway lifecycle line for /doctor (and degraded /status). */
+  discordConnectionSummary() {
+    const conn = this.discordConnection;
+    const ws = this.client?.ws ? wsStatusText(this.client.ws.status) : 'no client';
+    const proxy = activeProxyUrl();
+    const fallback = proxyFallbackInfo();
+    const parts = [`gateway ${ws}`];
+    if (proxy) parts.push(`proxy ${proxy}`);
+    else parts.push(fallback ? `direct (fallback from ${fallback.previousProxyUrl})` : 'direct');
+    if (conn.disconnectCount) parts.push(`disconnects ${conn.disconnectCount}`);
+    if (conn.reconnectCount) parts.push(`reconnects ${conn.reconnectCount}`);
+    if (conn.resumeCount) parts.push(`resumes ${conn.resumeCount}`);
+    if (conn.lastDisconnectAt) parts.push(`last disconnect ${conn.lastDisconnectAt}`);
+    if (conn.lastError) parts.push(`last error: ${conn.lastError}`);
+    return parts.join(' · ');
+  }
+
   async start() {
     this.approvalManager.setPresenter((req) => this.presentApproval(req));
     this.approvalManager.setSettledHandler(({ answer, meta }) => this.onApprovalSettled(answer, meta));
+    this.#observeGatewayLifecycle();
     this.client.on('messageCreate', (m) => this.onMessage(m).catch((e) => console.error(`[discord] message handler: ${redact(e?.stack || e)}`)));
     this.client.on('interactionCreate', (i) => this.onInteraction(i).catch((e) => console.error(`[discord] interaction handler: ${redact(e?.stack || e)}`)));
-    if (this.autoLogin) await this.client.login(this.config.discordToken);
+    if (this.autoLogin) await this.#loginWithProxyFallback();
     if (this.autoLogin && this.config.autoRegisterCommands !== false) await this.registerCommands();
     if (this.config.notifyOnStart !== false) await this.notifyReady();
   }
@@ -786,8 +894,21 @@ export class DiscordControlPlane {
       chatHealth: this.#chatHealthText(channelId),
       gateway,
     });
+    // P0 uptime: a degraded Gateway must be visible in /status, not hidden.
+    // A successful reply proves REST works, but the WS may still be
+    // reconnecting/resuming after an outage.
+    const wsStatus = this.client?.ws ? wsStatusText(this.client.ws.status) : null;
+    const discordDegraded = wsStatus && !['connected', 'ready'].includes(wsStatus)
+      ? `Discord Gateway: ${wsStatus}${this.discordConnection.lastDisconnectAt ? ` (last disconnect ${this.discordConnection.lastDisconnectAt})` : ''}`
+      : null;
+    const proxyFallback = proxyFallbackInfo();
+    const proxyNote = proxyFallback && !activeProxyUrl()
+      ? `Proxy fallback: ${proxyFallback.previousProxyUrl} -> direct`
+      : null;
+    const degraded = [discordDegraded, proxyNote].filter(Boolean).join(' · ') || null;
+    const withDegraded = degraded ? `${statusText}\n⚠️ ${degraded}` : statusText;
     // P2.2A/P2.2B: real runtime/build/instance identity + autostart state.
-    return this.#withRuntimeIdentity(statusText);
+    return this.#withRuntimeIdentity(withDegraded);
   }
 
   /** Append live identity lines; never invents a branch/commit. */
@@ -815,10 +936,9 @@ export class DiscordControlPlane {
       lines.push(`💾 Durable store: ${store?.open ? `open (v${store.schemaVersion}, ${store.runCount} runs, ${store.pendingFollowups} pending follow-up(s))` : 'unavailable'}`);
     }
 
-    let discord = 'offline';
-    if (this.client?.ws) discord = wsStatusText(this.client.ws.status);
-    else if (this.client) discord = 'client online';
-    lines.push(`💬 Discord: ${discord}`);
+    // P0 uptime: truthful Gateway/proxy lifecycle (reconnect counts, last
+    // disconnect/error, stale-proxy direct fallback) instead of a bare ws word.
+    lines.push(`💬 Discord: ${this.discordConnectionSummary()}`);
 
     let gateway = 'disabled';
     if (this.gatewayHealth) {
@@ -834,7 +954,9 @@ export class DiscordControlPlane {
     }
 
     try {
-      lines.push(`⏰ Autostart: ${await autostartSummary()}`);
+      // P0: pass the live checkout so a task pointing at a moved/stale
+      // checkout is reported instead of silently looking healthy.
+      lines.push(`⏰ Autostart: ${await autostartSummary({ root: this.config.repoRoot || null })}`);
     } catch {
       lines.push('⏰ Autostart: unknown');
     }

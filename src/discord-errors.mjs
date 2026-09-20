@@ -33,3 +33,12 @@ export function explainDiscordLoginError(message) {
 export function isIntentError(message) {
   return /disallowed intents/i.test(String(message ?? ''));
 }
+
+/**
+ * P0 uptime: true when the failure looks like a network/proxy problem rather
+ * than an auth/config problem. Only network failures may trigger the
+ * stale-proxy direct fallback; a bad token must never be retried as "direct".
+ */
+export function isNetworkError(message) {
+  return /timeout|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|network|connect|socket hang up|fetch failed|getaddrinfo|proxy|tunnel/i.test(String(message ?? ''));
+}

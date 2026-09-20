@@ -57,6 +57,18 @@ if ($Status) {
   $watchdog = $existing.Triggers | Where-Object { $_.Repetition -and $_.Repetition.Interval } | Select-Object -First 1
   if ($watchdog) { Write-Output ("WatchdogRepetition: {0}" -f $watchdog.Repetition.Interval) }
   else { Write-Output "WatchdogRepetition: none" }
+  # P0: a task pointing at a moved/stale checkout looks healthy but strands the
+  # service. Warn instead of staying silent.
+  $actionText = ("{0} {1}" -f $action.Execute, $action.Arguments)
+  if ($actionText -notmatch [regex]::Escape($Supervisor)) {
+    Write-Output ("WARNING: task action does NOT point at this checkout's supervisor:")
+    Write-Output ("  expected: $Supervisor")
+  } else {
+    Write-Output ("Checkout: points at this supervisor")
+  }
+  if ("$($existing.State)" -ne 'Ready') {
+    Write-Output ("WARNING: task state is '$($existing.State)', not 'Ready'. Re-run without -Status to reinstall/enable.")
+  }
   return
 }
 
@@ -112,6 +124,9 @@ Start-Sleep -Milliseconds 500
 Register-ScheduledTask -TaskName $TaskName -Force `
   -Action $Action -Trigger @($Trigger, $Watchdog) -Settings $Settings -Principal $Principal `
   -Description 'Jarvis Discord Agent Control bridge + LiteLLM supervisor (logon auto-start + 1-min watchdog).' | Out-Null
+# P0: a previously Disabled task must come back Enabled; Register -Force alone
+# is not trusted to flip the state on every Windows build.
+Enable-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
 
 Write-Output "[autostart] installed: task='$TaskName'"
 Write-Output "[autostart] args:      $($Action.Execute) $($Action.Arguments)"

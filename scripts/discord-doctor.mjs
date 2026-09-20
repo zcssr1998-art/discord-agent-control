@@ -15,8 +15,8 @@ import '../src/discord-proxy.mjs';
 import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
 import { resolveDiscordProxy } from '../src/win-env.mjs';
-import { configureDiscordProxy } from '../src/discord-proxy.mjs';
-import { explainDiscordLoginError, isIntentError } from '../src/discord-errors.mjs';
+import { activeProxyUrl, clearDiscordProxy, configureDiscordProxy } from '../src/discord-proxy.mjs';
+import { explainDiscordLoginError, isIntentError, isNetworkError } from '../src/discord-errors.mjs';
 
 const sendTestDm = process.argv.includes('--send-test-dm');
 const token = process.env.DISCORD_TOKEN;
@@ -34,7 +34,9 @@ if (proxy.proxyUrl) {
   configureDiscordProxy(proxy.proxyUrl);
   line(true, 'proxy resolved', `${proxy.proxyUrl} (source=${proxy.source})`);
 } else {
-  line(proxy.source === 'disabled', 'proxy', `none (source=${proxy.source})`);
+  // P0 truthfulness: a direct connection with no proxy configured is a
+  // healthy state, not a failure.
+  line(true, 'proxy', `none (source=${proxy.source})`);
 }
 
 if (!token) problems.push('DISCORD_TOKEN is not set');
@@ -47,19 +49,44 @@ if (problems.length) {
   process.exit(1);
 }
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Channel],
-});
+function makeClient() {
+  return new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+    partials: [Partials.Channel],
+  });
+}
+
+let client = makeClient();
+
+async function loginWithProxyFallback() {
+  try {
+    await client.login(token);
+    return;
+  } catch (error) {
+    // P0: a stale local proxy (dead Clash/V2Ray port) must fall back to a
+    // direct connection instead of stranding the diagnosis on the proxy.
+    // A bad token is never retried.
+    if (activeProxyUrl() && isNetworkError(error?.message)) {
+      const previous = clearDiscordProxy(`doctor login failure: ${String(error?.message || error).slice(0, 120)}`);
+      line(true, 'stale proxy fallback', `${previous} -> direct; retrying once`);
+      await client.destroy().catch(() => {});
+      client = makeClient();
+      await client.login(token);
+      line(true, 'login succeeded via direct fallback', `bot = ${client.user.tag} (${client.user.id})`);
+      return 'fallback';
+    }
+    throw error;
+  }
+}
 
 try {
-  await client.login(token);
-  line(true, 'login succeeded', `bot = ${client.user.tag} (${client.user.id})`);
+  const fallback = await loginWithProxyFallback();
+  if (fallback !== 'fallback') line(true, 'login succeeded', `bot = ${client.user.tag} (${client.user.id})`);
 
   const me = await client.user.fetch(true);
   line(me.bot, 'account is a bot account');

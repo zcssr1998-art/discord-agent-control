@@ -58,6 +58,7 @@ function installWsPatch() {
 installWsPatch();
 
 let active = null;
+let fallbackInfo = null;
 
 /**
  * Point both transports at `proxyUrl`.
@@ -72,6 +73,47 @@ export function configureDiscordProxy(proxyUrl) {
   installWsPatch().proxyAgent = new HttpsProxyAgent(wanted);
   active = { proxyUrl: wanted, restAgent };
   return active;
+}
+
+/**
+ * P0 uptime: stale-proxy direct fallback.
+ *
+ * A dead local proxy (Clash/V2Ray not running, port changed) otherwise strands
+ * the bridge: every login and every Gateway reconnect keeps dialling the dead
+ * port. Clearing returns both transports to a direct connection. The next
+ * login/reconnect attempt then goes direct. Never throws.
+ *
+ * Returns the previous proxy URL (or null when already direct).
+ */
+export function clearDiscordProxy(reason = null) {
+  const previous = active?.proxyUrl ?? null;
+  try {
+    installWsPatch().proxyAgent = undefined;
+  } catch { /* best effort: a direct Gateway is strictly better than a dead proxy */ }
+  try {
+    // Restore the default undici dispatcher so REST also goes direct.
+    const { Agent } = require('undici');
+    setGlobalDispatcher(new Agent());
+  } catch { /* best effort */ }
+  active = null;
+  if (previous) {
+    fallbackInfo = {
+      previousProxyUrl: previous,
+      reason: String(reason || 'proxy fallback to direct'),
+      at: new Date().toISOString(),
+    };
+  }
+  return previous;
+}
+
+/** True while a proxy is configured for Discord. */
+export function isProxyActive() {
+  return Boolean(active?.proxyUrl);
+}
+
+/** Last stale-proxy -> direct fallback, if one happened in this process. */
+export function proxyFallbackInfo() {
+  return fallbackInfo ? { ...fallbackInfo } : null;
 }
 
 /** The agent to hand to `discord.js`'s `rest` option, if a proxy is active. */

@@ -17,6 +17,9 @@ export class CredentialStore {
   set(ref, secret) {
     const value = String(secret ?? '').trim();
     if (!ref || !value) throw new Error('credential reference and secret are required');
+    // P0 test isolation: re-seeding the identical secret must not dirty the
+    // file (mtime/content churn races a live bridge reading the same store).
+    if (this.data[ref] === value) return ref;
     const previous = this.data[ref];
     if (previous) forgetSecret(previous);
     registerSecret(value);

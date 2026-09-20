@@ -38,6 +38,9 @@ function bootBridge(env) {
       DISCORD_TOKEN: 'not-a-real-token',
       DISCORD_OWNER_ID: '123456789012345678',
       LOG_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'dac-startup-logs-')),
+      // P0 test isolation: the real entry point must never read/write the
+      // owner's data/* (state, credentials, providers, history, db) from a test.
+      JARVIS_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'dac-startup-data-')),
       // Use the scripted executor so the startup backend probe is deterministic
       // and never reaches a real (possibly paid) provider.
       CLAUDE_COMMAND: path.join(ROOT, 'tests', 'fake-claude.mjs'),
