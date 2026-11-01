@@ -1,5 +1,9 @@
 # DSH 多 Agent Manager 对照实验报告（2026-11-01）
 
+> CORRECTION: Old C results are INVALID_ROUTE (kkrich, not native codex/gpt-6.1-sol). All C comparisons and procurement conclusions below are withdrawn. Historical A/B also used a custom HTTP runner, not native DSH; do not compare them directly with future native C.
+> Native quota API is available: wham/usage. Earlier claims of no quota API and permission to continue with unknown quota were incorrect. On 2026-11-01 native quota rose from 16% used at 23:09:48 to 45% at 23:20:58; stop threshold was 37%. Native C-T1/T2/T3 have NOT started. Work stopped; no quota reset or third-party substitution.
+
+
 > 实验规范：`docs/experiments/DSH_MULTI_AGENT_MANAGER_BENCHMARK.md`（规范以该文件为唯一来源，本报告不复述全文）。
 > 数据来源：每次运行的真实上游响应记录（`bench/logs/<RUN>.jsonl` 逐请求 JSONL）+ 运行元数据（`<RUN>.meta.json`）+ 独立验收器输出。
 > 生成时间：2026-11-01 22:45（Asia/Shanghai）。全部 token / 费用 / 耗时均为实测值，不用估算冒充；无法取得的量一律标 N/A。
