@@ -80,6 +80,8 @@
 - **GPT 费用**取不到：18391 → kkrich 通道的 Responses 响应只返回 token 计数，无 cost 字段；且 kkrich 的 `/api/user/self`、`/api/status` 返回 403、`/v1/dashboard/billing/subscription` 返回 401，无法读取余额或单价。按任务书要求记 **N/A**，不做换算。
 - **DS 全部**不含 C 组 Manager（那是 GPT）；**全系统** = DS 全部 + GPT。每个 tag 只落一个桶，未出现同一 token 重复计入。
 
+![图 1 · 三任务 Token 消耗对比：A 组为单个 DS Agent，B/C 组为 Manager + 全部 Worker 合计](figs/fig1_tokens.png)
+
 ## 4. Codex（ChatGPT 订阅）额度变化
 
 | 项 | 值 |
@@ -113,6 +115,8 @@
 - **Manager 决策次数**（只计「派出 Worker」与「给出最终结论」两类实质决策，勘查类往返不计）：B 组 T1/T2/T3 均为 1 次；C 组 T1 为 3 次（用满上限，中途追加一次派发）、T2 与 T3 各 2 次。全部在「每任务最多 3 次实质决策」以内。
 - **Worker 并发**：B/C 组每组每任务默认 2 个 Worker，实测最大并发均为 2，从未超过「同任务最多 2 个并发」；C-T1 与 C-T3 分两次派发（共 3 个 Worker），属任务书允许的「有独立并行工作最多 3」。
 - **A 组无团队**：workers=0、dispatch_calls=0，全部工作由单个 DS Agent 串行完成（T1 28 步 / 31 次工具调用，T2 60 步 / 68 次，T3 49 步 / 51 次）。
+
+![图 2 · 三任务墙钟耗时对比：九次运行全部落在 25 分钟硬超时线（1500 秒）以下](figs/fig2_elapsed.png)
 
 ## 6. 自动化验收证据
 
@@ -151,6 +155,8 @@
 读法：「团队成本变化」按任务书公式 `1 − (DS-MANAGER 总成本 ÷ DS-SOLO 总成本)`，正数才是节省。三个任务是 **−117.3% / +6.3% / −10.8%**，即只有 T2 略省，T1 与 T3 都是团队更贵。
 
 三任务合计：A 3,404,956 tokens / $0.347040 / 1017.7s；B 3,860,615 tokens（Manager 58,255 + Worker 3,802,360）/ $0.554587 / 784.0s。团队 token 比 SOLO 多 **13.4%**，DS 费用多 **59.8%**，耗时少 **23.0%**。
+
+![图 3 · 团队成本变化：B 组相对 A 组，仅 T2 为正（团队略省），T1 与 T3 团队更贵](figs/fig3_cost_delta.png)
 
 ## 8. 对照：C（GPT Sol 6.1 Manager）vs B（DS Manager）
 
